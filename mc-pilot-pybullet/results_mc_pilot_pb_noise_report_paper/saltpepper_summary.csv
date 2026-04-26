@@ -1,0 +1,7 @@
+noise_type,noise_level_name,noise_level,secondary_param_name,secondary_param,noise_aware,num_seeds,policy_hit_rate_mean_pct,policy_hit_rate_std_pct,policy_mean_error_mean_m,policy_mean_error_std_m,policy_median_error_mean_m,policy_median_error_std_m,policy_p90_error_mean_m,policy_p90_error_std_m,final_cost_mean,final_cost_std
+saltpepper,p_spike,0.05,spike_scale,0.3,False,1,75.0,0.0,0.043882309012611406,0.0,0.025660708602735803,0.0,0.0883939398124291,0.0,0.004104255410955956,0.0
+saltpepper,p_spike,0.05,spike_scale,0.3,True,1,100.0,0.0,0.029231743300858135,0.0,0.01811962210144677,0.0,0.053423381861872773,0.0,0.016045107378489017,0.0
+saltpepper,p_spike,0.1,spike_scale,0.3,False,1,25.0,0.0,0.10124941039493705,0.0,0.10603178304579412,0.0,0.13567785426059578,0.0,0.0034534760825184825,0.0
+saltpepper,p_spike,0.1,spike_scale,0.3,True,1,75.0,0.0,0.11039258479158291,0.0,0.09381855120356172,0.0,0.16452345335564394,0.0,0.023807267221625364,0.0
+saltpepper,p_spike,0.15,spike_scale,0.3,False,1,50.0,0.0,0.07680749413030878,0.0,0.07202830965302301,0.0,0.13395903750041918,0.0,0.004104255410955956,0.0
+saltpepper,p_spike,0.15,spike_scale,0.3,True,1,50.0,0.0,0.09143961102216148,0.0,0.08964973324603777,0.0,0.1674022853870222,0.0,0.031434827562809166,0.0

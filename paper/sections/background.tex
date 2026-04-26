@@ -1,0 +1,116 @@
+\section{Background}
+\label{sec:background}
+
+\subsection{MC-PILCO}
+\label{sec:background:mcpilco}
+
+\mcpilco{}~\cite{mcpilco} is a model-based RL framework for continuous control that
+couples a GP dynamics model with a Monte Carlo (MC) policy-gradient optimiser.
+The GP is fit to observed transitions $(\mathbf{x}_t, \mathbf{u}_t) \to \mathbf{x}_{t+1}$
+and maintains a posterior over residual corrections to a known nominal model.
+At each policy update step, $M$ particles are propagated forward through the GP posterior
+via the reparameterisation trick: each particle draws a function sample from the GP and
+integrates the resulting ODE, yielding a set of stochastic rollouts that can be
+differentiated with respect to policy parameters $\theta$.
+The policy gradient is then
+
+\begin{equation}
+  \nabla_\theta J(\theta) = \nabla_\theta \mathbb{E}\!\left[
+    \sum_{t=0}^{T} c(\tilde{\mathbf{x}}_t)
+  \right] \approx \frac{1}{M}\sum_{m=1}^{M} \nabla_\theta \sum_{t=0}^{T}
+  c(\tilde{\mathbf{x}}_t^{(m)}),
+  \label{eq:mcpilco_gradient}
+\end{equation}
+
+where the reparameterisation ensures that the Monte Carlo samples are differentiable
+through the GP posterior.
+Sparse approximation via Subset of Data (SOD) keeps inference tractable as the dataset
+grows across trials.
+
+\subsection{MC-PILOT Modifications}
+\label{sec:background:mcpilot}
+
+\mcpilot{}~\cite{turcato2025mcpilot} adapts \mcpilco{} for the single-shot throwing
+problem with two targeted modifications.
+
+\paragraph{Augmented state.}
+The robot state $\mathbf{x} = [\mathbf{p},\, \dot{\mathbf{p}}] \in \mathbb{R}^6$
+(position and velocity) is augmented with the target location
+$\mathbf{P} = (P_x, P_y) \in \mathbb{R}^2$ to form
+$\tilde{\mathbf{x}} = [\mathbf{x},\, \mathbf{P}] \in \mathbb{R}^8$.
+The GP learns per-timestep velocity corrections
+$[\Delta v_x, \Delta v_y, \Delta v_z]$ conditioned on $\tilde{\mathbf{x}}$, enabling
+geometry-conditioned residual compensation across the target workspace.
+
+\paragraph{Single-shot policy.}
+Because the projectile is in free flight after release, feedback control is neither
+possible nor necessary.
+The policy collapses to a single map from target position to release speed:
+
+\begin{equation}
+  \pi_\theta(\mathbf{P}) = \frac{u_M}{2}\!\left(
+    \tanh\!\left(
+      \sum_{i=1}^{N_b} w_i \exp\!\left(
+        -\frac{\|\mathbf{a}_i - \mathbf{P}\|^2}{\ell_s^2}
+      \right)
+    \right) + 1
+  \right),
+  \label{eq:policy}
+\end{equation}
+
+where $u_M$ is the maximum allowable speed, $\{(\mathbf{a}_i, w_i)\}_{i=1}^{N_b}$ are
+the $N_b$ RBF centres and weights (the trainable parameters $\theta$), and $\ell_s$ is
+the lengthscale that controls the spatial extent of each basis function.
+The $\tanh(\cdot) + 1$ construction squashes the output to $(0,\, u_M)$, enforcing
+physical speed limits.
+
+\paragraph{Landing cost.}
+Performance is measured at the final timestep $T$ (the moment of landing) by a
+Gaussian-shaped cost centred on the target:
+
+\begin{equation}
+  c(\tilde{\mathbf{x}}_T) = 1 - \exp\!\left(
+    -\|\mathbf{p}_T - \mathbf{P}\|^2 \cdot \Sigma_c^{-1}
+  \right),
+  \label{eq:cost}
+\end{equation}
+
+where $\mathbf{p}_T \in \mathbb{R}^2$ is the ball landing position and $\Sigma_c$
+controls the width of the acceptance region.
+The policy objective is $J(\theta) = \mathbb{E}[c(\tilde{\mathbf{x}}_T)]$, minimised
+by gradient descent through the MC rollouts.
+
+\subsection{Aerodynamic Drag Model}
+\label{sec:background:drag}
+
+Ball trajectories in \mcpilot{} include aerodynamic drag.
+Following Eq.~35 of~\cite{turcato2025mcpilot}, the drag force is
+
+\begin{equation}
+  \mathbf{F}_D = -\tfrac{1}{2}\rho\, C_D(\mathrm{Re})\, A\,
+    \|\dot{\mathbf{p}}\|\, \dot{\mathbf{p}},
+  \label{eq:drag}
+\end{equation}
+
+where $\rho$ is air density, $A = \pi r^2$ is the ball cross-section, and the drag
+coefficient $C_D(\mathrm{Re})$ depends on the Reynolds number
+$\mathrm{Re} = \|\dot{\mathbf{p}}\| \cdot 2r / \nu$, with $r$ the ball radius and $\nu$
+the kinematic viscosity of air.
+For the tennis ball used in our experiments ($m = 0.0577$\,kg, $r = 0.0327$\,m) and
+typical release speeds below 4\,m/s, $\mathrm{Re}$ remains in the subcritical regime
+where $C_D \approx 0.47$, so we use a constant coefficient.
+
+\subsection{Omitted Components}
+\label{sec:background:omissions}
+
+We intentionally exclude two components from our reproduction.
+First, the gripper delay estimation module, which in the original paper uses Bayesian
+Optimisation to calibrate a timing offset between the commanded and actual release
+instant~\cite{turcato2025mcpilot}: we instead model the effect of release timing
+uncertainty directly as a stochastic perturbation in our noise study
+(Section~\ref{sec:study2}), making the BO calibration step unnecessary.
+Second, all hardware-specific components (ROS communication, Gazebo physics server,
+Franka Panda driver) are replaced by a self-contained numpy ballistic integrator
+described in Section~\ref{sec:system}.
+These omissions are intentional and do not affect the core learning algorithm under
+evaluation.

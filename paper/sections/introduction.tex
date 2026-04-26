@@ -1,0 +1,97 @@
+\section{Introduction}
+\label{sec:introduction}
+
+Robotic throwing extends the effective reach of a manipulator far beyond its kinematic
+workspace, enabling rapid sorting, bin-to-bin transfer, and long-range placement without
+additional actuators.
+Industrial pick-and-throw cells can double throughput compared with pick-and-place
+because the robot releases the object at high speed and immediately returns for the next
+grasp while the projectile is still in flight~\cite{turcato2025mcpilot}.
+Despite this appeal, practical deployment is bottlenecked by \emph{data efficiency}:
+learning a reliable release policy on physical hardware must converge in tens of trials
+rather than thousands, because each trial incurs wear, reconfiguration overhead, and
+safety risk.
+Standard model-free RL methods require orders of magnitude more samples than this budget
+permits, motivating model-based approaches that explicitly represent uncertainty and plan
+through it.
+
+\mcpilot{}~\cite{turcato2025mcpilot} addresses this challenge by combining
+\mcpilco{}~\cite{mcpilco}---a Gaussian-process (GP) dynamics model with Monte Carlo
+policy gradients---with two throwing-specific modifications.
+First, the policy is reduced to a single-shot speed map $\pi_\theta(\mathbf{P})$
+that fires exactly once at $t{=}0$ given the target position $\mathbf{P}$, eliminating
+the need for closed-loop feedback during flight.
+Second, gripper release delay is estimated by Bayesian Optimisation, compensating for
+systematic timing errors that would otherwise corrupt every trajectory.
+The augmented state $\tilde{\mathbf{x}} = [\mathbf{x},\, \mathbf{P}]$ lets the GP learn
+geometry-conditioned corrections, and the RBF policy network enables smooth interpolation
+across the target workspace.
+On a Franka Panda arm with a Gazebo/ROS simulator, \mcpilot{} reaches near-100\% target
+coverage in approximately ten physical throws---a compelling demonstration of GP-based
+model-based RL at the edge of the sample budget.
+
+Despite these results, three practical gaps remain unexplored.
+\textbf{(1) Geometry sensitivity.}
+The published hyperparameters are calibrated to a single release height and target range;
+we show experimentally that na\"ive transfer to different heights silently degrades
+performance---the RBF policy becomes blind over most of the target domain because the
+lengthscale is no longer commensurate with the range, and random exploration leaves
+entire sub-regions unvisited.
+\textbf{(2) Noise structure.}
+The paper attributes performance variance to gripper delay, but physical robots also
+exhibit velocity slip and timing jitter whose statistical structure differs from
+zero-mean additive noise; we prove that a zero-mean residual is unlearnable by the GP
+and characterise the resulting degeneration analytically.
+\textbf{(3) Portability.}
+Reproducing \mcpilot{} requires Gazebo and ROS, limiting accessibility for researchers
+without that infrastructure; the algorithm's core physics is ballistic and admits a
+lightweight numpy simulation that decouples the RL problem from the middleware stack.
+
+Our approach is to reproduce \mcpilot{} in an independent ballistic simulator augmented
+with a PyBullet visualisation pipeline, then conduct three focused studies: a
+\emph{release-height generalisation study} varying $z \in \{0.0, 0.5, 1.0, 1.5, 2.0\}$\,m;
+a \emph{noise-model study} comparing aware and naive policies under 20\% velocity slip;
+and a combined analysis that links the two.
+Each study is preceded by a diagnostic phase in which we instrument the algorithm to
+expose failure modes, formulate a fix, and verify recovery.
+
+\paragraph{Contributions.}
+\begin{enumerate}
+  \item \textbf{Independent simulation reproduction.}
+        A self-contained ballistic simulator and PyBullet visualiser that replicate
+        \mcpilot{} without Gazebo or ROS, with all adaptation decisions documented.
+
+  \item \textbf{Four diagnosed failure modes.}
+        Systematic identification and correction of non-obvious failure modes including
+        RBF lengthscale mismatch, biased exploration, cost-scale sensitivity, and
+        GP prior collapse under zero-mean noise.
+
+  \item \textbf{Lengthscale-to-range scaling rule.}
+        The heuristic $\ell_s \approx 0.15 \times \text{target\_range}$ prevents RBF
+        blindness and transfers across all five tested heights without per-height tuning.
+
+  \item \textbf{Stratified exploration policy.}
+        A deterministic coverage strategy that partitions the target workspace into equal
+        angular sectors, achieving seed-robust initialisation with the same number of
+        exploration throws as the baseline random strategy.
+
+  \item \textbf{Zero-mean-noise unlearnability result.}
+        A formal proposition showing that GP residuals under zero-mean noise converge to
+        the prior, making model improvement impossible, with an experimental demonstration
+        of 10\% vs.\ 50\% hit rate for naive vs.\ noise-aware policies under 20\%
+        velocity slip.
+
+  \item \textbf{Release-height generalisation.}
+        100\% hit rates on four of five height configurations and mean landing errors
+        below 35\,mm across all five, demonstrating that the corrected algorithm
+        generalises across a 2\,m range of release heights.
+\end{enumerate}
+
+\paragraph{Paper structure.}
+Section~\ref{sec:background} reviews the \mcpilco{} and \mcpilot{} formulations.
+Section~\ref{sec:system} describes the ballistic simulator and visualisation pipeline.
+Section~\ref{sec:implementation} details adaptation decisions and the four diagnosed
+failure modes.
+Sections~\ref{sec:study1}--\ref{sec:study3} present the three experimental studies.
+Section~\ref{sec:discussion} synthesises findings into transferable design rules.
+Section~\ref{sec:conclusion} concludes.

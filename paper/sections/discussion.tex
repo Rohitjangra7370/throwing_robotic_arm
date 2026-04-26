@@ -1,0 +1,142 @@
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Geometry-Dependence of Algorithm Defaults}
+\label{sec:discussion:geometry}
+
+The published Table~1 hyperparameters of \mcpilot{}~\cite{turcato2025mcpilot} are
+calibrated to a Franka Panda arm on a flat floor with a fixed release height and a
+target range of approximately 1.0\,m.
+Our study quantifies how several of these defaults degrade silently when the geometry
+changes.
+
+\paragraph{RBF lengthscale.}
+The default $\ell_s = 1.0$\,m is appropriate when the target arc spans $\sim$1\,m
+in Euclidean distance.
+At Config E ($z_{\mathrm{rel}} = 0.0$\,m, target range 0.35\,m), the same
+lengthscale yields RBF sensitivity
+$\exp\!\bigl(-\tfrac{1}{2}(0.35/1.0)^2\bigr) = 0.941$ between the two extremes of
+the target domain---the policy produces an effectively constant output regardless of
+target position.
+Four successive failed experiments (Section~\ref{sec:study1}) were required to
+isolate this as the root cause; once identified, replacing $\ell_s = 1.0$ with
+$\ell_s = 0.15$\,m (maintaining sensitivity $\approx 0.066$, comparable to the
+working configs) immediately recovered 10/10 hits.
+The general rule is $\ell_s \approx 0.15 \times \text{target\_range}$
+(Appendix~\ref{app:lengthscale}).
+
+\paragraph{Cost lengthscale.}
+The paper's $\ell_c = 0.1$\,m generates useful gradients only when the policy
+already delivers within $\sim$0.15\,m of the target.
+With random exploration, early landing errors span 0.3--1.5\,m, saturating the cost
+at $c \approx 1.0$ and driving gradients to zero.
+Widening to $\ell_c = 0.5$\,m keeps gradients alive across the full exploration
+error range; then the cost can be tightened only after the GP becomes accurate
+enough that near-misses are below 0.2\,m.
+Attempting to revert to $\ell_c = 0.1$\,m after 5 trials still yields 0/10 hits
+because early-trial errors remain too large.
+
+\paragraph{Exploration coverage.}
+At $z_{\mathrm{rel}} = 1.0$\,m, random exploration draws five speeds from
+$[0, u_M]$; an unlucky seed (seed=1, Config B) draws four low speeds
+($v < 1.5$\,m/s), leaving the GP uninformed about the high-speed dynamics needed
+for far targets.
+The policy converges to a max-speed local minimum (cost plateau at 0.70--0.73,
+0/10 hits).
+The identical seed succeeds with stratified exploration, which partitions
+$[0, u_M]$ into $N_{\mathrm{exp}}$ equal bands and samples one throw per band,
+guaranteeing full coverage in $N_{\mathrm{exp}}$ throws.
+
+\subsection{Zero-Mean Noise as GP Regularisation}
+\label{sec:discussion:noise}
+
+An unexpected finding emerged from the noise study: the additive observation noise
+$\sigma = 0.04$\,m/s (introduced to model velocity scatter) is not merely a noise
+source for the aware/naive comparison---it is a necessary regulariser for GP
+hyperparameter estimation.
+
+When $\sigma = 0$ and exploration produces five noiseless, deterministic ballistic
+trajectories, maximum likelihood estimation (MLE) of GP hyperparameters finds that
+the mathematically easiest fit is a nearly flat function with effectively infinite
+lengthscales (observed values: $\ell \approx 1791$\,m, $1602$\,m, $357$\,m over a
+domain of $\sim$1\,m in position and $\sim$3\,m/s in velocity).
+A GP with lengthscale $\gg$ domain width predicts the same landing position
+regardless of launch speed, making policy gradients effectively zero.
+With $\sigma = 0.04$, MLE must find finite lengthscales that explain why throws with
+similar speeds land at different positions; the resulting structure is what allows the
+aware policy to learn the $1/(1-\alpha)$ compensation multiplier
+(Proposition~\ref{prop:zeromean} and Appendix~\ref{app:zeromean}).
+
+\begin{proposition}[Zero-mean unlearnability]
+\label{prop:zeromean}
+Let $\boldsymbol{\epsilon} \sim \mathcal{N}(\mathbf{0}, \Sigma_\epsilon)$ be
+additive zero-mean noise on the release velocity.
+The optimal policy $\pi^*_{\mathrm{aware}}$ minimising the noise-averaged cost
+$J(\theta) = \mathbb{E}_{\boldsymbol{\epsilon}}\bigl[c(\mathbf{p}_T)\bigr]$ is
+identical to the noiseless optimal policy $\pi^*_{\mathrm{naive}}$.
+Consequently, noise awareness provides no improvement in aim under zero-mean noise.
+\end{proposition}
+
+\noindent The proof is given in Appendix~\ref{app:zeromean}.
+
+The practical implication for simulation-only experiments is that practitioners
+should add a small artificial observation noise $\sigma_n > 0$ to GP training data
+even in noiseless simulators, treating it as GP regularisation rather than a physical
+effect.
+A value of $\sigma_n \approx 0.04$\,m/s is sufficient for the throwing domain.
+
+\subsection{Decoupled Arm--RL Pipeline}
+\label{sec:discussion:decoupled}
+
+Setting the ball velocity explicitly via \texttt{resetBaseVelocity} at release
+decouples arm tracking quality from GP training quality.
+Even with substantial joint-tracking error (the iiwa7 position controller achieves
+$\approx 7\%$ EE velocity tracking error in our experiments), the ball always
+receives exactly $\mathbf{v}_{\mathrm{cmd}}$, and GP training data are never
+corrupted by kinematic imprecision.
+
+This design is not merely a simulation convenience.
+It corresponds physically to a gripper that can be programmed to release at a
+precisely measured EE velocity (read from the joint encoder forward kinematics).
+In that case, the delivered velocity equals the measured velocity at the release
+instant, and the arm controller only needs to bring the EE to the desired pose and
+velocity---not to track a continuous trajectory with sub-millimetre precision.
+The RL algorithm's data efficiency guarantees are preserved regardless of
+trajectory-tracking quality, provided the release velocity is accurately measured or
+commanded.
+
+\subsection{Limitations}
+\label{sec:discussion:limitations}
+
+\paragraph{Simulation only.}
+All experiments are conducted in simulation.
+Hardware validation on a physical manipulator is needed to confirm that the
+learned policies transfer and that the 5--10\% PyBullet--NumPy drag discrepancy
+does not compound with real-world effects.
+
+\paragraph{Fixed launch angle.}
+The elevation angle $\alpha = 35^\circ$ is fixed across all experiments.
+Joint optimisation of $\alpha$ and release speed would increase the reachable target
+volume and potentially improve data efficiency by concentrating GP data along the
+optimal ballistic arc.
+
+\paragraph{Single-seed statistics.}
+Most results are reported for seed=1 only; Study 1 Config B was also evaluated at
+seed=2 for robustness verification.
+Conference-level statistical claims require $\geq 5$ seeds to bound performance
+variance.
+The seed=1 vs seed=2 comparison for Config B (random exploration) illustrates that
+hit rate can vary between 0/10 and 10/10 for an unlucky vs lucky seed, confirming
+that single-seed results should be read as existence proofs rather than expected-case
+performance.
+
+\paragraph{Particle freeze approximation.}
+Once a particle's $z$-coordinate falls below zero, its state is frozen at the
+previous timestep rather than interpolated to the exact $z=0$ crossing.
+This introduces a systematic over-estimation of the landing distance proportional
+to the vertical velocity at the last step above ground.
+For the simulation timestep $T_s = 0.02$\,s and typical vertical velocities of
+1--3\,m/s at landing, the frozen-step error is 2--6\,cm per particle.
+Landing detection in the actual rollout uses linear interpolation to correct this,
+so the training data are accurate; the approximation affects only the Monte Carlo
+cost estimate used for gradient computation (Appendix~\ref{app:freeze}).

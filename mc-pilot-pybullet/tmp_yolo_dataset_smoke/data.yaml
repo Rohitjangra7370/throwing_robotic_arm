@@ -1,0 +1,6 @@
+path: C:\Users\Yajesh\Desktop\ar525_project\mc-pilot-pybullet\tmp_yolo_dataset_smoke
+train: images/train
+val: images/val
+
+names:
+  0: throw_target
