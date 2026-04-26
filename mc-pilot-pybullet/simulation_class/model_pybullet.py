@@ -28,7 +28,8 @@ class PyBulletThrowingSystem:
         mass=0.0577,
         radius=0.0327,
         launch_angle_deg=35.0,
-        wind=None,
+        wind_model=None,
+        wind_aware=False,
         arm_noise=None,
         t_w=_T_W,
         t_r=_T_R,
@@ -37,8 +38,9 @@ class PyBulletThrowingSystem:
     ):
         self.mass = mass
         self.radius = radius
-        self.launch_angle = np.deg2rad(launch_angle_deg)
-        self.wind = np.zeros(3) if wind is None else np.array(wind, dtype=float)
+        self.launch_angle = np.deg2rad(launch_angle_deg)   # must match ThrowingSystem API
+        self.wind_model = wind_model
+        self.wind_aware = wind_aware
         self.arm_noise = arm_noise
         self.t_w = t_w
         self.t_r = t_r
@@ -47,6 +49,11 @@ class PyBulletThrowingSystem:
         self._profile = get_robot_profile(robot_name)
         self._urdf_path = pybullet_data.getDataPath() + "/" + self._profile.urdf_rel_path
         self._plane_urdf = "plane.urdf"
+        
+        # Import calm model as fallback
+        if self.wind_model is None:
+            from simulation_class.wind_models import WindModel
+            self.wind_model = WindModel()
 
     def rollout(self, s0, policy, T, dt, noise):
         """
@@ -62,15 +69,38 @@ class PyBulletThrowingSystem:
         speed = float(u0[0])
         v_cmd = self._speed_to_velocity(speed, release_pos, target_xy)
 
-        pos_traj, vel_traj = self._simulate_pybullet(release_pos, v_cmd, T, dt)
+        # (release vel is computed later via arm_noise.pybullet_release_vel)
+
+        # Reset wind model for this episode
+        self.wind_model.reset()
+
+        # Run PyBullet simulation
+        pos_traj, vel_traj, wind_traj = self._simulate_pybullet(
+            release_pos, v_cmd, T, dt
+        )
         n = len(pos_traj)
+        
+        # Determine state dimensionality
+        if self.wind_aware:
+            state_dim = 10
+        else:
+            state_dim = 8
 
-        target_col = np.tile(target_xy, (n, 1))
-        clean_ball = np.hstack([pos_traj, vel_traj])
-        clean_states = np.hstack([clean_ball, target_col])
+        # Build state arrays
+        target_col   = np.tile(target_xy, (n, 1))
+        if self.wind_aware:
+            clean_states = np.hstack([pos_traj, vel_traj, target_col, wind_traj])
+        else:
+            clean_states = np.hstack([pos_traj, vel_traj, target_col])
 
+        # Add measurement noise to ball state (not target or wind)
         noise_arr = np.ones(state_dim) * noise if np.isscalar(noise) else np.array(noise)
-        noisy_states = clean_states + np.random.randn(n, state_dim) * noise_arr
+        noise_used = noise_arr[:state_dim]
+        noisy_states = clean_states.copy()
+        noisy_states += noise_used * np.random.randn(n, state_dim)
+        noisy_states[:, 6:8] = clean_states[:, 6:8]
+        if self.wind_aware:
+            noisy_states[:, 8:10] = clean_states[:, 8:10]
 
         inputs = np.zeros((n, 1))
         inputs[0, 0] = speed
@@ -91,7 +121,9 @@ class PyBulletThrowingSystem:
 
     def _simulate_pybullet(self, release_pos, v_cmd, T, dt):
         """
-        Returns (pos_traj, vel_traj) as numpy arrays of shape [n, 3].
+        Returns (pos_traj, vel_traj, wind_traj).
+        Arm moves through the throw; ball velocity is set explicitly at release.
+        After release, Eq. 35 drag is applied manually each step.
         """
         mode = p.GUI if self._gui_mode else p.DIRECT
         client = p.connect(mode)
@@ -137,9 +169,9 @@ class PyBulletThrowingSystem:
         if self.arm_noise is not None:
             release_offset = self.arm_noise.sample_release_offset()
         release_step = int(self.t_r / dt) + release_offset
-
         pos_traj = []
         vel_traj = []
+        wind_traj = []
         released = False
         total_steps = int((self.t_r + T) / dt) + 100
         release_dir = v_cmd / max(np.linalg.norm(v_cmd), 1e-9)
@@ -180,15 +212,22 @@ class PyBulletThrowingSystem:
                     ball_pos, _ = p.getBasePositionAndOrientation(ball_id, physicsClientId=client)
                     pos_traj.append(np.array(ball_pos))
                     vel_traj.append(actual_release_vel.copy())
+                    
+                    # Record wind at release
+                    w0 = self.wind_model(0.0)
+                    wind_traj.append(w0[:2])
             else:
                 ball_pos, _ = p.getBasePositionAndOrientation(ball_id, physicsClientId=client)
                 ball_vel, _ = p.getBaseVelocity(ball_id, physicsClientId=client)
                 pos = np.array(ball_pos)
                 vel = np.array(ball_vel)
 
-                a_total = _ball_accel(pos, vel, self.mass, self.radius, self.wind)
-                a_drag = a_total - np.array([0.0, 0.0, -9.81])
-                f_drag = self.mass * a_drag
+                t_free = len(pos_traj) * dt
+                w = self.wind_model(t_free)
+
+                a_total = _ball_accel(pos, vel, self.mass, self.radius, w)
+                a_drag  = a_total - np.array([0.0, 0.0, -9.81])
+                f_drag  = self.mass * a_drag
                 p.applyExternalForce(
                     ball_id,
                     -1,
@@ -200,6 +239,7 @@ class PyBulletThrowingSystem:
 
                 pos_traj.append(pos.copy())
                 vel_traj.append(vel.copy())
+                wind_traj.append(w[:2])
 
                 if pos[2] <= self.radius + 0.005 and len(pos_traj) > 2:
                     prev_pos = pos_traj[-2]
@@ -210,6 +250,9 @@ class PyBulletThrowingSystem:
                         land_vel = vel_traj[-2] + frac * (vel - vel_traj[-2])
                         pos_traj[-1] = land_pos
                         vel_traj[-1] = land_vel
+                        
+                        w_land = self.wind_model((len(pos_traj) - 2) * dt + frac * dt)
+                        wind_traj[-1] = w_land[:2]
                     break
 
             p.stepSimulation(physicsClientId=client)
@@ -219,5 +262,6 @@ class PyBulletThrowingSystem:
         if not pos_traj:
             pos_traj = [release_pos.copy()]
             vel_traj = [v_cmd.copy()]
+            wind_traj = [np.zeros(2)]
 
-        return np.array(pos_traj), np.array(vel_traj)
+        return np.array(pos_traj), np.array(vel_traj), np.array(wind_traj)
