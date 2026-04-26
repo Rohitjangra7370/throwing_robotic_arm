@@ -1,3 +1,4 @@
 /.claude
 /.venv
-.python-version
+.python-version*.pkl
+*.log

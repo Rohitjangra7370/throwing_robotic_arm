@@ -1,0 +1,46 @@
+================================================================================
+MC-PILOT Wind Experiment Results Analysis
+Hit threshold: 10 cm
+================================================================================
+
+Config          Status   Trials  Hits   Rate   Mean Err   Std Err  Final Cost
+--------------------------------------------------------------------------------
+W1-calm         OK           15    11    73%     10.3cm    15.4cm     0.3147
+W1-light        OK           15     8    53%     19.9cm    21.7cm     0.2941
+W1-moderate     OK           15     8    53%     22.0cm    23.3cm     0.2615
+W1-strong       OK           15     7    47%     23.5cm    20.3cm     0.2417
+W1-aware        OK           15     7    47%     24.6cm    24.5cm     0.2920
+W2-blind        OK           15     8    53%     24.2cm    25.0cm     0.2887
+W2-aware        OK           15     6    40%     28.2cm    25.2cm     0.3307
+W3-blind        OK           15     9    60%     17.0cm    21.2cm     0.2874
+W3-aware        OK           15     7    47%     25.9cm    24.3cm     0.3034
+
+================================================================================
+KEY COMPARISONS
+================================================================================
+
+1. Constant Wind — Accuracy Degradation
+   W1-calm        : 73% hits, mean err = 10.3cm
+   W1-light       : 53% hits, mean err = 19.9cm
+   W1-moderate    : 53% hits, mean err = 22.0cm
+   W1-strong      : 47% hits, mean err = 23.5cm
+
+2. Constant Wind — Blind vs Aware (0.7 m/s)
+   W1-moderate    : 53% hits, mean err = 22.0cm
+   W1-aware       : 47% hits, mean err = 24.6cm
+
+3. Random Gusts — Blind vs Aware
+   W2-blind       : 53% hits, mean err = 24.2cm
+   W2-aware       : 40% hits, mean err = 28.2cm
+
+4. Turbulence — Blind vs Aware
+   W3-blind       : 60% hits, mean err = 17.0cm
+   W3-aware       : 47% hits, mean err = 25.9cm
+
+================================================================================
+CONCLUSION
+================================================================================
+Check if wind-aware GP+policy consistently outperforms blind baseline.
+If W1-moderate (blind) matches W1-calm, GP absorbs constant wind as bias.
+If W2-blind degrades but W2-aware recovers, explicit wind input is required
+for time-varying wind.
