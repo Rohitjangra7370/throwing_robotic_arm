@@ -123,3 +123,25 @@ State reconstruction (Eq. 18 from paper):
 | 10 | Trial 5 | **0.008m** | HIT | 1.10m |
 
 **5/5 hits (100%).** Cost: 0.74 → 0.009 (Trial 1), 0.001 (Trial 5). Policy converged by Trial 5.
+
+---
+
+## Noise Sweep Snapshot (April 26, 2026)
+
+Backend used for this snapshot: `numpy` (PyBullet DLL blocked by host application-control policy).
+
+Sweep outputs:
+- `mc-pilot-pybullet/results_mc_pilot_pb_noise_sweep/noise_sweep_summary.md`
+- `mc-pilot-pybullet/results_mc_pilot_pb_noise_sweep/noise_sweep_slip.png`
+- `mc-pilot-pybullet/results_mc_pilot_pb_noise_sweep/noise_sweep_saltpepper.png`
+
+| Noise Type | Level | Aware Hit Rate (policy throws) | Naive Hit Rate (policy throws) | Aware Mean Error | Naive Mean Error |
+|-----------|-------|---------------------------------|---------------------------------|------------------|------------------|
+| Slip (`sigma=0.04`) | `alpha=0.10` | 100% (4/4) | 50% (2/4) | 0.0287 m | 0.0979 m |
+| Slip (`sigma=0.04`) | `alpha=0.20` | 100% (4/4) | 0% (0/4) | 0.0219 m | 0.1881 m |
+| Salt-and-Pepper (`spike_scale=0.30`) | `p_spike=0.05` | 100% (4/4) | 75% (3/4) | 0.0292 m | 0.0439 m |
+| Salt-and-Pepper (`spike_scale=0.30`) | `p_spike=0.15` | 50% (2/4) | 50% (2/4) | 0.0914 m | 0.0768 m |
+
+Interpretation:
+- Slip noise shows strong aware-vs-naive separation that widens with noise level (`alpha`), consistent with speed-dependent undershoot compensation.
+- Salt-and-Pepper noise becomes outlier-dominated at higher `p_spike`; current policy settings show reduced separation at `p_spike=0.15`.

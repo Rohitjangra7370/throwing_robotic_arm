@@ -1,0 +1,252 @@
+{
+  "args": {
+    "log_path": "results_mc_pilot_pb_A/1",
+    "yolo_model": "C:/path/to/local/weights.pt",
+    "target_class_name": "sports ball",
+    "target_class_id": null,
+    "yolo_conf": 0.25,
+    "max_det": 10,
+    "robot": null,
+    "use_profile_defaults": false,
+    "num_throws": 5,
+    "seed": 42,
+    "direct": false,
+    "slow": 1.0,
+    "record": null,
+    "speed_scale": 1.0,
+    "output_dir": null,
+    "fallback_to_gt_on_miss": false,
+    "draw_debug": true,
+    "keep_window_open": false,
+    "save_debug_frames": true,
+    "save_rgb_png": false,
+    "save_depth_png": false,
+    "hit_tolerance": 0.1,
+    "depth_percentile": 15.0,
+    "depth_roi_scale": 0.4,
+    "target_radius": 0.06,
+    "camera_eye": [
+      1.2,
+      0.0,
+      1.2
+    ],
+    "camera_target": [
+      0.85,
+      0.0,
+      0.05
+    ],
+    "camera_up": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "camera_width": 640,
+    "camera_height": 480,
+    "camera_fov": 60.0,
+    "camera_near": 0.05,
+    "camera_far": 4.0
+  },
+  "train_cfg": {
+    "seed": 1,
+    "config": "PB_A_zero_noise",
+    "simulator": "PyBullet",
+    "arm_noise": "None",
+    "release_pos": [
+      0.0,
+      0.0,
+      0.5
+    ],
+    "num_trials": 10,
+    "Nexp": 5,
+    "Nopt": 1500,
+    "M": 400,
+    "Nb": 250,
+    "uM": 2.5,
+    "uMin": 1.4,
+    "Ts": 0.02,
+    "T": 0.6,
+    "lc": 0.5,
+    "lm": 0.6,
+    "lM": 1.1,
+    "gM": 0.5235987755982988,
+    "lengthscales_init": [
+      0.08,
+      0.08
+    ]
+  },
+  "runtime_cfg": {
+    "cfg_robot_name": "kuka_iiwa",
+    "robot_name": "kuka_iiwa",
+    "robot_overridden": false,
+    "release_pos": [
+      0.0,
+      0.0,
+      0.5
+    ],
+    "lm": 0.6,
+    "lM": 1.1,
+    "gM": 0.5235987755982988,
+    "uM": 2.5,
+    "Ts": 0.02,
+    "T": 0.6,
+    "Nb": 250,
+    "lengthscales_init": [
+      0.08,
+      0.08
+    ],
+    "profile": {
+      "name": "kuka_iiwa",
+      "urdf_rel_path": "kuka_iiwa/model.urdf",
+      "joint_ids": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "ee_link": 6,
+      "q_neutral": [
+        0.0,
+        0.5,
+        0.0,
+        -1.0,
+        0.0,
+        0.5,
+        0.0
+      ],
+      "qd_max": [
+        1.71,
+        1.71,
+        1.75,
+        2.27,
+        2.44,
+        3.14,
+        3.14
+      ],
+      "default_release_pos": [
+        0.5,
+        0.0,
+        0.5
+      ],
+      "speed_bounds": [
+        0.6,
+        2.5
+      ],
+      "timing": [
+        0.3,
+        0.6,
+        1.2
+      ],
+      "position_gain": 2.0,
+      "velocity_gain": 1.0,
+      "force_scale": 1.5,
+      "notes": "Original mc-pilot-pybullet baseline arm."
+    }
+  },
+  "camera_cfg": {
+    "width": 640,
+    "height": 480,
+    "fov_deg": 60.0,
+    "near": 0.05,
+    "far": 4.0,
+    "eye": [
+      1.2,
+      0.0,
+      1.2
+    ],
+    "target": [
+      0.85,
+      0.0,
+      0.05
+    ],
+    "up": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "fx": 415.6921938165306,
+    "fy": 415.69219381653056,
+    "cx": 319.5,
+    "cy": 239.5,
+    "view_matrix": [
+      [
+        0.0,
+        1.0,
+        -0.0,
+        -0.0
+      ],
+      [
+        -0.9566738605499268,
+        0.0,
+        0.29116159677505493,
+        0.7986147403717041
+      ],
+      [
+        0.29116159677505493,
+        -0.0,
+        0.9566738605499268,
+        -1.4974026679992676
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "projection_matrix": [
+      [
+        1.299038052558899,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.7320507764816284,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        -1.0253164768218994,
+        -0.10126582533121109
+      ],
+      [
+        0.0,
+        0.0,
+        -1.0,
+        0.0
+      ]
+    ],
+    "cam_to_world": [
+      [
+        -0.0,
+        -0.9566739075263462,
+        0.29116161107222543,
+        1.200000057518052
+      ],
+      [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.29116161107222543,
+        0.9566739075263463,
+        1.2000001071025832
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ]
+  }
+}

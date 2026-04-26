@@ -1,0 +1,4 @@
+robot,urdf,actuated_dofs,ee_link,default_release_x,default_release_z,speed_min,speed_max,mean_profile_vel_limit_rad_s,max_profile_vel_limit_rad_s,mean_urdf_vel_limit_rad_s,mean_joint_range_rad,notes
+franka_panda,franka_panda/panda.urdf,7,8,0.45,0.4,0.5,2.2,2.361428571428571,2.61,2.361428571428571,4.921885714285715,7-DoF Franka arm; EE link is the hand reached through fixed joints after joint 7.
+kuka_iiwa,kuka_iiwa/model.urdf,7,6,0.5,0.5,0.6,2.5,2.3085714285714287,3.14,10.0,5.21105448095143,Original mc-pilot-pybullet baseline arm.
+xarm6,xarm/xarm6_robot.urdf,6,6,0.42,0.32,0.4,2.0,3.14,3.14,3.14,8.467675749445,6-DoF xArm; index 0 is a fixed world joint so the actuated chain starts at joint 1.

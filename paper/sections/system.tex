@@ -1,0 +1,104 @@
+\section{System Overview}
+\label{sec:system}
+
+\subsection{Design Rationale: Decoupled Algorithm and Simulation Layers}
+
+The implementation is organised around a strict two-layer separation.
+The \emph{algorithm layer} contains all learning components: a Gaussian-process
+dynamics model, Monte Carlo policy gradient optimiser, radial-basis-function (RBF)
+speed policy, and a ballistic simulator implemented in NumPy and PyTorch.
+The \emph{simulation/visualisation layer} is either (a) the same NumPy ballistic
+simulator used for training or (b) a PyBullet scene with a KUKA iiwa7 arm for
+validation and demonstration.
+These two layers share a single interface: the commanded release velocity
+$\mathbf{v}_{\mathrm{cmd}} \in \mathbb{R}^3$.
+
+The central design decision is that the arm's motion is \emph{cosmetic}.
+Ball velocity at release is set programmatically via PyBullet's
+\texttt{resetBaseVelocity} to exactly $\mathbf{v}_{\mathrm{cmd}}$, or
+$\mathbf{v}_{\mathrm{cmd}} + \boldsymbol{\epsilon}$ when sensor noise is enabled.
+Arm joint trajectories are planned and executed for visual fidelity, but any
+joint-tracking error has no effect on the ball's actual initial velocity.
+Consequently, GP training data are never corrupted by kinematic imprecision, and the
+algorithm's data-efficiency guarantees from \cite{turcato2025mcpilot} transfer intact
+to the visualisation environment.
+
+\subsection{Sub-Project Structure}
+
+The repository is organised into four sub-projects, each adding one independent
+experimental variable over the previous:
+
+\begin{itemize}
+  \item \textbf{\texttt{mc-pilot/}} — Baseline NumPy reproduction of \mcpilot{}
+        \cite{turcato2025mcpilot}.  Five targets on a flat plane ($z_{\mathrm{release}}
+        = 0$\,m), no sensor noise.  All four failure modes were diagnosed and fixed
+        here (Section~\ref{sec:implementation}).
+
+  \item \textbf{\texttt{mc-pilot-elevated/}} — Release-height study.  Sweeps five
+        release heights $z \in \{0.0, 0.5, 1.0, 1.5, 2.0\}$\,m using the NumPy
+        ballistic simulator; arm geometry is not modelled.  Isolates the effect of
+        geometric variation on GP generalisation and landing-error distribution.
+
+  \item \textbf{\texttt{mc-pilot-pybullet/}} — PyBullet arm integration with realistic
+        noise models.  Introduces velocity-slip noise
+        ($\boldsymbol{\epsilon} \sim \mathcal{N}(\mathbf{0}, \sigma^2 I)$) injected at
+        release.  Studies the zero-mean-noise unlearnability regime
+        (Section~\ref{sec:noise}).
+
+  \item \textbf{\texttt{mc-pilot-pb-elevated/}} — Combined PyBullet scene with elevated
+        release positions.  Used for end-to-end visualisation and qualitative validation
+        only; no new algorithm experiments are run here.
+\end{itemize}
+
+\subsection{Ballistic Simulator}
+
+The NumPy ballistic simulator integrates the 6D ball state
+$\mathbf{s} = [x, y, z, v_x, v_y, v_z]^\top$ under gravity and aerodynamic drag.
+Drag follows Equation~35 of \cite{turcato2025mcpilot} with a
+Reynolds-number-dependent drag coefficient $C_D$.
+The state update uses the paper's reconstruction rule (Eq.~18):
+\begin{align}
+  \mathbf{v}_{t+1} &= \mathbf{v}_t + \Delta\mathbf{v}_t, \label{eq:vel_update} \\
+  \mathbf{p}_{t+1} &= \mathbf{p}_t + T_s\,\mathbf{v}_t + \tfrac{T_s}{2}\,\Delta\mathbf{v}_t,
+  \label{eq:pos_update}
+\end{align}
+where $T_s = 0.02$\,s is the integration timestep.
+The 6D state is augmented to 8D by appending the target coordinates
+$[P_x, P_y]$, forming the input to the GP dynamics model.
+Landing is detected at $z \leq 0$ and the exact crossing is resolved by linear
+interpolation between the last two timesteps, avoiding systematic over-shoot error.
+
+\subsection{PyBullet Arm Pipeline}
+
+The \texttt{ArmController} class wraps a KUKA iiwa7 URDF (loaded from
+\texttt{pybullet\_data}) mounted at a configurable base position.  The throw
+execution proceeds in five steps:
+
+\begin{enumerate}
+  \item \textbf{IK for release pose.}  The desired release Cartesian position is
+        converted to joint angles via PyBullet's built-in IK solver.
+
+  \item \textbf{Joint velocity mapping.}  A Jacobian pseudoinverse maps the desired
+        end-effector velocity to joint velocities, subject to scaled iiwa7 hardware
+        limits (\texttt{vel\_limit\_multiplier} parameter).
+
+  \item \textbf{Three-phase cubic trajectory.}  A piecewise cubic spline drives the arm
+        through neutral $\to$ windup $\to$ release $\to$ follow-through waypoints.
+
+  \item \textbf{Ball attachment and release.}  A \texttt{JOINT\_FIXED} constraint
+        (\texttt{attach\_ball()}) rigidly couples the ball to the end-effector; the
+        constraint is removed at the release timestep (\texttt{release\_ball()}).
+
+  \item \textbf{Velocity override.}  Immediately after constraint removal,
+        \texttt{resetBaseVelocity} sets the ball's linear velocity to
+        $\mathbf{v}_{\mathrm{cmd}}$.  Post-release drag is applied manually each
+        simulation step via \texttt{applyExternalForce} using Eq.~35.
+\end{enumerate}
+
+The \texttt{vel\_limit\_multiplier} parameter only governs whether
+\texttt{plan\_throw()} raises a feasibility warning; it does not alter the ball's
+actual trajectory, which is governed entirely by $\mathbf{v}_{\mathrm{cmd}}$.
+
+\needdata{architecture diagram (two-layer block diagram showing GP/policy/simulator on
+top layer, NumPy sim and PyBullet on bottom layer, with $\mathbf{v}_{\mathrm{cmd}}$
+as the interface arrow)}

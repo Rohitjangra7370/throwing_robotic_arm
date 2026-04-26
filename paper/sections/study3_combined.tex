@@ -1,0 +1,150 @@
+\section{Study 3: PyBullet + Elevated Combined}
+\label{sec:study3}
+
+\subsection{Motivation}
+
+Studies 1 and 2 establish complementary capabilities in isolation.
+Study 1 (\texttt{mc-pilot-elevated/}) demonstrates 100\% hit rates across
+$z \in \{0.5, 1.0, 1.5, 2.0\}$\,m using the NumPy ballistic simulator.
+Study 2 (\texttt{mc-pilot-pybullet/}) integrates a KUKA iiwa7 arm in PyBullet with
+velocity-slip noise.
+Neither folder provides what an end-to-end demonstration requires: a physically
+rendered arm throw from a non-standard release height.
+Study 3 fills this gap, combining the elevated parameter sets from Study 1 with the
+PyBullet physics pipeline from Study 2.
+The sub-project \texttt{mc-pilot-pb-elevated/} introduces no new algorithm
+experiments; its purpose is visualisable validation of the geometry-corrected
+parameters under a higher-fidelity simulator.
+
+\subsection{Engineering Challenges}
+\label{sec:study3:challenges}
+
+Two mechanical problems arise when lifting the release point above ground.
+
+\paragraph{Joint velocity cap.}
+The KUKA iiwa7 hardware joint velocity limits are
+$[1.71,\, 1.71,\, 1.75,\, 2.27,\, 2.44,\, 3.14,\, 3.14]$\,rad/s.
+For multi-joint coordinated motion, these limits cap the achievable end-effector
+(EE) linear speed at roughly 2.5\,m/s.
+The elevated configs from Study 1 require $u_M = 3.5$\,m/s.
+The apparent conflict is harmless because the ball velocity at release is set
+explicitly via PyBullet's \texttt{resetBaseVelocity}, independently of the arm
+kinematics.
+The arm trajectory is cosmetic: it demonstrates the physical motion, but any
+discrepancy between commanded EE velocity and actual joint tracking has zero effect
+on the ball's initial state.
+The cap is enforced inside \texttt{ArmController.plan\_throw()} through a Jacobian
+pseudoinverse scaling step.
+Relaxing this check via \texttt{vel\_limit\_multiplier=1.5} prevents spurious
+warnings without altering ball physics.
+
+\paragraph{EE reach at elevated heights.}
+The iiwa7 EE at its neutral pose sits approximately 0.71\,m above the arm base.
+Release heights of 1.0, 1.5, and 2.0\,m place the IK target 0.29--1.29\,m above
+the natural EE position when the arm is mounted on the ground plane.
+This exceeds the arm's reach.
+The resolution is to mount the arm on a pedestal: setting \texttt{base\_position}
+$= (0, 0, z_{\mathrm{release}} - 0.5)$ places the neutral EE height at
+$z_{\mathrm{release}} + 0.21$\,m, so the IK target at $z_{\mathrm{release}}$ lies
+approximately 0.21\,m below the neutral configuration---well within the arm's
+kinematic range.
+Table~\ref{tab:pbe_configs} summarises the per-height parameter choices.
+
+\begin{table}[h]
+  \centering
+  \caption{Per-configuration parameters for Study 3 (PBE-B/C/D).
+           All three share $u_M = 3.5$\,m/s, $N_{\mathrm{exp}} = 5$,
+           $\ell_c = 0.5$\,m, $\ell_s^{\mathrm{init}} = [1.0, 1.0]$,
+           stratified exploration over $[0, u_M]$.}
+  \label{tab:pbe_configs}
+  \begin{tabular}{lcccc}
+    \toprule
+    Config & $z_{\mathrm{rel}}$ & \texttt{base\_position} & $\ell_M$ & $T$ \\
+    \midrule
+    PBE-B & 1.0\,m & $(0, 0, 0.5)$  & 1.90\,m & 0.85\,s \\
+    PBE-C & 1.5\,m & $(0, 0, 1.0)$  & 2.15\,m & 0.95\,s \\
+    PBE-D & 2.0\,m & $(0, 0, 1.5)$  & 2.35\,m & 1.00\,s \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Implementation}
+\label{sec:study3:impl}
+
+\texttt{mc-pilot-pb-elevated/} was created by copying \texttt{mc-pilot-pybullet/}
+(which contains all PyBullet plumbing) and adapting it to the elevated hyperparameter
+sets.
+Noise-specific scripts (\texttt{test\_mc\_pilot\_pb\_B.py},
+\texttt{test\_mc\_pilot\_pb\_C.py}) were removed; the zero-noise base
+(\texttt{arm\_noise=None}) is used throughout, matching the conditions of Study 1
+exactly.
+Two new constructor kwargs propagate the pedestal and velocity-limit settings:
+
+\begin{itemize}
+  \item \texttt{PyBulletThrowingSystem(base\_position=...,\,vel\_limit\_multiplier=1.5)}
+  \item \texttt{ArmController(...,\,vel\_limit\_multiplier=1.5)} via
+        \texttt{self.\_qd\_max = \_IIWA\_QD\_MAX~$\times$~vel\_limit\_multiplier}
+\end{itemize}
+
+\noindent These changes preserve the default behaviour of \texttt{mc-pilot-pybullet/}
+(multiplier $= 1.0$, base at origin) and require no modifications to the RL algorithm
+or GP code.
+
+\paragraph{Verification.}
+Running \texttt{standalone\_throw.py --direct --speed 3.5 --z\_release 1.0} confirms
+$v_{\mathrm{release}} = 3.500$\,m/s and a ball landing at 2.099\,m.
+This compares to the NumPy elevated Study 1 verified maximum range of $\approx 1.97$\,m
+for Config B---a 5--10\% upward offset attributable to per-step drag application
+differences between PyBullet \texttt{applyExternalForce} and the NumPy integrator.
+Because the GP is fitted to actual PyBullet throws (not NumPy predictions), it learns
+the correct speed-to-range mapping for the PyBullet physics.
+The margin $\ell_M = 1.90$\,m $< 2.10$\,m (PyBullet max range) provides 0.2\,m of
+coverage room, ensuring all sampled targets remain reachable.
+
+\subsection{PyBullet--NumPy Physics Discrepancy}
+\label{sec:study3:discrepancy}
+
+Drag applied via \texttt{applyExternalForce} per simulation step accumulates
+small numerical differences compared with the closed-form NumPy midpoint rule.
+At $u_M = 3.5$\,m/s and $z_{\mathrm{rel}} = 1.0$\,m the discrepancy is
+$\approx 6\%$ in landing range.
+This does not impair learning: the GP observes PyBullet ground truth during both
+exploration and policy trials, so both the dynamics model and the policy converge
+to the PyBullet physics, not the NumPy approximation.
+The effect on cross-study comparisons is that trained policies from
+\texttt{mc-pilot-elevated/} and \texttt{mc-pilot-pb-elevated/} will produce
+slightly different release speeds for the same target, but will achieve comparable
+hit rates.
+
+\subsection{Visualisation Pipeline}
+\label{sec:study3:viz}
+
+After training completes, \texttt{demo\_pybullet\_gui.py} loads the saved policy
+from \texttt{log.pkl} (reading \texttt{parameters\_trial\_list[-1]}, which stores
+\{log\_lengthscales, centers, f\_linear.weight\}) and replays $N$ throws in
+PyBullet GUI mode.
+Each throw renders the full arm trajectory (IK + cubic spline), ball flight with
+drag, and landing annotations:
+\begin{itemize}
+  \item \texttt{addUserDebugLine} trajectory traces (ball path in 3D)
+  \item Red sphere at the target location
+  \item Green (hit) or orange (miss) sphere at the landing location, with error
+        distance printed as GUI text
+\end{itemize}
+Optional flags: \texttt{--record output.mp4} (via
+\texttt{startStateLogging(STATE\_LOGGING\_VIDEO\_MP4)}) and
+\texttt{--slow N} to multiply \texttt{time.sleep(dt)} for slower playback.
+Command: \texttt{python demo\_pybullet\_gui.py --log\_path results\_mc\_pilot\_pbe\_B/1}.
+
+\subsection{Expected Results}
+\label{sec:study3:results}
+
+\needdata{Run Study~3 training scripts for PBE-B/C/D (seed=1, 10 trials each) and
+  record: per-trial hit rate, per-throw landing error, convergence cost trajectory.}
+
+Based on the design, PBE-B/C/D are expected to replicate the 10/10 hit rates of
+Study 1 Configs B/C/D-Strat: the hyperparameters are identical, the physics
+equations are the same (Eq.~35 drag, explicit velocity setting), and the GP learns
+from PyBullet ground truth rather than an external model.
+The 5--10\% PyBullet drag offset shifts the optimal release speed slightly but does
+not affect policy convergence quality.

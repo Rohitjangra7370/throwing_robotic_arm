@@ -1,0 +1,240 @@
+{
+  "directed": true,
+  "multigraph": false,
+  "graph": {
+    "name": "AR525 MC-PILOT Repo-Verified Architecture",
+    "description": "Graphify map aligned to repository contents plus report-mentioned conceptual sub-project links.",
+    "layers": {
+      "layer_3": [
+        "mc-pilot-pb-elevated"
+      ],
+      "layer_2": [
+        "mc-pilot-elevated",
+        "mc-pilot-pybullet"
+      ],
+      "layer_1": [
+        "mc-pilot"
+      ]
+    },
+    "present_folders": [
+      "mc-pilot",
+      "mc-pilot-elevated",
+      "MC-PILCO"
+    ],
+    "report_only_folders_not_found": [
+      "mc-pilot-pybullet",
+      "mc-pilot-pb-elevated"
+    ]
+  },
+  "nodes": [
+    {
+      "id": "mc-pilot",
+      "label": "mc-pilot/",
+      "type": "subproject",
+      "presence": "present",
+      "layer": 1,
+      "role": "baseline",
+      "contains": [
+        "test_mc_pilot.py",
+        "policy_learning/Policy.py",
+        "model_learning/Model_learning.py",
+        "policy_learning/MC_PILCO.py",
+        "simulation_class/model.py",
+        "realtime_throw_pybullet.py",
+        "visualize_pybullet.py"
+      ]
+    },
+    {
+      "id": "mc-pilot-elevated",
+      "label": "mc-pilot-elevated/",
+      "type": "subproject",
+      "presence": "present",
+      "layer": 2,
+      "role": "height_extension",
+      "extends": "mc-pilot",
+      "contains": [
+        "test_mc_pilot_b.py",
+        "test_mc_pilot_b_strat.py",
+        "test_mc_pilot_c.py",
+        "test_mc_pilot_c_strat.py",
+        "test_mc_pilot_d.py",
+        "test_mc_pilot_d_strat.py",
+        "test_mc_pilot_e.py",
+        "test_mc_pilot_e_strat.py",
+        "test_mc_pilot_e_strat2.py",
+        "test_mc_pilot_e_strat3.py",
+        "test_mc_pilot_e_strat4.py",
+        "test_mc_pilot_e_strat5.py",
+        "policy_learning/Policy.py",
+        "model_learning/Model_learning.py",
+        "policy_learning/MC_PILCO.py",
+        "simulation_class/model.py"
+      ]
+    },
+    {
+      "id": "mc-pilot-pybullet",
+      "label": "mc-pilot-pybullet/",
+      "type": "subproject",
+      "presence": "report_only_not_found",
+      "layer": 2,
+      "role": "conceptual_pybullet_extension",
+      "report_mentions": [
+        "model_pybullet.py",
+        "ArmController class (KUKA iiwa7)",
+        "velocity-slip noise (perturb_numpy)",
+        "test_mc_pilot_pb_A.py",
+        "test_mc_pilot_pb_B.py",
+        "test_mc_pilot_pb_C.py"
+      ],
+      "closest_present_files": [
+        "mc-pilot/realtime_throw_pybullet.py",
+        "mc-pilot/visualize_pybullet.py"
+      ]
+    },
+    {
+      "id": "mc-pilot-pb-elevated",
+      "label": "mc-pilot-pb-elevated/",
+      "type": "subproject",
+      "presence": "report_only_not_found",
+      "layer": 3,
+      "role": "conceptual_combined_extension",
+      "combines": [
+        "mc-pilot-pybullet",
+        "mc-pilot-elevated"
+      ],
+      "report_mentions": [
+        "pedestal mounting",
+        "demo_pybullet_gui.py",
+        "standalone_throw.py"
+      ]
+    },
+    {
+      "id": "shared-core",
+      "label": "Shared core modules",
+      "type": "cross_cutting",
+      "presence": "present",
+      "members": [
+        "mc-pilot/policy_learning/Policy.py",
+        "mc-pilot/model_learning/Model_learning.py",
+        "mc-pilot/policy_learning/MC_PILCO.py",
+        "mc-pilot-elevated/policy_learning/Policy.py",
+        "mc-pilot-elevated/model_learning/Model_learning.py",
+        "mc-pilot-elevated/policy_learning/MC_PILCO.py"
+      ]
+    },
+    {
+      "id": "failure-fixes",
+      "label": "Failure-mode fixes",
+      "type": "cross_cutting",
+      "presence": "present",
+      "fix_files": {
+        "gradient_path": [
+          "mc-pilot/policy_learning/MC_PILCO.py",
+          "mc-pilot-elevated/policy_learning/MC_PILCO.py"
+        ],
+        "landing_mask": [
+          "mc-pilot/policy_learning/MC_PILCO.py",
+          "mc-pilot-elevated/policy_learning/MC_PILCO.py"
+        ],
+        "cost_lengthscale": [
+          "mc-pilot/test_mc_pilot.py",
+          "mc-pilot-elevated/test_mc_pilot.py",
+          "mc-pilot-elevated/test_mc_pilot_b.py",
+          "mc-pilot-elevated/test_mc_pilot_c.py",
+          "mc-pilot-elevated/test_mc_pilot_d.py",
+          "mc-pilot-elevated/test_mc_pilot_e.py",
+          "mc-pilot-elevated/test_mc_pilot_*_strat.py"
+        ],
+        "horizon_index": [
+          "mc-pilot/test_mc_pilot.py",
+          "mc-pilot-elevated/test_mc_pilot.py",
+          "mc-pilot-elevated/test_mc_pilot_*.py",
+          "mc-pilot/policy_learning/MC_PILCO.py",
+          "mc-pilot-elevated/policy_learning/MC_PILCO.py"
+        ]
+      }
+    },
+    {
+      "id": "wind-extension",
+      "label": "Wind / physics extension",
+      "type": "cross_cutting",
+      "presence": "present_partial",
+      "present_in_code": [
+        "mc-pilot/simulation_class/model.py",
+        "mc-pilot-elevated/simulation_class/model.py"
+      ],
+      "implemented": [
+        "ThrowingSystem accepts wind argument",
+        "drag uses air-relative velocity (v_rel = vel - wind)"
+      ],
+      "not_found_in_this_checkout": [
+        "infer_throwing_state_layout helper",
+        "8D->11D state in Policy.py/Model_learning.py/MC_PILCO.py",
+        "model_pybullet.py",
+        "demo_pybullet_gui.py"
+      ]
+    }
+  ],
+  "links": [
+    {
+      "source": "mc-pilot-elevated",
+      "target": "mc-pilot",
+      "relation": "builds_on",
+      "kind": "inheritance"
+    },
+    {
+      "source": "mc-pilot-pybullet",
+      "target": "mc-pilot",
+      "relation": "builds_on",
+      "kind": "inheritance_report_only"
+    },
+    {
+      "source": "mc-pilot-pb-elevated",
+      "target": "mc-pilot-pybullet",
+      "relation": "combines",
+      "kind": "dependency_report_only"
+    },
+    {
+      "source": "mc-pilot-pb-elevated",
+      "target": "mc-pilot-elevated",
+      "relation": "combines",
+      "kind": "dependency_report_only"
+    },
+    {
+      "source": "shared-core",
+      "target": "mc-pilot",
+      "relation": "shared_across",
+      "kind": "cross_cutting"
+    },
+    {
+      "source": "shared-core",
+      "target": "mc-pilot-elevated",
+      "relation": "shared_across",
+      "kind": "cross_cutting"
+    },
+    {
+      "source": "failure-fixes",
+      "target": "mc-pilot",
+      "relation": "fixes_applied",
+      "kind": "cross_cutting"
+    },
+    {
+      "source": "failure-fixes",
+      "target": "mc-pilot-elevated",
+      "relation": "fixes_mirrored",
+      "kind": "cross_cutting"
+    },
+    {
+      "source": "wind-extension",
+      "target": "mc-pilot",
+      "relation": "modifies",
+      "kind": "cross_cutting"
+    },
+    {
+      "source": "wind-extension",
+      "target": "mc-pilot-elevated",
+      "relation": "modifies",
+      "kind": "cross_cutting"
+    }
+  ]
+}

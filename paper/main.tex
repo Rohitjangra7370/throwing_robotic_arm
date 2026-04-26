@@ -1,0 +1,73 @@
+\documentclass[10pt,twocolumn]{article}
+
+% ─── Packages ───────────────────────────────────────────────────────────────
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+%\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{natbib}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage[T1]{fontenc}
+
+% ─── Macros ──────────────────────────────────────────────────────────────────
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+\newcommand{\wip}[1]{\textcolor{orange}{\textbf{[WIP: #1]}}}
+\newcommand{\needdata}[1]{\textcolor{blue}{\textbf{[DATA NEEDED: #1]}}}
+\newcommand{\mcpilot}{MC-PILOT}
+\newcommand{\mcpilco}{MC-PILCO}
+\newcommand{\ie}{\textit{i.e.}}
+\newcommand{\eg}{\textit{e.g.}}
+
+% ─── Theorem-like environments ───────────────────────────────────────────────
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+
+% ─── Title block ─────────────────────────────────────────────────────────────
+\title{\textbf{Geometry, Exploration, and Noise:\\
+A Diagnostic Study of Model-Based Reinforcement Learning\\
+for Data-Efficient Robotic Throwing}}
+
+\author{
+  AR525 Group-3 \\
+  Indian Institute of Technology Mandi \\
+  \texttt{[author emails]}
+}
+
+\date{}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{document}
+\maketitle
+
+% ─── Abstract ────────────────────────────────────────────────────────────────
+\input{sections/abstract}
+
+% ─── Body sections ───────────────────────────────────────────────────────────
+\input{sections/introduction}
+\input{sections/background}
+\input{sections/system}
+\input{sections/implementation}
+\input{sections/study1_height}
+\input{sections/study2_noise}
+\input{sections/study3_combined}
+\input{sections/study4_wind}
+\input{sections/discussion}
+\input{sections/conclusion}
+
+% ─── References ──────────────────────────────────────────────────────────────
+\bibliographystyle{abbrvnat}
+\bibliography{refs}
+
+% ─── Appendix ────────────────────────────────────────────────────────────────
+\clearpage
+\onecolumn
+\appendix
+\input{sections/appendix}
+
+\end{document}

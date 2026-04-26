@@ -1,0 +1,201 @@
+\section{Implementation and Diagnosis}
+\label{sec:implementation}
+
+Reproducing \mcpilot{} \cite{turcato2025mcpilot} from the \mcpilco{}
+codebase \cite{mcpilco} revealed four failure modes that are individually
+sufficient to prevent any learning from scratch.
+None of these defects cause an obvious runtime crash in the general case; each
+manifests instead as degenerate-but-silent optimiser behaviour.
+We document each below using the structure: \textbf{Symptom $\to$ Root cause $\to$
+Fix $\to$ Evidence}.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Broken Policy Gradient Path}
+\label{sec:fix_gradient}
+
+\textbf{Symptom.}
+During early training runs the optimiser raised
+\texttt{RuntimeError: element 0 of tensors does not require grad and does not have a
+grad\_fn} on the very first backward pass.
+Even after patching the immediate exception, cost values were constant across
+optimisation steps, confirming that no gradient reached the policy parameters.
+
+\textbf{Root cause.}
+The \mcpilco{} codebase separates particle propagation into two stages:
+\texttt{apply\_policy()} computes the commanded speed $u$ from the RBF policy and
+passes it to the simulator, and \texttt{data\_to\_gp\_input()} pre-processes the
+augmented state before GP inference.
+\texttt{data\_to\_gp\_input()} strips all input dimensions that do not appear in the
+GP's training index set — including the policy-derived speed channel.
+As a result, the computation graph from policy weights $\boldsymbol{\theta}$ through
+$u$ to the GP output was severed; \texttt{cost.backward()} found no path to
+$\boldsymbol{\theta}$.
+
+\textbf{Fix.}
+The commanded speed $u$ is embedded \emph{directly} into the particle initial state
+rather than being passed as a separate GP input.
+Given target bearing $\phi = \operatorname{atan2}(P_y - y_0,\; P_x - x_0)$ and fixed
+elevation $\alpha = 35^\circ$, the 3D release velocity is:
+\begin{align}
+  v_x &= u\cos\alpha\cos\phi, \label{eq:vx} \\
+  v_y &= u\cos\alpha\sin\phi, \label{eq:vy} \\
+  v_z &= u\sin\alpha.         \label{eq:vz}
+\end{align}
+All three operations (\texttt{atan2}, \texttt{cos}, \texttt{sin}) have well-defined
+PyTorch autograd implementations.
+The velocity vector $\mathbf{v} = [v_x, v_y, v_z]^\top$ is written into particle
+state dimensions 3:6 before the rollout begins, so every GP call and cost evaluation
+has an unbroken computation graph back to $\boldsymbol{\theta}$.
+
+\textbf{Evidence.}
+After this fix, \texttt{cost.grad\_fn} is non-\texttt{None} at every optimisation
+step, and policy parameters update from the first backward pass onward.
+The cost trajectory exhibits monotone descent from step~1, confirming gradient flow.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Post-Landing GP Hallucination}
+\label{sec:fix_landing}
+
+\textbf{Symptom.}
+Before any fix, the per-trial cost plateaued at $\approx 0.998$ regardless of target
+distance or policy speed, and optimisation produced no improvement over the
+$N_{\mathrm{exp}} = 5$ exploration throws.
+Inspecting particle states revealed that some particles had $z \ll 0$
+(up to $-3$\,m) at the terminal timestep $T = 1.0$\,s.
+
+\textbf{Root cause.}
+The simulation horizon in the paper is $T = 1.0$\,s with $T_s = 0.01$\,s
+($= 100$ timesteps).
+A tennis ball thrown at the maximum speed $u_M = 3.5$\,m/s lands in approximately
+$0.58$\,s under realistic drag.
+The \mcpilco{} codebase continued propagating all particles through the remaining
+$\approx 42$ timesteps after landing, feeding underground positions
+($z < 0$, $v_z$ still negative or zero) as GP inputs.
+These states lie far outside the GP's training support, so the posterior mean is
+governed by the zero prior and the posterior variance is maximal.
+The resulting pseudo-dynamics drove particles to arbitrary positions, and the terminal
+cost $c_T = 1 - \exp(-\|\mathbf{e}_T\|^2 / \ell_c^2)$ evaluated these garbage states,
+yielding $c_T \approx 1$ for all particles regardless of $\boldsymbol{\theta}$.
+
+\textbf{Fix.}
+A Boolean \emph{landed} mask $\mathbf{m} \in \{0,1\}^M$ is maintained across
+timesteps.
+Once a particle's $z$-coordinate crosses zero (detected at each step), its state is
+frozen: $\mathbf{s}^{(i)}_{t+1} \leftarrow \mathbf{s}^{(i)}_t$ for all subsequent $t$.
+The landing instant is refined by linear interpolation between the last airborne
+and first underground states, giving the exact ground-crossing position used for cost
+evaluation.
+This matches the procedure described in \S4.2.2 of \cite{turcato2025mcpilot} but
+was absent from the \mcpilco{} codebase.
+
+\textbf{Evidence.}
+With the landed mask active, terminal particle $z$-coordinates are all $\leq 0$ and
+the GP is never queried on underground inputs.
+Baseline cost drops from $\approx 0.998$ to $\approx 0.88$ after the exploration
+phase, providing a non-trivial gradient signal from trial~1.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Cost Lengthscale Bootstrapping Failure}
+\label{sec:fix_lc}
+
+\textbf{Symptom.}
+After fixing the gradient path and landing mask, training costs oscillated near $0.88$
+for all $N_{\mathrm{opt}} = 1500$ optimisation steps of every trial, with
+per-step cost changes below $10^{-4}$.
+Policy parameters moved, but landing errors showed no improvement between trials.
+
+\textbf{Root cause.}
+The paper specifies a cost lengthscale $\ell_c = 0.1$\,m in the squared-exponential
+terminal cost:
+\begin{equation}
+  c(\mathbf{s}_T) = 1 - \exp\!\left(-\frac{\|\mathbf{e}\|^2}{\ell_c^2}\right),
+  \label{eq:cost}
+\end{equation}
+where $\mathbf{e} = [x_T - P_x,\; y_T - P_y]^\top$ is the landing error.
+With $\ell_c = 0.1$\,m, $c \geq 0.99$ whenever $\|\mathbf{e}\| \geq 0.22$\,m, and
+the gradient $\partial c / \partial \|\mathbf{e}\| = (2\|\mathbf{e}\|/\ell_c^2)\,
+\exp(-\|\mathbf{e}\|^2/\ell_c^2)$ is smaller than $10^{-3}$ for
+$\|\mathbf{e}\| > 0.3$\,m.
+Exploration throws against randomly-placed targets produced landing errors in the
+range $0.3$--$1.5$\,m, placing all particles firmly in the saturated,
+near-zero-gradient region of~\eqref{eq:cost}.
+The GP therefore learned correct dynamics from exploration data, but the cost
+function could not distinguish any two bad policies, so the optimiser stalled.
+
+The necessary condition for a non-zero bootstrap gradient is:
+\begin{equation}
+  \ell_c \;\gtrsim\; \operatorname{median}\!\left(\{\|\mathbf{e}^{(k)}\|\}_{k=1}^{N_{\mathrm{exp}}}\right).
+  \label{eq:lc_rule}
+\end{equation}
+
+\textbf{Fix.}
+$\ell_c$ is set to $0.5$\,m.
+At this value $c$ varies meaningfully over the interval $[0,\;1]$\,m, covering the
+full range of exploration errors, and $|\partial c / \partial \|\mathbf{e}\||$ is
+non-negligible up to $\approx 1$\,m.
+
+\textbf{Evidence.}
+With $\ell_c = 0.5$\,m, the cost function exhibits a gradient magnitude above
+$10^{-2}$ for all exploration-phase errors observed.
+Optimisation converges to hit rate $5/10$ (baseline seed) within
+$N_{\mathrm{opt}} = 1500$ steps per trial.
+Reverting to $\ell_c = 0.1$\,m while keeping all other fixes in place restores the
+stalled-cost behaviour, confirming this as an independent failure mode.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Simulation Horizon and Indexing Bugs}
+\label{sec:fix_horizon}
+
+Two further bugs related to simulation horizon and data-structure indexing caused
+silent logical errors with the original paper parameters.
+
+\textbf{Symptom A: T\_control mis-specification.}
+The MC-PILCO interface expects a \emph{number-of-steps} integer for the control
+horizon.
+The paper reports $T = 1.0$\,s.
+Passing $T = 1.0$ directly caused the internal computation
+\texttt{control\_horizon = int(T / Ts) = int(1.0 / 0.01) = 100}... to be applied
+to what the codebase treated as already-an-integer, yielding an effective horizon of
+$T \cdot (1/T_s)^2 = 10{,}000$ steps.
+The resulting rollout allocated a $10{,}000 \times M$ particle tensor, exhausting RAM
+and crashing on any machine with less than \needdata{measured peak RAM} of available
+memory.
+
+\textbf{Fix A.}
+The argument is passed as \texttt{T\_control = int(T / Ts) = 50} (steps, for
+$T = 1.0$\,s and $T_s = 0.02$\,s), matching the codebase's expected type.
+
+\textbf{Symptom B: opt\_steps\_list index out of range.}
+\mcpilco{} indexes a pre-allocated list \texttt{opt\_steps\_list} by
+\texttt{trial\_index}, where \texttt{trial\_index} starts at
+$N_{\mathrm{exp}} - 1 = 4$ and increments.
+The list was initialised with $N_{\mathrm{opt}}$ entries (one per optimisation trial),
+so \texttt{trial\_index = 4} immediately accessed an out-of-range position, raising
+\texttt{IndexError} at the start of the first learning trial.
+
+\textbf{Fix B.}
+\texttt{opt\_steps\_list} is allocated with length
+$N_{\mathrm{exp}} + N_{\mathrm{trials}}$, ensuring valid access for all indices.
+
+\textbf{Horizon optimisation.}
+Beyond the above correctness fixes, the simulation horizon was reduced from
+$T = 1.0$\,s ($T_s = 0.01$\,s, 100 steps) to $T = 0.7$\,s ($T_s = 0.02$\,s,
+35 steps).
+The maximum ball flight time at $u_M = 3.5$\,m/s is $\approx 0.58$\,s; no particle
+can be airborne beyond $0.7$\,s.
+Combined with the landed-freeze mask (Section~\ref{sec:fix_landing}), this halves the
+number of GP evaluations per rollout and yields an approximately $3\times$ wall-clock
+speedup with no accuracy regression, verified by comparing landing-error distributions
+across seeds.
+
+\textbf{Remark on exploration policy.}
+Algorithm~1 of \cite{turcato2025mcpilot} initialises exploration with an
+analytically-derived policy (Eq.~13 therein) that computes near-optimal parabolic
+throws for each target.
+Applied in our setting this produced all exploration throws concentrated in a narrow
+speed band $[3.1,\;3.4]$\,m/s, causing the GP to overfit to a small region of
+velocity space.
+Hit rate \emph{dropped} from 50\% (random exploration) to 20\% (paper's analytical
+exploration) when both were tested under identical seeds.
+We therefore use uniform-random exploration across $[u_m, u_M] = [0.75, 3.5]$\,m/s
+for all experiments, and document the analytical policy as a failed experiment.

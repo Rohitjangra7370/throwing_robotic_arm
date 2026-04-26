@@ -21,6 +21,7 @@ All classes implement the ArmNoise interface with two key methods:
 Available classes:
   VelocityBiasNoise  — zero-mean Gaussian on release velocity (unlearnable, good baseline)
   VelocitySlipNoise  — speed-dependent loss (learnable: policy must scale up all throws)
+    SaltAndPepperVelocityNoise — sparse impulse outliers on release velocity
   ReleaseTimingJitter — gripper opens t_d ~ U(a,b) seconds late (learnable: policy must
                         compensate for arm deceleration during the delay; matches paper §5)
 """
@@ -112,6 +113,58 @@ class VelocitySlipNoise(ArmNoise):
         scale    = (1.0 - self.alpha) * np.ones(n)
         additive = self.rng.normal(0.0, self.sigma, (n, 3))
         return scale, additive
+
+
+class SaltAndPepperVelocityNoise(ArmNoise):
+    """
+    Salt-and-Pepper release noise: sparse positive/negative impulse outliers.
+
+    v_actual = v_cmd + eps, where each component eps_j is:
+      - +spike_scale with probability p_spike/2   (salt)
+      - -spike_scale with probability p_spike/2   (pepper)
+      - 0               with probability 1-p_spike
+    plus optional Gaussian background N(0, sigma^2).
+
+    This noise type models intermittent actuator glitches or release disturbances
+    that are not present at every throw. Increasing p_spike raises outlier rate,
+    while increasing spike_scale raises outlier severity.
+
+    Parameters
+    ----------
+    p_spike     : float in [0, 1] — probability of an impulse on each velocity component
+    spike_scale : float — absolute magnitude of salt/pepper impulse (m/s)
+    sigma       : float — optional Gaussian background std dev (m/s)
+    seed        : optional int
+    """
+
+    def __init__(self, p_spike=0.10, spike_scale=0.30, sigma=0.0, seed=None):
+        if p_spike < 0.0 or p_spike > 1.0:
+            raise ValueError(f"Need 0 <= p_spike <= 1, got {p_spike}")
+        if spike_scale < 0.0:
+            raise ValueError(f"Need spike_scale >= 0, got {spike_scale}")
+        if sigma < 0.0:
+            raise ValueError(f"Need sigma >= 0, got {sigma}")
+
+        self.p_spike = float(p_spike)
+        self.spike_scale = float(spike_scale)
+        self.sigma = float(sigma)
+        self.rng = np.random.default_rng(seed)
+
+    def _sample_additive(self, shape):
+        additive = np.zeros(shape, dtype=float)
+        if self.sigma > 0.0:
+            additive += self.rng.normal(0.0, self.sigma, size=shape)
+
+        mask = self.rng.random(size=shape) < self.p_spike
+        signs = self.rng.choice(np.array([-1.0, 1.0]), size=shape)
+        additive += self.spike_scale * signs * mask
+        return additive
+
+    def pybullet_release_vel(self, v_cmd, ee_vel):
+        return np.array(v_cmd, dtype=float) + self._sample_additive((3,))
+
+    def perturb_numpy(self, v3d_np, n):
+        return np.ones(n), self._sample_additive((n, 3))
 
 
 class ReleaseTimingJitter(ArmNoise):

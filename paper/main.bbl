@@ -1,0 +1,23 @@
+\begin{thebibliography}{2}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[{Mitsubishi Electric Research Laboratories}(2022)]{mcpilco}
+{Mitsubishi Electric Research Laboratories}.
+\newblock {MC-PILCO}: Monte carlo policy improvement with learning-based
+  control.
+\newblock \url{https://github.com/merlresearch/MC-PILCO}, 2022.
+\newblock GitHub repository.
+
+\bibitem[Turcato et~al.(2025)Turcato, Giacomuzzo, Carli, and
+  Romeres]{turcato2025mcpilot}
+N.~Turcato, G.~Giacomuzzo, R.~Carli, and D.~Romeres.
+\newblock Data efficient robotic object throwing with model-based reinforcement
+  learning.
+\newblock \emph{arXiv preprint arXiv:2502.05595}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2502.05595}.
+
+\end{thebibliography}

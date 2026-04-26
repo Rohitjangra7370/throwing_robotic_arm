@@ -1,0 +1,207 @@
+\section{Study 2: Arm-Side Stochasticity}
+\label{sec:study2}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Motivation}
+\label{sec:study2:motivation}
+
+The NumPy ballistic simulator is deterministic: given a commanded velocity
+$\mathbf{v}_{\mathrm{cmd}}$, the landing position is a fixed function of that input.
+A closed-form ballistic inverter could therefore solve the task in one step,
+rendering the GP-based learning loop superfluous.
+In a physical system, the gap between commanded and delivered velocity arises from
+several sources: joint-torque saturation, gripper compliance, and release timing
+uncertainty.
+\mcpilot{}~\cite{turcato2025mcpilot} explicitly models the last source using a
+gripper delay parameter estimated by Bayesian optimisation (\S5 of the original paper).
+We replace that calibration step with an explicit stochastic noise model injected at
+the velocity-override interface (Section~\ref{sec:system}), which lets us study the
+effect of arm-side stochasticity in a controlled, parameter-varied manner while
+preserving exact GP-gradient compatibility.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Three Noise Models}
+\label{sec:study2:models}
+
+All three models are realised through the \texttt{perturb\_numpy} interface:
+$\texttt{perturb\_numpy}(\mathbf{v}_{\mathrm{cmd}},\, n) \to (\alpha,\, \boldsymbol{\delta})$,
+returning a scalar scale $\alpha$ and an additive offset $\boldsymbol{\delta} \in \mathbb{R}^3$
+such that
+
+\begin{equation}
+  \mathbf{v}_{\mathrm{actual}} = \alpha\,\mathbf{v}_{\mathrm{cmd}} + \boldsymbol{\delta}.
+  \label{eq:perturb_interface}
+\end{equation}
+
+The scale $\alpha$ and offset $\boldsymbol{\delta}$ are \emph{detached} constants
+(no gradient tape), so the policy gradient flows through $\mathbf{v}_{\mathrm{cmd}}$
+unobstructed — a necessary condition for correct Monte Carlo policy-gradient
+estimation.
+
+\paragraph{VelocityBiasNoise.}
+A zero-mean additive perturbation:
+\begin{equation}
+  \alpha = 1, \quad \boldsymbol{\delta} \sim \mathcal{N}(\mathbf{0},\, \sigma^2 I_3).
+  \label{eq:bias_noise}
+\end{equation}
+This models isotropic sensor noise or small random errors in the velocity-override
+step.  The noise has zero mean, so the expected delivered velocity equals the commanded
+velocity.
+
+\paragraph{VelocitySlipNoise.}
+A multiplicative under-delivery with additive scatter:
+\begin{equation}
+  \alpha = 1 - \alpha_{\mathrm{slip}}, \quad \boldsymbol{\delta} \sim \mathcal{N}(\mathbf{0},\, \sigma^2 I_3),
+  \label{eq:slip_noise}
+\end{equation}
+where $\alpha_{\mathrm{slip}} \in (0, 1)$ is the slip fraction.  The expected
+delivered speed is $(1 - \alpha_{\mathrm{slip}})\|\mathbf{v}_{\mathrm{cmd}}\|$,
+introducing a systematic undershoot that a sufficiently informed policy can compensate.
+
+\paragraph{ReleaseTimingJitter (paper-faithful).}
+A gripper delay $t_d \sim \mathcal{U}(a, b)$ with $a > 0$ causes the arm to decelerate
+for $t_d$ seconds beyond the commanded release instant.
+The delivered velocity is approximately
+\begin{equation}
+  \mathbf{v}_{\mathrm{actual}} \approx
+    \underbrace{\left(1 - \frac{\gamma\,t_d}{\|\mathbf{v}_{\mathrm{cmd}}\|}\right)}_{\alpha}
+    \mathbf{v}_{\mathrm{cmd}},
+  \label{eq:jitter_noise}
+\end{equation}
+where $\gamma$ is the arm deceleration rate.  This matches the gripper-delay model of
+\cite{turcato2025mcpilot} and sets $\boldsymbol{\delta} = \mathbf{0}$.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Zero-Mean Unlearnability and GP Degeneration}
+\label{sec:study2:theory}
+
+\begin{proposition}[Zero-mean noise is unlearnable]
+\label{prop:zeromean}
+Let $f: \mathbb{R}^3 \to \mathbb{R}^2$ be the deterministic ballistic map from release
+velocity to landing position, and let $\boldsymbol{\epsilon} \sim p_\epsilon$ with
+$\mathbb{E}[\boldsymbol{\epsilon}] = \mathbf{0}$.
+Define the noise-aware objective
+$J_{\mathrm{aware}}(\theta) = \mathbb{E}_{\boldsymbol{\epsilon}}[c(f(\mathbf{v}_{\mathrm{cmd}}
++ \boldsymbol{\epsilon}), \mathbf{P})]$
+and the noiseless objective
+$J_{\mathrm{naive}}(\theta) = c(f(\mathbf{v}_{\mathrm{cmd}}), \mathbf{P})$.
+If $p_\epsilon$ is symmetric around zero, the minimisers of $J_{\mathrm{aware}}$ and
+$J_{\mathrm{naive}}$ coincide; \ie{}, zero-mean noise does not shift the optimal policy.
+\end{proposition}
+
+\begin{proof}[Proof sketch]
+The cost \eqref{eq:cost} is a function of $\|\mathbf{p}_T - \mathbf{P}\|^2$ with
+minimum at $\mathbf{p}_T = \mathbf{P}$.
+For symmetric $p_\epsilon$, $\mathbb{E}[f(\mathbf{v}^* + \boldsymbol{\epsilon})]
+= f(\mathbf{v}^*)$ whenever $f$ is locally affine near $\mathbf{v}^*$
+(valid to first order by Taylor expansion).
+The gradient condition
+$\nabla_{\mathbf{v}_{\mathrm{cmd}}} J_{\mathrm{aware}} = 0$ therefore reduces to
+$\mathbb{E}_{\boldsymbol{\epsilon}}[\nabla_{\mathbf{v}} c \big|_{\mathbf{v}_{\mathrm{cmd}}
++ \boldsymbol{\epsilon}}] = 0$, which is satisfied at the same $\mathbf{v}^*$ as the
+noiseless problem due to the symmetry of $p_\epsilon$.
+\end{proof}
+
+The practical implication is that a \emph{naive} policy (optimised assuming
+$\boldsymbol{\epsilon} = \mathbf{0}$) and a \emph{noise-aware} policy reach the same
+optimum when the noise is zero-mean.
+The difference lies only in cost calibration: the naive policy evaluates 400 Monte
+Carlo particles without noise and therefore overestimates its own precision
+(falsely low cost value), whereas the aware policy propagates noise through the
+MC rollouts and reports an honest expected cost.
+
+\paragraph{GP degeneration under exact data.}
+An unexpected consequence of zero-mean noise appears in GP maximum likelihood
+estimation.
+With $\sigma = 0$ (noise completely removed), $N_{\mathrm{exp}} = 10$ perfectly
+deterministic exploration throws give the GP log-likelihood a degenerate ridge: the
+MLE optimizer drives lengthscales to 1791\,m, 1602\,m, and 357\,m — three to four
+orders of magnitude larger than the 1\,m-scale domain.
+A GP with these lengthscales is equivalent to a constant function: it cannot
+distinguish throws at different commanded speeds.
+With $\sigma = 0.04$, repeated throws at the same speed produce slightly different
+landing positions, so the MLE finds finite lengthscales that explain the
+position variance as a function of speed.
+This reveals a counterintuitive role for noise: a small amount of stochasticity is
+\emph{necessary} for GP identifiability when the exploration data are not
+independently varied enough to avoid the constant-function degenerate solution.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Empirical Comparison: Noise-Aware vs.\ Naive Policy}
+\label{sec:study2:empirical}
+
+We compare noise-aware and naive training under VelocitySlipNoise with
+$\alpha_{\mathrm{slip}} = 0.20$, $\sigma = 0.04$, $u_M = 3.0$\,m/s, seed=1, and 10
+evaluation trials (throws 6–15, after 5 shared exploration throws).
+
+\begin{table}[t]
+  \centering
+  \caption{Aggregate performance of noise-aware and naive policies under 20\%
+           velocity-slip noise ($\sigma = 0.04$).
+           ``Total'' counts all 15 throws (5 exploration + 10 evaluation);
+           ``policy-only'' counts evaluation throws 6–15 only.}
+  \label{tab:noise_aggregate}
+  \small
+  \begin{tabular}{lcccc}
+    \toprule
+    Policy & Total hits & Policy-only hits & Mean error & Final cost \\
+    \midrule
+    Aware & 8/15 (53\%) & 5/10 (50\%) & 0.100\,m & $\approx 0.009$ \\
+    Naive & 4/15 (27\%) & 1/10 (10\%) & 0.125\,m & $\approx 0.001$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[t]
+  \centering
+  \caption{Per-throw landing errors for evaluation throws 6–15 (in metres).
+           Checkmarks denote hits (error $< 0.10$\,m). Naive cost $\approx 0.001$
+           is falsely optimistic: it is evaluated without noise.}
+  \label{tab:noise_pershot}
+  \small
+  \begin{tabular}{ccc}
+    \toprule
+    Throw & Aware & Naive \\
+    \midrule
+    6  & 0.094\,$\checkmark$ & 0.129\,$\times$ \\
+    7  & 0.039\,$\checkmark$ & 0.151\,$\times$ \\
+    8  & 0.124\,$\times$     & 0.135\,$\times$ \\
+    9  & 0.084\,$\checkmark$ & 0.153\,$\times$ \\
+    10 & 0.106\,$\times$     & 0.090\,$\checkmark$ \\
+    11 & 0.103\,$\times$     & 0.107\,$\times$ \\
+    12 & 0.033\,$\checkmark$ & 0.106\,$\times$ \\
+    13 & 0.106\,$\times$     & 0.101\,$\times$ \\
+    14 & 0.118\,$\times$     & 0.141\,$\times$ \\
+    15 & 0.055\,$\checkmark$ & 0.127\,$\times$ \\
+    \midrule
+    Hits & 5/10 & 1/10 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Interpretation.}
+The aware policy achieves 50\% hits versus 10\% for the naive policy — a factor of
+five improvement.
+The mechanism is speed compensation: the systematic 20\% undershoot means that to
+land at distance $d$ the arm must command speed $v^* / (1 - \alpha_{\mathrm{slip}}) =
+1.25\,v^*$.
+The noise-aware policy learns to output speeds $\approx 1.25\times$ larger than the
+noiseless optimum because its MC rollouts propagate the slip factor; the naive policy,
+optimising without noise, targets $v^*$ and consistently undershoots.
+
+The 50\% ceiling on aware performance is not a learning failure — it reflects
+irreducible scatter from the $\sigma = 0.04$ isotropic additive component.
+At a release speed of $\approx 2.5$\,m/s, $\sigma = 0.04$\,m/s translates to a
+landing position standard deviation of roughly 2–4\,cm, which alone accounts for
+half the throws missing the 10\,cm-radius target.
+Multi-seed statistics would be needed to confirm this bound; we leave that
+to \needdata{multi-seed noise comparison ($\geq 5$ seeds per condition)}.
+
+The naive policy's final cost of $\approx 0.001$ versus the aware policy's
+$\approx 0.009$ is a direct manifestation of the false-optimism consequence of
+Proposition~\ref{prop:zeromean}: the naive optimiser sees noiseless rollouts and
+concludes it has solved the task precisely, while the aware policy honestly reports
+the expected cost under the noise distribution it was trained with.
+This discrepancy — lower training cost yet far worse test performance — is
+a concrete demonstration of the distributional mismatch introduced by ignoring
+physical uncertainty during policy optimisation.

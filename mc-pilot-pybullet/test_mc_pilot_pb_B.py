@@ -63,7 +63,7 @@ torch.set_num_threads(1)
 # At uM=3.0 the effective max range is f(0.80*3.0)=f(2.4)=1.083m — just under lM,
 # so targets in the top ~2cm may clip, but those are noise-dominated anyway.
 # ---------------------------------------------------------------------------
-Nexp   = 5
+Nexp   = 10
 Nopt   = 1500
 M      = 400
 Nb     = 250

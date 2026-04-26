@@ -1,0 +1,151 @@
+% ─── Appendix sections ───────────────────────────────────────────────────────
+% \appendix is declared in main.tex before \input{sections/appendix}.
+
+\section{Full Hyperparameter Table}
+\label{app:hyperparams}
+
+Table~\ref{tab:full_hyperparams} consolidates every configuration evaluated across
+all three studies.
+Parameters not listed for a config are identical to the baseline (Config~A).
+
+\begin{table}[ht]
+  \centering
+  \caption{Complete hyperparameter table for all experimental configurations.
+           Shared across all: $M{=}400$, $N_b{=}250$, $u_M{=}3.5$\,m/s,
+           $\ell_m{=}0.75$\,m, $\gamma_M{=}\pi/6$, $T_s{=}0.02$\,s,
+           $N_{\mathrm{opt}}{=}1500$, $\alpha_{\mathrm{launch}}{=}35^\circ$,
+           ball ($m{=}0.0577$\,kg, $r{=}0.0327$\,m).
+           ``Strat'' = stratified exploration; ``Rnd'' = random.}
+  \label{tab:full_hyperparams}
+  \small
+  \begin{tabular}{llcccccccl}
+    \toprule
+    Config & Sub-project & $z_{\mathrm{rel}}$ & $\ell_M$ & $T$ & $\ell_c$ &
+    $\ell_s^{\mathrm{init}}$ & $N_{\mathrm{exp}}$ & Exploration & Result \\
+    \midrule
+    A               & mc-pilot/           & 0.5\,m & 1.75\,m & 0.70\,s & 0.5\,m & [1.0, 1.0] & 5  & Rnd & 5/5 hits \\
+    B               & mc-pilot-elevated/  & 1.0\,m & 1.90\,m & 0.85\,s & 0.5\,m & [1.0, 1.0] & 5  & Rnd & 0/10 (seed=1); 10/10 (seed=2) \\
+    B-Strat         & mc-pilot-elevated/  & 1.0\,m & 1.90\,m & 0.85\,s & 0.5\,m & [1.0, 1.0] & 5  & Strat $[0, u_M]$ & 10/10 \\
+    C-Strat         & mc-pilot-elevated/  & 1.5\,m & 2.15\,m & 0.95\,s & 0.5\,m & [1.0, 1.0] & 5  & Strat $[0, u_M]$ & 10/10 \\
+    D-Strat         & mc-pilot-elevated/  & 2.0\,m & 2.35\,m & 1.00\,s & 0.5\,m & [1.0, 1.0] & 5  & Strat $[0, u_M]$ & 10/10 \\
+    E-Strat         & mc-pilot-elevated/  & 0.0\,m & 1.10\,m & 0.55\,s & 0.5\,m & [1.0, 1.0] & 5  & Strat $[0, u_M]$ & 0/10 \\
+    E-Strat2        & mc-pilot-elevated/  & 0.0\,m & 1.10\,m & 0.55\,s & 0.5\,m & [1.0, 1.0] & 5  & Strat $[2.5, 3.5]$ & 0/10 \\
+    E-Strat3        & mc-pilot-elevated/  & 0.0\,m & 1.10\,m & 0.55\,s & 0.5\,m & [1.0, 1.0] & 10 & Strat $[2.5, 3.5]$ & 0/10 \\
+    E-Strat4        & mc-pilot-elevated/  & 0.0\,m & 1.10\,m & 0.55\,s & 0.25\,m & [1.0, 1.0] & 10 & Strat $[2.5, 3.5]$ & 0/10 \\
+    E-Strat5        & mc-pilot-elevated/  & 0.0\,m & 1.10\,m & 0.55\,s & 0.25\,m & [0.15, 0.15] & 10 & Strat $[2.5, 3.5]$ & 10/10 \\
+    PBE-B           & mc-pilot-pb-elevated/ & 1.0\,m & 1.90\,m & 0.85\,s & 0.5\,m & [1.0, 1.0] & 5 & Strat $[0, u_M]$ & \needdata{run pending} \\
+    PBE-C           & mc-pilot-pb-elevated/ & 1.5\,m & 2.15\,m & 0.95\,s & 0.5\,m & [1.0, 1.0] & 5 & Strat $[0, u_M]$ & \needdata{run pending} \\
+    PBE-D           & mc-pilot-pb-elevated/ & 2.0\,m & 2.35\,m & 1.00\,s & 0.5\,m & [1.0, 1.0] & 5 & Strat $[0, u_M]$ & \needdata{run pending} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Zero-Mean Unlearnability: Proof Sketch}
+\label{app:zeromean}
+
+\begin{proposition}[Zero-mean unlearnability, restated]
+Let $\boldsymbol{\epsilon} \sim \mathcal{N}(\mathbf{0}, \Sigma_\epsilon)$ be
+additive noise on the commanded release velocity.
+The optimal policy under noise-awareness is identical to the noiseless optimal policy.
+\end{proposition}
+
+\begin{proof}[Proof sketch]
+Let $f : \mathbb{R}^3 \to \mathbb{R}^2$ denote the deterministic landing map
+(position as a function of release velocity), assumed smooth and invertible near the
+optimum.
+By first-order Taylor expansion around $\mathbf{v}^*$:
+\[
+  f(\mathbf{v}^* + \boldsymbol{\epsilon}) \approx f(\mathbf{v}^*) + J_f \boldsymbol{\epsilon},
+  \qquad J_f = \tfrac{\partial f}{\partial \mathbf{v}}\big|_{\mathbf{v}^*}.
+\]
+The expected landing position is
+\[
+  \mathbb{E}_\epsilon[f(\mathbf{v}^* + \boldsymbol{\epsilon})]
+  = f(\mathbf{v}^*) + J_f \mathbb{E}[\boldsymbol{\epsilon}]
+  = f(\mathbf{v}^*),
+\]
+since $\mathbb{E}[\boldsymbol{\epsilon}] = \mathbf{0}$.
+The noise-averaged cost gradient with respect to the policy output $\mathbf{v}^*$ is
+\[
+  \nabla_{\mathbf{v}^*} J_{\mathrm{aware}}
+  = \nabla_{\mathbf{v}^*} \mathbb{E}_\epsilon[c(f(\mathbf{v}^* + \boldsymbol{\epsilon}))]
+  = J_f^\top \nabla_{\mathbf{p}} c\bigl(f(\mathbf{v}^*)\bigr),
+\]
+which is identical to $\nabla_{\mathbf{v}^*} J_{\mathrm{naive}}$ computed with
+$\boldsymbol{\epsilon} = \mathbf{0}$.
+Therefore, the gradient is zero at the same $\mathbf{v}^*$ for both the aware and
+naive objectives, and the optimal policies coincide.
+The noise increases the variance of $c$ (and thus the honest cost value) but does
+not shift the optimal aim.
+\end{proof}
+
+\begin{remark}
+The result relies on linearity of $f$ near the optimum and zero mean of
+$\boldsymbol{\epsilon}$.
+For skewed or heavy-tailed noise distributions the approximation breaks and a
+genuine gap between aware and naive policies can emerge.
+\end{remark}
+
+\section{Lengthscale Scaling Rule Derivation}
+\label{app:lengthscale}
+
+The RBF policy (Eq.~\ref{eq:policy}) uses a squared-exponential kernel with
+lengthscale $\ell_s$.
+The sensitivity between two target positions $\mathbf{P}_1$ and $\mathbf{P}_2$ at
+Euclidean distance $d$ is
+\[
+  S(d,\, \ell_s) = \exp\!\Bigl(-\tfrac{d^2}{2\ell_s^2}\Bigr).
+\]
+Config A (target range $\approx 1.0$\,m, $\ell_s = 1.0$\,m) achieves
+sensitivity $S_A = \exp(-0.5) \approx 0.607$ between the two extremes of its domain.
+
+For a new configuration with target range $R$, we require the same sensitivity:
+\[
+  S(R,\, \ell_s^{\mathrm{new}}) \stackrel{!}{=} S_A = 0.607.
+\]
+Setting $\exp(-R^2 / (2\ell_s^2)) = \exp(-0.5)$ gives
+\[
+  \frac{R^2}{2\ell_s^2} = \frac{1}{2}
+  \implies \ell_s = R.
+\]
+Hence $\ell_s = R$ for all target ranges---but in practice, the paper's fixed
+$\ell_s = 1.0$\,m is used even when $R \ll 1.0$\,m.
+The issue is that Config A has $R \approx 1.0$\,m, so $\ell_s = R$ happens to hold
+by coincidence.
+For Config E with $R = 0.35$\,m, setting $\ell_s = 0.35$\,m recovers
+$S = 0.607$.
+In our experiments, $\ell_s = 0.15$\,m (which gives $S = 0.066$, lower than 0.607)
+was found to work well because even sharper sensitivity promotes faster learning when
+the GP has limited exploration data.
+The conservative recommendation is $\ell_s = R$; the empirical finding is that
+$\ell_s \approx 0.15 R$ is safe and often faster.
+
+\section{Particle Freeze Approximation at Landing}
+\label{app:freeze}
+
+The GP propagates $M$ particles forward in time.
+Once a particle's $z$-coordinate satisfies $z \leq 0$, its state is frozen at the
+last step above ground and the cost is evaluated at that frozen landing position for
+all remaining timesteps.
+
+This introduces a systematic over-estimation of the horizontal landing distance
+proportional to the residual horizontal velocity at the frozen step.
+For timestep $T_s = 0.02$\,s and a typical vertical velocity of 2\,m/s at impact,
+the true ground crossing occurs $\Delta t = z_{\mathrm{last}} / v_z \approx 0.01$\,s
+before the frozen step, during which the ball travels an additional
+$\Delta x \approx v_x \cdot \Delta t \approx 2\text{--}4$\,cm horizontally
+(for $v_x \approx 2\text{--}4$\,m/s).
+
+In actual rollouts (NumPy and PyBullet), landing is detected at $z \leq 0$ and
+refined by linear interpolation to the exact $z = 0$ crossing, so training data are
+not affected by this error.
+The approximation applies only to the Monte Carlo particles used for the gradient
+estimate inside \texttt{apply\_policy}, where implementing per-particle
+interpolation would break batched tensor operations.
+The resulting cost estimates are slightly pessimistic (the policy is penalised for
+landing a few centimetres beyond the target when the true landing is closer), but
+the bias is consistent across particles and policy updates, so optimisation still
+converges to the correct policy.
+Reducing $T_s$ or implementing a soft landing indicator (a smooth sigmoid of $z$
+rather than a hard step) would eliminate this error at the cost of increased
+computation.

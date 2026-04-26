@@ -1,0 +1,21 @@
+{
+  "settings_version": "0.0.6",
+  "datasets_dir": "C:\\Users\\Yajesh\\Desktop\\ar525_project\\mc-pilot-pybullet\\datasets",
+  "weights_dir": "weights",
+  "runs_dir": "runs",
+  "uuid": "ed72636e6a1e093399a2cd209a57d423441ca23eab4757dbb2921e4249931325",
+  "sync": true,
+  "api_key": "",
+  "openai_api_key": "",
+  "clearml": true,
+  "comet": true,
+  "dvc": true,
+  "hub": true,
+  "mlflow": true,
+  "neptune": true,
+  "raytune": true,
+  "tensorboard": false,
+  "wandb": false,
+  "vscode_msg": true,
+  "openvino_msg": true
+}
