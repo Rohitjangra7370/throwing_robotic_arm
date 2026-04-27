@@ -34,6 +34,8 @@ DEFAULT_RANGE_BY_ROBOT = {
 
 
 def default_results_root(robot_name: str) -> str:
+    if robot_name == "kuka_iiwa":
+        return "results_mc_pilot_pb_A"
     return f"results_mc_pilot_pb_A_{robot_name}"
 
 
@@ -42,9 +44,9 @@ def build_parser():
     parser.add_argument(
         "--robot",
         type=str,
-        required=True,
-        choices=[name for name in available_robot_names() if name != "kuka_iiwa"],
-        help="robot arm profile to train; KUKA is excluded because the baseline already exists",
+        default="kuka_iiwa",
+        choices=available_robot_names(),
+        help="robot arm profile to train; defaults to the original KUKA baseline arm",
     )
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--num_trials", type=int, default=10)

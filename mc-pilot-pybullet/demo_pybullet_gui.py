@@ -198,6 +198,11 @@ p.loadURDF("plane.urdf", physicsClientId=client)
 
 urdf_path = pybullet_data.getDataPath() + "/" + profile.urdf_rel_path
 arm = ArmController(client, urdf_path, robot_name=profile.name)
+if profile.name == "franka_panda":
+    # Panda GUI playback is more stable when we replay the planned joint path
+    # kinematically instead of relying on PyBullet motor dynamics.
+    arm._control_mode = "kinematic"
+    print("Using kinematic GUI playback for franka_panda stability.")
 
 log_id = None
 if args.record:
@@ -256,8 +261,9 @@ for throw_idx in range(args.num_throws):
             arm.step(q_t, qd_t)
             if t >= T_R:
                 ee_pos_now, _, _, _ = arm.ee_state()
-                release_dir = v_cmd / max(np.linalg.norm(v_cmd), 1e-9)
-                use_safe_release = profile.control_mode == "kinematic"
+                speed_norm = np.linalg.norm(v_cmd)
+                release_dir = v_cmd / speed_norm if speed_norm > 1e-9 else np.zeros(3)
+                use_safe_release = profile.use_safe_release
                 safe_release_pos = ee_pos_now + release_dir * (1.25 * BALL_RADIUS)
                 release_vel = arm.release_ball(
                     ball_id,
