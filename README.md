@@ -1,4 +1,4 @@
-# MC-PILOT: Data-Efficient Robotic Throwing with Model-Based RL
+# Geometry, Noise, and Disturbances: A Diagnostic Study of Model-Based Reinforcement Learning for Data-Efficient Robotic Throwing
 **AR525 — Reinforcement Learning in Robotics | IIT Mandi, Group-3**
 
 Members: Rishang Yadav · Bhumika Gupta · Aarya Agarwal · Yajesh Chandra
