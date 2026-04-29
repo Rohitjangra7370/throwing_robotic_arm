@@ -11,9 +11,9 @@ Despite this appeal, practical deployment is bottlenecked by \emph{data efficien
 learning a reliable release policy on physical hardware must converge in tens of trials
 rather than thousands, because each trial incurs wear, reconfiguration overhead, and
 safety risk.
-Standard model-free RL methods require orders of magnitude more samples than this budget
-permits, motivating model-based approaches that explicitly represent uncertainty and plan
-through it.
+Standard model-free RL methods (\eg TossingBot~\cite{tossbot}) require orders of
+magnitude more samples than this budget permits, motivating model-based approaches that
+explicitly represent uncertainty and plan through it.
 
 \mcpilot{}~\cite{turcato2025mcpilot} addresses this challenge by combining
 \mcpilco{}~\cite{mcpilco}---a Gaussian-process (GP) dynamics model with Monte Carlo
@@ -27,33 +27,28 @@ The augmented state $\tilde{\mathbf{x}} = [\mathbf{x},\, \mathbf{P}]$ lets the G
 geometry-conditioned corrections, and the RBF policy network enables smooth interpolation
 across the target workspace.
 On a Franka Panda arm with a Gazebo/ROS simulator, \mcpilot{} reaches near-100\% target
-coverage in approximately ten physical throws---a compelling demonstration of GP-based
-model-based RL at the edge of the sample budget.
+coverage in approximately ten physical throws.
 
-Despite these results, three practical gaps remain unexplored.
+Despite these results, several practical gaps remain unexplored.
 \textbf{(1) Geometry sensitivity.}
 The published hyperparameters are calibrated to a single release height and target range;
-we show experimentally that na\"ive transfer to different heights silently degrades
-performance---the RBF policy becomes blind over most of the target domain because the
-lengthscale is no longer commensurate with the range, and random exploration leaves
-entire sub-regions unvisited.
-\textbf{(2) Noise structure.}
-The paper attributes performance variance to gripper delay, but physical robots also
-exhibit velocity slip and timing jitter whose statistical structure differs from
-zero-mean additive noise; we prove that a zero-mean residual is unlearnable by the GP
-and characterise the resulting degeneration analytically.
-\textbf{(3) Portability.}
-Reproducing \mcpilot{} requires Gazebo and ROS, limiting accessibility for researchers
-without that infrastructure; the algorithm's core physics is ballistic and admits a
-lightweight numpy simulation that decouples the RL problem from the middleware stack.
-
-Our approach is to reproduce \mcpilot{} in an independent ballistic simulator augmented
-with a PyBullet visualisation pipeline, then conduct three focused studies: a
-\emph{release-height generalisation study} varying $z \in \{0.0, 0.5, 1.0, 1.5, 2.0\}$\,m;
-a \emph{noise-model study} comparing aware and naive policies under 20\% velocity slip;
-and a combined analysis that links the two.
-Each study is preceded by a diagnostic phase in which we instrument the algorithm to
-expose failure modes, formulate a fix, and verify recovery.
+na\"ive transfer to different heights silently degrades performance.
+\textbf{(2) Arm portability.}
+The paper is locked to a single robot platform; it is unknown whether the algorithm's
+data-efficiency transfers to other manipulators.
+\textbf{(3) Noise structure.}
+Physical robots exhibit velocity slip, timing jitter, and gripper compliance whose
+statistical structure differs from zero-mean additive noise; the learnability of each
+noise type is not characterised.
+\textbf{(4) Environmental disturbances.}
+Outdoor or warehouse environments introduce wind, yet the algorithm has not been tested
+under ambient airflow.
+\textbf{(5) Perception.}
+Deployment requires autonomous bin detection; the original work pre-specifies target
+coordinates rather than detecting them visually.
+\textbf{(6) Reproducibility.}
+The original implementation requires Gazebo and ROS, limiting accessibility; the
+algorithm's core physics is ballistic and admits a lightweight numpy simulation.
 
 \paragraph{Contributions.}
 \begin{enumerate}
@@ -62,36 +57,50 @@ expose failure modes, formulate a fix, and verify recovery.
         \mcpilot{} without Gazebo or ROS, with all adaptation decisions documented.
 
   \item \textbf{Four diagnosed failure modes.}
-        Systematic identification and correction of non-obvious failure modes including
-        RBF lengthscale mismatch, biased exploration, cost-scale sensitivity, and
-        GP prior collapse under zero-mean noise.
+        Systematic identification and correction of four non-obvious silent failure modes:
+        broken gradient path, post-landing GP hallucination, cost-lengthscale saturation,
+        and simulation-horizon unit mismatch.
 
-  \item \textbf{Lengthscale-to-range scaling rule.}
-        The heuristic $\ell_s \approx 0.15 \times \text{target\_range}$ prevents RBF
-        blindness and transfers across all five tested heights without per-height tuning.
-
-  \item \textbf{Stratified exploration policy.}
-        A deterministic coverage strategy that partitions the target workspace into equal
-        angular sectors, achieving seed-robust initialisation with the same number of
-        exploration throws as the baseline random strategy.
-
-  \item \textbf{Zero-mean-noise unlearnability result.}
-        A formal proposition showing that GP residuals under zero-mean noise converge to
-        the prior, making model improvement impossible, with an experimental demonstration
-        of 10\% vs.\ 50\% hit rate for naive vs.\ noise-aware policies under 20\%
-        velocity slip.
+  \item \textbf{Two convergence rules.}
+        (a) The \emph{lengthscale-to-range scaling rule} $\ell_s \approx 0.15 \times
+        \text{target\_range}$ prevents RBF blindness across all tested geometries.
+        (b) The \emph{stratified exploration rule} guarantees seed-robust GP coverage
+        with no additional hardware throws.
 
   \item \textbf{Release-height generalisation.}
-        100\% hit rates on four of five height configurations and mean landing errors
-        below 35\,mm across all five, demonstrating that the corrected algorithm
-        generalises across a 2\,m range of release heights.
+        100\% hit rates across all five tested heights ($z \in \{0.0, 0.5, 1.0, 1.5,
+        2.0\}$\,m) with mean landing errors below 35\,mm.
+
+  \item \textbf{Multi-arm portability.}
+        100\% commanded-velocity hit rates on Franka Panda, KUKA iiwa7, and xArm6
+        without any retraining, demonstrating arm-agnostic RL through a decoupled
+        architecture.
+
+  \item \textbf{Zero-mean noise invariance theorem.}
+        Theorem~\ref{thm:zeromean} proves that symmetric zero-mean noise does not shift
+        the optimal policy, with an experimental demonstration of 100\% vs.\ 0\%
+        hit rate for noise-aware vs.\ naive policies under 20\% velocity slip.
+
+  \item \textbf{Wind robustness study.}
+        A full pipeline extension (air-relative drag, 8-D$\to$11-D state augmentation,
+        policy and GP updates) and the counterintuitive finding that blind GP policies
+        outperform wind-aware policies in all three wind regimes within the 15-trial budget.
+
+  \item \textbf{Closed-loop vision result.}
+        We show that colour-based (OpenCV HSV) and learning-based (YOLOv8n on 800
+        synthetic PyBullet images) detection pipelines both produce target estimates
+        accurate enough to drive the trained policy to successful throws, with the
+        near-face depth bias correctable by a geometric $2R/\pi$ shift.
+        This establishes that the trained policy is robust to centimetre-level
+        target-position estimation error.
 \end{enumerate}
 
 \paragraph{Paper structure.}
-Section~\ref{sec:background} reviews the \mcpilco{} and \mcpilot{} formulations.
-Section~\ref{sec:system} describes the ballistic simulator and visualisation pipeline.
-Section~\ref{sec:implementation} details adaptation decisions and the four diagnosed
-failure modes.
-Sections~\ref{sec:study1}--\ref{sec:study3} present the three experimental studies.
-Section~\ref{sec:discussion} synthesises findings into transferable design rules.
+Section~\ref{sec:background} provides an expanded treatment of MC-PILCO and the
+\mcpilot{} formulation.
+Section~\ref{sec:system} describes the system architecture.
+Section~\ref{sec:implementation} details the four diagnosed failure modes.
+Section~\ref{sec:convergence} presents the two convergence rules.
+Sections~\ref{sec:study1}--\ref{sec:study5} present the five experimental studies.
+Section~\ref{sec:discussion} synthesises findings.
 Section~\ref{sec:conclusion} concludes.

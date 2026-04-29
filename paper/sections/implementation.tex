@@ -74,7 +74,7 @@ $\approx 42$ timesteps after landing, feeding underground positions
 These states lie far outside the GP's training support, so the posterior mean is
 governed by the zero prior and the posterior variance is maximal.
 The resulting pseudo-dynamics drove particles to arbitrary positions, and the terminal
-cost $c_T = 1 - \exp(-\|\mathbf{e}_T\|^2 / \ell_c^2)$ evaluated these garbage states,
+cost $c_T = 1 - \exp(-\|\mathbf{e}_T\|^2 / \ell_c^2)$ evaluated these non-physical, out-of-distribution states,
 yielding $c_T \approx 1$ for all particles regardless of $\boldsymbol{\theta}$.
 
 \textbf{Fix.}
@@ -109,7 +109,7 @@ The paper specifies a cost lengthscale $\ell_c = 0.1$\,m in the squared-exponent
 terminal cost:
 \begin{equation}
   c(\mathbf{s}_T) = 1 - \exp\!\left(-\frac{\|\mathbf{e}\|^2}{\ell_c^2}\right),
-  \label{eq:cost}
+  \label{eq:cost_lc}
 \end{equation}
 where $\mathbf{e} = [x_T - P_x,\; y_T - P_y]^\top$ is the landing error.
 With $\ell_c = 0.1$\,m, $c \geq 0.99$ whenever $\|\mathbf{e}\| \geq 0.22$\,m, and
@@ -118,7 +118,7 @@ the gradient $\partial c / \partial \|\mathbf{e}\| = (2\|\mathbf{e}\|/\ell_c^2)\
 $\|\mathbf{e}\| > 0.3$\,m.
 Exploration throws against randomly-placed targets produced landing errors in the
 range $0.3$--$1.5$\,m, placing all particles firmly in the saturated,
-near-zero-gradient region of~\eqref{eq:cost}.
+near-zero-gradient region of~\eqref{eq:cost_lc}.
 The GP therefore learned correct dynamics from exploration data, but the cost
 function could not distinguish any two bad policies, so the optimiser stalled.
 
@@ -158,8 +158,7 @@ Passing $T = 1.0$ directly caused the internal computation
 to what the codebase treated as already-an-integer, yielding an effective horizon of
 $T \cdot (1/T_s)^2 = 10{,}000$ steps.
 The resulting rollout allocated a $10{,}000 \times M$ particle tensor, exhausting RAM
-and crashing on any machine with less than \needdata{measured peak RAM} of available
-memory.
+and crashing the process before any gradient computation could begin.
 
 \textbf{Fix A.}
 The argument is passed as \texttt{T\_control = int(T / Ts) = 50} (steps, for

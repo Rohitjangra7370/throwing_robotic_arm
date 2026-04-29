@@ -1,0 +1,26 @@
+\begin{table*}[t]
+\centering
+\caption{Performance of MC-PILOT under different release-noise models. Results are reported for noise-aware and noise-unaware (naive) training. Metrics are aggregated over the policy throws only.}
+\label{tab:noise_results}
+\begin{tabular}{llcccc}
+\hline
+\textbf{Noise Type} & \textbf{Noise Level} & \textbf{Aware?} & \textbf{Hit Rate (\%)} & \textbf{Mean Error (m)} & \textbf{Final Cost} \\
+\hline
+Slip & $\alpha=0.05,\ \sigma=0.04$ & No  & 100 & 0.0682 & 0.00349 \\
+Slip & $\alpha=0.05,\ \sigma=0.04$ & Yes & 100 & 0.0260 & 0.00700 \\
+Slip & $\alpha=0.10,\ \sigma=0.04$ & No  & 25  & 0.1242 & 0.00355 \\
+Slip & $\alpha=0.10,\ \sigma=0.04$ & Yes & 100 & 0.0450 & 0.00672 \\
+Slip & $\alpha=0.15,\ \sigma=0.04$ & No  & 100 & 0.0578 & 0.00339 \\
+Slip & $\alpha=0.15,\ \sigma=0.04$ & Yes & 100 & 0.0359 & 0.00623 \\
+Slip & $\alpha=0.20,\ \sigma=0.04$ & No  & 0   & 0.1881 & 0.00404 \\
+Slip & $\alpha=0.20,\ \sigma=0.04$ & Yes & 100 & 0.0219 & 0.01097 \\
+\hline
+Salt-and-Pepper & $p=0.05,\ s=0.30$ & No  & 75  & 0.0439 & 0.00410 \\
+Salt-and-Pepper & $p=0.05,\ s=0.30$ & Yes & 100 & 0.0292 & 0.01605 \\
+Salt-and-Pepper & $p=0.10,\ s=0.30$ & No  & 25  & 0.1012 & 0.00345 \\
+Salt-and-Pepper & $p=0.10,\ s=0.30$ & Yes & 75  & 0.1104 & 0.02381 \\
+Salt-and-Pepper & $p=0.15,\ s=0.30$ & No  & 50  & 0.0768 & 0.00410 \\
+Salt-and-Pepper & $p=0.15,\ s=0.30$ & Yes & 50  & 0.0914 & 0.03143 \\
+\hline
+\end{tabular}
+\end{table*}

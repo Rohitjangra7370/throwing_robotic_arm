@@ -1,52 +1,139 @@
-\section{Background}
+\section{Background and the MC-PILOT Algorithm}
 \label{sec:background}
 
-\subsection{MC-PILCO}
-\label{sec:background:mcpilco}
+\subsection{Problem Formulation}
+\label{sec:background:problem}
 
-\mcpilco{}~\cite{mcpilco} is a model-based RL framework for continuous control that
-couples a GP dynamics model with a Monte Carlo (MC) policy-gradient optimiser.
-The GP is fit to observed transitions $(\mathbf{x}_t, \mathbf{u}_t) \to \mathbf{x}_{t+1}$
-and maintains a posterior over residual corrections to a known nominal model.
-At each policy update step, $M$ particles are propagated forward through the GP posterior
-via the reparameterisation trick: each particle draws a function sample from the GP and
-integrates the resulting ODE, yielding a set of stochastic rollouts that can be
-differentiated with respect to policy parameters $\theta$.
-The policy gradient is then
-
+\paragraph{MDP and state space.}
+Robotic throwing is modelled as a single-shot Markov decision process.
+The ball state $\mathbf{x} = [\mathbf{p},\, \dot{\mathbf{p}}] \in \mathbb{R}^6$
+concatenates 3D position and velocity.
+Because the policy must generalise across a 2D target domain, the state is augmented
+with the target position $\mathbf{P} = (P_x, P_y) \in \mathbb{R}^2$ to form
 \begin{equation}
-  \nabla_\theta J(\theta) = \nabla_\theta \mathbb{E}\!\left[
-    \sum_{t=0}^{T} c(\tilde{\mathbf{x}}_t)
-  \right] \approx \frac{1}{M}\sum_{m=1}^{M} \nabla_\theta \sum_{t=0}^{T}
-  c(\tilde{\mathbf{x}}_t^{(m)}),
+  \tilde{\mathbf{x}} = [\mathbf{x},\, \mathbf{P}] \in \mathbb{R}^8.
+  \label{eq:augmented_state}
+\end{equation}
+The GP learns \emph{geometry-conditioned} residual corrections in this augmented space,
+enabling a single model to serve all targets without per-target retraining.
+
+\paragraph{Landing cost.}
+Performance is measured at the terminal timestep $T$ (ball landing) by a
+Gaussian-shaped cost:
+\begin{equation}
+  c(\tilde{\mathbf{x}}_T) = 1 - \exp\!\left(
+    -\frac{\|\mathbf{p}_T - \mathbf{P}\|^2}{\ell_c^2}
+  \right),
+  \label{eq:cost}
+\end{equation}
+where $\mathbf{p}_T \in \mathbb{R}^2$ is the landing position and $\ell_c$ controls
+the acceptance width.
+The policy objective is $J(\theta) = \mathbb{E}[c(\tilde{\mathbf{x}}_T)]$, minimised
+by gradient descent through Monte Carlo rollouts.
+
+\subsection{Gaussian Process Dynamics}
+\label{sec:background:gp}
+
+The GP maintains a posterior over per-timestep velocity corrections
+$[\Delta v_x, \Delta v_y, \Delta v_z]$ conditioned on the augmented state
+$\tilde{\mathbf{x}}_t$.
+Let $\mathcal{D} = \{(\tilde{\mathbf{x}}^{(k)},\, \Delta \mathbf{v}^{(k)})\}_{k=1}^N$
+denote the observed transitions.
+A squared-exponential (SE) kernel
+$k(\tilde{\mathbf{x}},\, \tilde{\mathbf{x}}') = \sigma_f^2 \exp(-\|\tilde{\mathbf{x}}
+- \tilde{\mathbf{x}}'\|^2 / 2\ell^2)$
+captures smooth velocity-correction structure.
+The posterior mean provides the best single-point dynamics prediction; the
+posterior variance $\sigma^2(\tilde{\mathbf{x}})$ quantifies epistemic uncertainty and
+drives the optimisation to avoid regions of high model uncertainty~\cite{rasmussen2006gp}.
+
+\paragraph{Why GPs?}
+Three properties make GP dynamics especially appropriate here.
+First, \emph{exact uncertainty quantification}: the posterior variance is meaningful
+even with five training points, so policy gradients know how confident the model is at
+every state.
+Second, \emph{data efficiency}: the kernel encodes smoothness priors that allow
+generalisation from as few as five exploration throws.
+Third, \emph{Bayesian posterior updates}: each throw updates the posterior analytically,
+yielding a dynamics model that improves monotonically with data.
+
+\paragraph{Sparse approximation.}
+Exact GP inference scales as $O(N^3)$ in the number of observations.
+As data accumulate across trials (5 exploration + up to 10 learning throws, each
+producing $\approx 35$ state transitions), this becomes the dominant computational cost.
+\mcpilco{} addresses this with a Subset-of-Data (SOD) approximation: a representative
+inducing set of $M_{\mathrm{ind}}$ points is selected from the full training set, and
+inference is performed using only these inducing points.
+The key guarantee is that inducing set selection does not discard the most informative
+transitions, so GP posterior quality degrades gracefully rather than catastrophically as
+the dataset grows.
+In our experiments, a budget of $M_{\mathrm{ind}} = 100$ inducing points was sufficient
+to maintain accurate dynamics predictions throughout all ten learning trials.
+
+\paragraph{Speed-integration model.}
+The state update follows the reconstruction rule of \cite{turcato2025mcpilot} (Eq.~18):
+\begin{align}
+  \mathbf{v}_{t+1} &= \mathbf{v}_t + \Delta\mathbf{v}_t, \label{eq:vel_update} \\
+  \mathbf{p}_{t+1} &= \mathbf{p}_t + T_s\,\mathbf{v}_t + \tfrac{T_s}{2}\,\Delta\mathbf{v}_t,
+  \label{eq:pos_update}
+\end{align}
+where $T_s = 0.02$\,s is the integration timestep and $\Delta\mathbf{v}_t$ is the GP
+residual correction (incorporating gravity and drag).
+This midpoint rule reduces the systematic position error relative to a forward-Euler
+update at the same timestep.
+
+\subsection{Monte Carlo Policy Gradient}
+\label{sec:background:mcpg}
+
+\mcpilco{}~\cite{mcpilco} propagates $M$ stochastic particles through the GP posterior
+using the \emph{reparameterisation trick}~\cite{kingma2014auto}.
+Rather than sampling GP function values directly (which would break the computation
+graph), each GP draw is written as a deterministic transformation of a base noise
+variable: $\mathbf{f}(\tilde{\mathbf{x}}) = \boldsymbol{\mu}(\tilde{\mathbf{x}}) +
+L(\tilde{\mathbf{x}})\,\boldsymbol{\varepsilon}^{(m)}$, where $\boldsymbol{\mu}$ is
+the GP posterior mean, $L$ is the Cholesky factor of the posterior covariance, and
+$\boldsymbol{\varepsilon}^{(m)} \sim \mathcal{N}(\mathbf{0}, I)$ is sampled once per
+particle.
+Because $\boldsymbol{\varepsilon}^{(m)}$ is independent of $\theta$ and the
+transformation through $L$ and $\boldsymbol{\mu}$ is differentiable, gradients flow
+from the cost through the full rollout back to the policy parameters.
+Each particle integrates $\tilde{\mathbf{x}}_{t+1}^{(m)} = g(\tilde{\mathbf{x}}_t^{(m)},\,
+\pi_\theta(\tilde{\mathbf{x}}_t^{(m)})) + \mathbf{f}(\tilde{\mathbf{x}}_t^{(m)})$
+for $T$ steps, yielding a set of differentiable rollouts
+$\{\tilde{\mathbf{x}}_t^{(m)}\}_{t=0}^T$.
+The policy gradient is approximated by
+\begin{equation}
+  \nabla_\theta J(\theta) \approx \frac{1}{M}\sum_{m=1}^{M} \nabla_\theta
+    c\!\left(\tilde{\mathbf{x}}_T^{(m)}\right),
   \label{eq:mcpilco_gradient}
 \end{equation}
+and optimised with Adam~\cite{kingma2015adam} for $N_{\mathrm{opt}} = 1500$ steps per
+trial.
 
-where the reparameterisation ensures that the Monte Carlo samples are differentiable
-through the GP posterior.
-Sparse approximation via Subset of Data (SOD) keeps inference tractable as the dataset
-grows across trials.
+\paragraph{Why Monte Carlo over analytic moment-matching?}
+PILCO~\cite{pilco} propagates the full state distribution analytically by matching
+Gaussian moments through the GP.
+This is exact for Gaussian initial distributions but requires a Gaussian-closure
+approximation at every step, which accumulates errors for multi-step rollouts.
+More critically for the throwing problem, it breaks when the initial state is
+\emph{non-Gaussian}.
+The throwing policy $\pi_\theta(\mathbf{P}) \to v$ is a nonlinear function
+(Eq.~\ref{eq:policy}) of the target position $\mathbf{P}$, which is sampled uniformly
+across the workspace.
+The resulting initial velocity $\mathbf{v} = (v\cos\alpha\cos\phi,\,
+v\cos\alpha\sin\phi,\, v\sin\alpha)$ is a nonlinear function of $\mathbf{P}$, and
+its distribution is non-Gaussian.
+PILCO's moment-matching closure would introduce a systematic bias at $t=0$; the Monte
+Carlo approach propagates the true empirical distribution without any distributional
+assumption.
+The variance of the MC gradient estimate decreases as $O(1/\sqrt{M})$ with particle
+count $M = 400$.
 
-\subsection{MC-PILOT Modifications}
-\label{sec:background:mcpilot}
+\subsection{The Squashed-RBF Policy}
+\label{sec:background:policy}
 
-\mcpilot{}~\cite{turcato2025mcpilot} adapts \mcpilco{} for the single-shot throwing
-problem with two targeted modifications.
-
-\paragraph{Augmented state.}
-The robot state $\mathbf{x} = [\mathbf{p},\, \dot{\mathbf{p}}] \in \mathbb{R}^6$
-(position and velocity) is augmented with the target location
-$\mathbf{P} = (P_x, P_y) \in \mathbb{R}^2$ to form
-$\tilde{\mathbf{x}} = [\mathbf{x},\, \mathbf{P}] \in \mathbb{R}^8$.
-The GP learns per-timestep velocity corrections
-$[\Delta v_x, \Delta v_y, \Delta v_z]$ conditioned on $\tilde{\mathbf{x}}$, enabling
-geometry-conditioned residual compensation across the target workspace.
-
-\paragraph{Single-shot policy.}
-Because the projectile is in free flight after release, feedback control is neither
-possible nor necessary.
-The policy collapses to a single map from target position to release speed:
-
+The throwing policy maps target position to release speed via a radial basis function
+network with a $\tanh$ squashing output:
 \begin{equation}
   \pi_\theta(\mathbf{P}) = \frac{u_M}{2}\!\left(
     \tanh\!\left(
@@ -57,60 +144,86 @@ The policy collapses to a single map from target position to release speed:
   \right),
   \label{eq:policy}
 \end{equation}
-
 where $u_M$ is the maximum allowable speed, $\{(\mathbf{a}_i, w_i)\}_{i=1}^{N_b}$ are
 the $N_b$ RBF centres and weights (the trainable parameters $\theta$), and $\ell_s$ is
-the lengthscale that controls the spatial extent of each basis function.
-The $\tanh(\cdot) + 1$ construction squashes the output to $(0,\, u_M)$, enforcing
-physical speed limits.
+the spatial lengthscale controlling the influence radius of each basis function.
+The $\tanh(\cdot) + 1$ construction squashes the weighted sum to $(0,\, u_M)$, enforcing
+physical speed limits without box constraints on $\theta$.
 
-\paragraph{Landing cost.}
-Performance is measured at the final timestep $T$ (the moment of landing) by a
-Gaussian-shaped cost centred on the target:
+\paragraph{Geometric interpretation.}
+The $N_b = 250$ RBF centres tile the 2D target workspace uniformly.
+Each centre $\mathbf{a}_i$ acts as a local expert for targets near it; the lengthscale
+$\ell_s$ governs how far that expertise extends.
+When $\ell_s$ is commensurate with the target range, different centres fire for
+different targets and the policy can assign distinct speeds; when $\ell_s \gg
+\text{target range}$, all centres fire together and the policy collapses to a constant
+(Section~\ref{sec:convergence:lengthscale}).
 
-\begin{equation}
-  c(\tilde{\mathbf{x}}_T) = 1 - \exp\!\left(
-    -\|\mathbf{p}_T - \mathbf{P}\|^2 \cdot \Sigma_c^{-1}
-  \right),
-  \label{eq:cost}
-\end{equation}
+\subsection{MC-PILOT Specific Modifications}
+\label{sec:background:mcpilot}
 
-where $\mathbf{p}_T \in \mathbb{R}^2$ is the ball landing position and $\Sigma_c$
-controls the width of the acceptance region.
-The policy objective is $J(\theta) = \mathbb{E}[c(\tilde{\mathbf{x}}_T)]$, minimised
-by gradient descent through the MC rollouts.
+\mcpilot{}~\cite{turcato2025mcpilot} adapts \mcpilco{} for throwing with two targeted
+modifications over the standard continuous-control formulation.
 
-\subsection{Aerodynamic Drag Model}
+\paragraph{Single-shot policy.}
+Standard \mcpilco{} fires the policy at every timestep, which is appropriate for
+balancing tasks requiring continuous feedback.
+Throwing is fundamentally different: the projectile is in free flight after release, so
+feedback control is neither possible nor necessary.
+The policy collapses to a single map $\pi_\theta(\mathbf{P}) \to v$, called once at
+$t{=}0$.
+This dramatically reduces the parameter search space, explains the extreme data
+efficiency, and is what allows the algorithm to converge in 5--10 trials.
+
+\paragraph{Gripper delay estimation.}
+A real gripper does not open instantaneously; the random delay $t_d \sim \mathcal{U}(a,b)$
+causes the arm to decelerate for $t_d$ seconds past the commanded release instant,
+introducing a systematic undershoot $\mathbf{v}_{\mathrm{actual}} \approx
+(1 - \gamma t_d / \|\mathbf{v}_{\mathrm{cmd}}\|)\,\mathbf{v}_{\mathrm{cmd}}$.
+\mcpilot{} estimates $(a, b)$ via Bayesian Optimisation~\cite{shahriari2016bo} on
+hardware calibration throws, making the algorithm deployable on a real arm.
+We replace this with injected stochastic noise in our simulation study
+(Section~\ref{sec:study3}), which lets us vary noise type and magnitude in a controlled
+manner while preserving GP-gradient compatibility.
+
+\subsection{Aerodynamic Drag}
 \label{sec:background:drag}
 
-Ball trajectories in \mcpilot{} include aerodynamic drag.
-Following Eq.~35 of~\cite{turcato2025mcpilot}, the drag force is
-
+Ball trajectories include aerodynamic drag following Eq.~35 of~\cite{turcato2025mcpilot}:
 \begin{equation}
   \mathbf{F}_D = -\tfrac{1}{2}\rho\, C_D(\mathrm{Re})\, A\,
     \|\dot{\mathbf{p}}\|\, \dot{\mathbf{p}},
   \label{eq:drag}
 \end{equation}
+where $\rho$ is air density, $A = \pi r^2$ is the ball cross-section, and $C_D$ depends
+on Reynolds number $\mathrm{Re} = \|\dot{\mathbf{p}}\| \cdot 2r / \nu$.
+For the tennis ball ($m = 0.0577$\,kg, $r = 0.0327$\,m) and speeds below 4\,m/s, $\mathrm{Re}$
+is in the subcritical regime and $C_D \approx 0.47$ is constant.
+Under wind $\mathbf{w}$, the physically correct formulation substitutes
+$\mathbf{v}_{\mathrm{rel}} = \dot{\mathbf{p}} - \mathbf{w}$ for $\dot{\mathbf{p}}$
+everywhere in Equation~\eqref{eq:drag}; this correction is implemented in
+Study~4 (Section~\ref{sec:study4}).
 
-where $\rho$ is air density, $A = \pi r^2$ is the ball cross-section, and the drag
-coefficient $C_D(\mathrm{Re})$ depends on the Reynolds number
-$\mathrm{Re} = \|\dot{\mathbf{p}}\| \cdot 2r / \nu$, with $r$ the ball radius and $\nu$
-the kinematic viscosity of air.
-For the tennis ball used in our experiments ($m = 0.0577$\,kg, $r = 0.0327$\,m) and
-typical release speeds below 4\,m/s, $\mathrm{Re}$ remains in the subcritical regime
-where $C_D \approx 0.47$, so we use a constant coefficient.
+\subsection{Algorithmic Lineage}
+\label{sec:background:lineage}
 
-\subsection{Omitted Components}
-\label{sec:background:omissions}
+Table~\ref{tab:lineage} places \mcpilot{} in the context of prior model-based RL for
+continuous control, highlighting the key idea and data budget at each step.
 
-We intentionally exclude two components from our reproduction.
-First, the gripper delay estimation module, which in the original paper uses Bayesian
-Optimisation to calibrate a timing offset between the commanded and actual release
-instant~\cite{turcato2025mcpilot}: we instead model the effect of release timing
-uncertainty directly as a stochastic perturbation in our noise study
-(Section~\ref{sec:study2}), making the BO calibration step unnecessary.
-Second, all hardware-specific components (ROS communication, Gazebo physics server,
-Franka Panda driver) are replaced by a self-contained numpy ballistic integrator
-described in Section~\ref{sec:system}.
-These omissions are intentional and do not affect the core learning algorithm under
-evaluation.
+\begin{table}[t]
+  \centering
+  \caption{Algorithmic lineage from model-free RL to \mcpilot{}.}
+  \label{tab:lineage}
+  \small
+  \begin{tabular}{llcc}
+    \toprule
+    Algorithm & Key Idea & Data Needed & Year \\
+    \midrule
+    Model-free RL & Learn policy from reward only   & $10^3$--$10^4$ & 2013+ \\
+    TossingBot~\cite{tossbot} & Residual physics + DNN & $\sim$500    & 2020 \\
+    PILCO~\cite{pilco}        & GP dynamics + analytic gradient & $\sim$50 & 2011 \\
+    \mcpilco~\cite{mcpilco}   & MC gradient through GP          & $\sim$20--50 & 2022 \\
+    \textbf{\mcpilot}~\cite{turcato2025mcpilot} & Single-shot + gripper BO & \textbf{$\sim$10} & 2025 \\
+    \bottomrule
+  \end{tabular}
+\end{table}

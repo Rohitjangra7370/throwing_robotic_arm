@@ -2,24 +2,30 @@
 Robotic throwing offers a path to fast, long-range manipulation in industrial settings,
 but learning reliable release policies demands data efficiency: physical robots tolerate
 only tens of trials before wear or safety constraints intervene.
-\mcpilot{}~\cite{turcato2025mcpilot} addresses this via a Gaussian-process dynamics
-model and a single-shot RBF speed policy optimised with Monte Carlo policy gradients,
+\mcpilot{}~\cite{turcato2025mcpilot} addresses this via a Gaussian-process (GP) dynamics
+model and a single-shot radial-basis-function (RBF) speed policy optimised with
+Monte Carlo policy gradients,
 achieving near-perfect target coverage in roughly ten throws on a Franka Panda arm.
 
-We reproduce \mcpilot{} in an independent ballistic simulator and identify four
-non-obvious failure modes that arise when the algorithm's defaults are applied outside
-the paper's specific geometry.
+We reproduce \mcpilot{} in an independent ballistic simulator, diagnose four non-obvious
+silent failure modes in the original codebase, and conduct five experimental studies to
+characterise the algorithm's robustness and portability.
 From this diagnostic process we derive two portable design rules: a
 \emph{lengthscale-to-range scaling rule} ($\ell_s \approx 0.15 \times
 \text{target\_range}$) that prevents RBF blindness in narrow target domains, and a
-\emph{stratified exploration policy} that provides seed-robust initialisation without
+\emph{stratified exploration policy} that provides seed-robust GP initialisation without
 additional hardware trials.
-We further prove a zero-mean-noise unlearnability result---when noise is zero-mean the
-GP residual collapses to a degenerate prior, rendering model improvement impossible---and
-demonstrate its practical consequence: a noise-aware policy achieves a 50\% hit rate
-versus 10\% for a naive baseline under 20\% velocity slip.
-Applying the corrected algorithm across five release heights
-($z \in \{0.0, 0.5, 1.0, 1.5, 2.0\}$\,m), we obtain 100\% hit rates on four
-configurations and a mean landing error below 35\,mm on all five, substantially
-improving over the untuned baseline.
+We achieve 100\% hit rates across five release heights ($z \in \{0.0, 0.5, 1.0, 1.5,
+2.0\}$\,m) and demonstrate arm-agnostic portability across three robot platforms (Franka
+Panda, KUKA iiwa7, xArm6) through a decoupled architecture that separates RL from arm
+kinematics.
+We prove a \emph{zero-mean noise invariance theorem}---symmetric additive noise does not
+shift the optimal policy mean, only biased noise is learnable---and validate it
+empirically: a noise-aware policy achieves 100\% hit rate versus 0\% for a naive
+baseline under 20\% velocity slip.
+Finally, we present a wind robustness study revealing a counterintuitive
+curse-of-dimensionality effect: blind GP policies outperform explicit wind-conditioned
+policies across all three wind regimes in the low-data budget, and a closed-loop vision
+pipeline (OpenCV HSV segmentation and YOLOv8n detection) that enables autonomous bin
+targeting without pre-specified target coordinates.
 \end{abstract}

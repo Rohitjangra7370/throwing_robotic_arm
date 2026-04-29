@@ -1,0 +1,62 @@
+Revised structure (preserving study-by-study order)
+1. Introduction
+Motivation (data efficiency in robotic throwing), what MC-PILOT does, what gaps you're investigating. List contributions as: expanded RL exposition, two convergence rules, five experimental studies, one theorem, one vision pipeline. Don't pre-rank them — let the professor weigh in on what to lead with.
+2. Background and the MC-PILOT Algorithm (this is where the professor's note about "more on the RL model" lives)
+This was the weakest part of the original draft — Section 2.2 of main.pdf is barely half a page on MC-PILOT itself. Expand to ~3–4 pages:
+
+2.1 Problem formulation — single-shot throwing MDP, augmented state x̃ = [x, P], landing cost
+2.2 Gaussian Process regression for dynamics — kernel choice, posterior mean/variance, why uncertainty quantification matters here, the speed-integration model (Eq. 18 of the original paper)
+2.3 Monte Carlo policy gradient — particle propagation, the reparameterization trick (Eq. 27 of the original), how gradients flow through stochastic GP samples, why this beats analytic moment-matching for non-Gaussian initial state distributions
+2.4 The squashed-RBF policy — why this parameterization, what each parameter controls geometrically
+2.5 MC-PILOT-specific modifications — single-shot adaptation, augmented state for target-conditioned learning, gripper delay BO
+2.6 Algorithmic lineage table (model-free → PILCO → MC-PILCO → MC-PILOT) — you already have this in the slides
+
+This section earns reader trust before you start modifying anything.
+3. System Architecture
+Two-layer decoupled design (algorithm vs. simulation), the velocity-override interface, why this preserves data efficiency guarantees, NumPy ballistic simulator, PyBullet integration. Architecture diagram. ~1.5 pages.
+4. Implementation Diagnosis: Four Silent Failure Modes
+The four bugs, in compressed form (~1.5 pages instead of the 3 pages in the current draft). Keep them — they're useful for reproducibility — but tighten. Each gets one paragraph: symptom, cause, fix.
+5. Two Convergence Rules
+
+5.1 Lengthscale-to-range scaling — RBF sensitivity derivation, the rule ℓ_s ≈ 0.15 × Δrange, validation table
+5.2 Stratified exploration — the random-seed failure mode, the band-partition fix
+
+6. Study 1 — Release-Height Generalization
+Five configs, the Config E progressive diagnosis (this is a nice narrative — five iterations to find the lengthscale issue), per-trial error tables.
+7. Study 2 — Multi-Arm Generalization (new section)
+Franka, KUKA iiwa7, xArm6. The decoupled-design argument: RL trains on ball physics, arm is cosmetic, so portability is essentially free. Include the unified summary table from your slides (hit rate, mean/median/max error, avg speed, release time per arm).
+8. Study 3 — Noise Models and the Zero-Mean Invariance Theorem
+
+8.1 Three noise models: VelocitySlipNoise, VelocityBiasNoise (Gaussian), Salt-and-Pepper, ReleaseTimingJitter
+8.2 Theorem 1 — zero-mean symmetric noise → optimal action invariance. Full proof, not a sketch. Taylor expansion + symmetry of p_ε.
+8.3 GP regularization remark — small noise is necessary for GP identifiability with deterministic exploration data (your finding that lengthscales blow up to 1791 m without σ > 0)
+8.4 Empirical comparison — the full table from your slides: slip α ∈ {0.05, 0.10, 0.15, 0.20}, salt-pepper p ∈ {0.05, 0.10, 0.15}, Gaussian σ = 0.15, all with aware vs. naive columns
+
+9. Study 4 — Wind Robustness
+
+9.1 Air-relative drag correction (Eq. 19 in your draft — this is a real physics fix)
+9.2 State augmentation 8D → 11D, propagation through GP/policy/MC rollout
+9.3 Three wind regimes: constant (W1), gusts (W2), turbulence (W3)
+9.4 Results — and here's the key reframe: the counterintuitive finding that wind-blind beats wind-aware in 2 of 3 dynamic conditions. Don't bury it. Frame it as a finding, not a bug. Suggested framing: "Expanding the state space to include observable disturbances has a sample-efficiency cost: within the 25-trial budget tested, the GP's posterior over a higher-dimensional input space degrades faster than the explicit wind information improves the policy. We discuss when this trade-off would reverse in Section 11."
+9.5 The hit-rate bar chart, error variance boxplots, learning curves, target-landing scatter plots — all from your slides
+
+10. Study 5 — Closed-Loop Vision (new section)
+
+10.1 OpenCV pipeline — HSV segmentation, depth back-projection, the 2R/π bias correction for near-face vs. centroid
+10.2 YOLOv8n pipeline — synthetic dataset (800/200) rendered in PyBullet, training, deployment
+10.3 End-to-end integration — detect → policy → throw → bin
+10.4 Robustness to camera placement
+
+11. Discussion
+
+Geometry-dependence of defaults (synthesizing Studies 1, 2)
+The two faces of disturbance handling: zero-mean noise can't be conditioned out (Theorem 1); biased disturbances can be conditioned out, but only when the trial budget supports the extra GP dimensions (Wind study). This connects Studies 3 and 4 into one idea — worth flagging for the professor as a possible focusing direction.
+Limitations — sim-only, single-seed for several conditions, fixed launch angle, particle-freeze approximation
+
+12. Conclusion
+Appendices: Full hyperparameter table, theorem proof, lengthscale derivation, particle freeze analysis.
+Three things I'd flag for the professor when you submit this draft
+
+The wind result might be the most publishable single finding. Worth mentioning to them so they can weigh in on whether to pivot the paper around it. If they agree, the noise theorem becomes a natural companion (Section 11 already sets this up).
+Multi-seed statistics gap. Your draft acknowledges this for Study 2. It's worth flagging upfront — both for honesty and so the professor can decide whether to allocate compute for additional seeds before submission.
+Five studies is a lot for a conference paper. Standard ICRA/IROS is 6–8 pages. With expanded background, two rules, five studies, a theorem, and a vision pipeline, you're probably looking at 12–14 pages of content. The professor will likely want to cut. Better to draft full and let them choose what to cut than to pre-cut and have them ask why something was missing.

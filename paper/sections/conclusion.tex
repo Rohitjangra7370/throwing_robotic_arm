@@ -2,40 +2,60 @@
 \label{sec:conclusion}
 
 We presented a diagnostic reproduction of \mcpilot{}~\cite{turcato2025mcpilot} in a
-self-contained NumPy and PyBullet simulator, and conducted three focused studies
-to characterise how the algorithm behaves outside its original calibration geometry.
+self-contained NumPy and PyBullet simulator and conducted five experimental studies to
+characterise the algorithm's robustness, portability, and limits.
 
-Three technical contributions emerge from this work.
-First, we diagnosed and corrected four non-obvious failure modes in the baseline
-implementation: a broken gradient path from cost to policy parameters (T\_control
-unit mismatch), cost saturation from excessive lengthscale $\ell_c$ relative to
-exploration error magnitude, a wasted simulation horizon due to particles propagating
-after landing, and an index-range error in the early stopping infrastructure.
+\paragraph{Implementation.}
+Four non-obvious silent failure modes were diagnosed and corrected: a broken gradient
+path from cost to policy parameters, post-landing GP hallucination from particles
+propagating underground, cost-lengthscale saturation that kills gradients during
+exploration, and a simulation-horizon unit mismatch that exhausted RAM.
 Each failure was identified by instrumentation, understood through the algorithm
 structure, and resolved with a minimal targeted fix.
 
-Second, two transferable design rules emerged from Study 1.
-The \emph{lengthscale-to-range scaling rule}---$\ell_s \approx 0.15 \times
-\text{target\_range}$---prevents the RBF policy from becoming blind over narrow
-target domains, a failure mode that is invisible from the cost curve alone.
-The \emph{stratified exploration rule} partitions the speed range into equal bands
-and samples one throw per band, providing seed-robust GP coverage in the same number
-of exploration throws as random sampling while eliminating the max-speed local
-minima that trapped random exploration on elevated configs.
+\paragraph{Convergence rules.}
+Two transferable design rules emerged.
+The \emph{lengthscale-to-range scaling rule} $\ell_s \approx 0.15 \times
+\text{target\_range}$ prevents RBF blindness in narrow target domains and applies
+a priori without any experimental runs.
+The \emph{stratified exploration rule} partitions the speed range into equal bands,
+eliminating seed-sensitive failures and the max-speed local minima that trapped
+random exploration at elevated heights.
 
-Third, the release-height generalisation study demonstrates 100\% hit rates on
-$z \in \{0.5, 1.0, 1.5, 2.0\}$\,m with mean landing errors below 35\,mm across all
-four configurations, and 10/10 hits on Config E ($z = 0.0$\,m) after iterative
-diagnosis through five progressive fixes.
-These results confirm that the corrected algorithm generalises across a 2\,m range
-of release heights without any per-height tuning beyond the three parameters
-($\ell_M$, $T$, $\ell_s$) that are geometrically motivated.
+\paragraph{Release-height and multi-arm generalisation.}
+Applying the corrected algorithm with the two convergence rules achieves 100\% hit rates
+across five release heights and three robot platforms, with mean landing errors below
+35\,mm in all height configurations.
+The decoupled architecture --- ball velocity set programmatically, arm kinematics
+cosmetic --- provides portability without retraining.
 
-Wind robustness is the natural next step: extending the drag model with a wind
-force term (Eq.~\ref{eq:wind}) and studying whether the GP can absorb systematic
-wind bias within the same five-throw exploration budget used for the static case.
-Open questions include few-shot policy transfer across geometries (can a policy
-trained at $z = 1.0$\,m be warm-started for $z = 2.0$\,m with fewer trials than
-training from scratch?) and wind-state augmentation of the policy input, which would
-transform the single-shot speed map into a full contextual policy conditioned on
-measured airflow.
+\paragraph{Noise study.}
+Theorem~\ref{thm:zeromean} proves that zero-mean symmetric noise is unlearnable:
+a noise-aware policy achieves the same optimal mean action as a naive policy, while
+correctly reporting higher expected cost.
+Only biased noise (velocity slip, timing jitter, salt-and-pepper spikes) is learnable.
+Experimental validation confirms 100\% hit rate for aware vs.\ 0\% for naive at 20\%
+velocity slip.
+
+\paragraph{Wind study.}
+A complete and consistent wind pipeline (air-relative drag, 8-D$\to$11-D state
+augmentation, updated GP and policy) was implemented and evaluated.
+The central finding is counterintuitive: blind GP policies outperform explicit
+wind-conditioned policies across all three wind regimes (constant, gusts, turbulence)
+within the 15-trial budget.
+The mechanism is the curse of dimensionality: the 4-D wind-aware policy space requires
+$\approx 4\times$ more data than the 2-D blind policy space for equivalent coverage.
+Blind GP treatment of wind as an implicit dynamics bias is strictly preferable until
+the trial budget exceeds $\sim$40 trials.
+
+\paragraph{Vision pipeline.}
+Parallel OpenCV (HSV segmentation, depth back-projection, near-face bias correction)
+and YOLOv8n (synthetic PyBullet dataset, bounding-box centroid back-projection)
+pipelines were implemented and integrated with the trained policy for end-to-end
+autonomous bin targeting.
+
+\paragraph{Open questions.}
+Future work includes hardware validation on physical manipulators; multi-seed
+statistical evaluation of all five studies; wind-randomised training for a single
+policy robust to varying airflow; and quantitative end-to-end evaluation of the vision
+pipeline over a randomised target distribution.

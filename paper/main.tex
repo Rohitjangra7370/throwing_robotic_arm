@@ -25,11 +25,13 @@
 \newcommand{\eg}{\textit{e.g.}}
 
 % ─── Theorem-like environments ───────────────────────────────────────────────
+\newtheorem{theorem}{Theorem}
 \newtheorem{proposition}{Proposition}
 \newtheorem{remark}{Remark}
+\newtheorem{corollary}{Corollary}
 
 % ─── Title block ─────────────────────────────────────────────────────────────
-\title{\textbf{Geometry, Exploration, and Noise:\\
+\title{\textbf{Geometry, Noise, and Disturbances:\\
 A Diagnostic Study of Model-Based Reinforcement Learning\\
 for Data-Efficient Robotic Throwing}}
 
@@ -53,10 +55,12 @@ for Data-Efficient Robotic Throwing}}
 \input{sections/background}
 \input{sections/system}
 \input{sections/implementation}
+\input{sections/convergence_rules}
 \input{sections/study1_height}
-\input{sections/study2_noise}
-\input{sections/study3_combined}
+\input{sections/study2_multiarm}
+\input{sections/study3_noise}
 \input{sections/study4_wind}
+\input{sections/study5_vision}
 \input{sections/discussion}
 \input{sections/conclusion}
 

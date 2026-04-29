@@ -1,9 +1,33 @@
-\begin{thebibliography}{2}
+\begin{thebibliography}{9}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
   \providecommand{\doi}[1]{doi: #1}\else
   \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Deisenroth and Rasmussen(2011)]{pilco}
+M.~P. Deisenroth and C.~E. Rasmussen.
+\newblock {PILCO}: A model-based and data-efficient approach to policy search.
+\newblock In \emph{Proceedings of the 28th International Conference on Machine
+  Learning (ICML)}, pages 465--472, Bellevue, WA, USA, 2011. Omnipress.
+
+\bibitem[Jocher et~al.(2023)Jocher, Chaurasia, and Qiu]{yolov8}
+G.~Jocher, A.~Chaurasia, and J.~Qiu.
+\newblock {Ultralytics YOLO}.
+\newblock \url{https://github.com/ultralytics/ultralytics}, 2023.
+\newblock Version 8.0.0.
+
+\bibitem[Kingma and Ba(2015)]{kingma2015adam}
+D.~P. Kingma and J.~Ba.
+\newblock Adam: A method for stochastic optimization.
+\newblock \emph{arXiv preprint arXiv:1412.6980}, 2015.
+\newblock URL \url{https://arxiv.org/abs/1412.6980}.
+
+\bibitem[Kingma and Welling(2014)]{kingma2014auto}
+D.~P. Kingma and M.~Welling.
+\newblock Auto-encoding variational {Bayes}.
+\newblock \emph{arXiv preprint arXiv:1312.6114}, 2014.
+\newblock URL \url{https://arxiv.org/abs/1312.6114}.
 
 \bibitem[{Mitsubishi Electric Research Laboratories}(2022)]{mcpilco}
 {Mitsubishi Electric Research Laboratories}.
@@ -12,6 +36,22 @@
 \newblock \url{https://github.com/merlresearch/MC-PILCO}, 2022.
 \newblock GitHub repository.
 
+\bibitem[Rasmussen and Williams(2006)]{rasmussen2006gp}
+C.~E. Rasmussen and C.~K.~I. Williams.
+\newblock \emph{Gaussian Processes for Machine Learning}.
+\newblock MIT Press, Cambridge, MA, USA, 2006.
+\newblock ISBN 978-0-262-18253-9.
+\newblock URL \url{http://www.gaussianprocess.org/gpml/}.
+
+\bibitem[Shahriari et~al.(2016)Shahriari, Swersky, Wang, Adams, and
+  de~Freitas]{shahriari2016bo}
+B.~Shahriari, K.~Swersky, Z.~Wang, R.~P. Adams, and N.~de~Freitas.
+\newblock Taking the human out of the loop: A review of {Bayesian}
+  optimization.
+\newblock \emph{Proceedings of the IEEE}, 104\penalty0 (1):\penalty0 148--175,
+  2016.
+\newblock \doi{10.1109/JPROC.2015.2494218}.
+
 \bibitem[Turcato et~al.(2025)Turcato, Giacomuzzo, Carli, and
   Romeres]{turcato2025mcpilot}
 N.~Turcato, G.~Giacomuzzo, R.~Carli, and D.~Romeres.
@@ -19,5 +59,12 @@ N.~Turcato, G.~Giacomuzzo, R.~Carli, and D.~Romeres.
   learning.
 \newblock \emph{arXiv preprint arXiv:2502.05595}, 2025.
 \newblock URL \url{https://arxiv.org/abs/2502.05595}.
+
+\bibitem[Zeng et~al.(2020)Zeng, Song, Lee, Rodriguez, and Funkhouser]{tossbot}
+A.~Zeng, S.~Song, J.~Lee, A.~Rodriguez, and T.~Funkhouser.
+\newblock {TossingBot}: Learning to throw arbitrary objects with residual
+  physics.
+\newblock In \emph{Proceedings of Robotics: Science and Systems (RSS)}, 2020.
+\newblock \doi{10.15607/RSS.2019.XV.006}.
 
 \end{thebibliography}

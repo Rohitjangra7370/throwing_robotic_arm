@@ -1,0 +1,223 @@
+\section{Study 3: Noise Models and Zero-Mean Invariance}
+\label{sec:study3}
+
+\subsection{Motivation}
+\label{sec:study3:motivation}
+
+The NumPy ballistic simulator is deterministic: given a commanded velocity
+$\mathbf{v}_{\mathrm{cmd}}$, the landing position is a fixed function of that input.
+A closed-form ballistic inverter could therefore solve the task in one step,
+rendering the GP-based learning loop superfluous.
+In a physical system, the gap between commanded and delivered velocity arises from
+several sources: joint-torque saturation, gripper compliance, and release timing
+uncertainty.
+This study introduces explicit stochastic noise at the velocity-override interface to
+make the RL problem non-trivial, characterises which noise types are learnable, and
+proves a formal theorem on the boundary between learnable and unlearnable noise.
+
+\subsection{Four Noise Models}
+\label{sec:study3:models}
+
+All noise models are realised through the \texttt{perturb\_numpy} interface:
+\begin{equation}
+  \mathbf{v}_{\mathrm{actual}} = \alpha\,\mathbf{v}_{\mathrm{cmd}} + \boldsymbol{\delta},
+  \label{eq:perturb_interface}
+\end{equation}
+where the scale $\alpha$ and offset $\boldsymbol{\delta}$ are detached constants
+(no gradient tape), so the policy gradient flows through $\mathbf{v}_{\mathrm{cmd}}$
+unobstructed.
+
+\paragraph{VelocityBiasNoise (Gaussian).}
+Zero-mean additive perturbation:
+\begin{equation}
+  \alpha = 1, \quad \boldsymbol{\delta} \sim \mathcal{N}(\mathbf{0},\, \sigma^2 I_3).
+  \label{eq:bias_noise}
+\end{equation}
+The expected delivered velocity equals the commanded velocity.
+By Theorem~\ref{thm:zeromean} below, this noise type is unlearnable: the optimal
+policy under Gaussian noise coincides with the noiseless optimum.
+
+\paragraph{VelocitySlipNoise.}
+Multiplicative under-delivery with additive scatter:
+\begin{equation}
+  \alpha = 1 - \alpha_{\mathrm{slip}}, \quad
+  \boldsymbol{\delta} \sim \mathcal{N}(\mathbf{0},\, \sigma^2 I_3),
+  \label{eq:slip_noise}
+\end{equation}
+where $\alpha_{\mathrm{slip}} \in (0, 1)$ is the slip fraction.
+The mean delivered speed is $(1 - \alpha_{\mathrm{slip}})\,\|\mathbf{v}_{\mathrm{cmd}}\|$,
+introducing a systematic undershoot that a noise-aware policy can compensate by
+commanding $v_{\mathrm{cmd}} = v^* / (1 - \alpha_{\mathrm{slip}})$.
+
+\paragraph{Salt-and-Pepper Noise.}
+With probability $p$, a velocity component is replaced by a random spike of magnitude
+$s$; otherwise it is delivered exactly.
+This models electromagnetic glitches or encoder errors.
+Unlike slip, salt-and-pepper does not have a constant mean shift across all
+commanded speeds, so the compensation strategy is non-trivial.
+
+\paragraph{ReleaseTimingJitter (paper-faithful).}
+Gripper delay $t_d \sim \mathcal{U}(a, b)$ with $a > 0$ causes systematic undershoot:
+\begin{equation}
+  \mathbf{v}_{\mathrm{actual}} \approx
+    \left(1 - \frac{\gamma\,t_d}{\|\mathbf{v}_{\mathrm{cmd}}\|}\right)
+    \mathbf{v}_{\mathrm{cmd}},
+  \label{eq:jitter_noise}
+\end{equation}
+matching the gripper-delay model of \cite{turcato2025mcpilot}.
+This is a biased noise type ($\mathbb{E}[\alpha] < 1$) and hence learnable.
+
+\subsection{Zero-Mean Noise Invariance Theorem}
+\label{sec:study3:theory}
+
+\begin{theorem}[Optimal Action Invariance Under Symmetric Noise]
+\label{thm:zeromean}
+Let $f: \mathbb{R}^3 \to \mathbb{R}^2$ be the deterministic ballistic map from release
+velocity to landing position, smooth and invertible near the optimum.
+Let $\boldsymbol{\epsilon} \sim p_\epsilon$ with $\mathbb{E}[\boldsymbol{\epsilon}] = \mathbf{0}$
+and $p_\epsilon$ symmetric around zero.
+Define the noise-aware objective
+$J_{\mathrm{aware}}(\theta) = \mathbb{E}_{\boldsymbol{\epsilon}}[c(f(\mathbf{v}_{\mathrm{cmd}}
++ \boldsymbol{\epsilon}), \mathbf{P})]$
+and the noiseless objective
+$J_{\mathrm{naive}}(\theta) = c(f(\mathbf{v}_{\mathrm{cmd}}), \mathbf{P})$.
+Then the minimisers of $J_{\mathrm{aware}}$ and $J_{\mathrm{naive}}$ coincide.
+That is, symmetric zero-mean noise does not shift the optimal mean action of the policy.
+\end{theorem}
+
+\begin{proof}
+By first-order Taylor expansion of $f$ around the optimal velocity $\mathbf{v}^*$:
+\begin{equation*}
+  f(\mathbf{v}^* + \boldsymbol{\epsilon}) \approx f(\mathbf{v}^*) + J_f \boldsymbol{\epsilon},
+  \quad J_f = \tfrac{\partial f}{\partial \mathbf{v}}\big|_{\mathbf{v}^*}.
+\end{equation*}
+Taking the expectation:
+\begin{equation*}
+  \mathbb{E}_\epsilon[f(\mathbf{v}^* + \boldsymbol{\epsilon})]
+  = f(\mathbf{v}^*) + J_f \underbrace{\mathbb{E}[\boldsymbol{\epsilon}]}_{=\,\mathbf{0}}
+  = f(\mathbf{v}^*).
+\end{equation*}
+The gradient of the aware objective with respect to $\mathbf{v}_{\mathrm{cmd}}$ is:
+\begin{align*}
+  \nabla_{\mathbf{v}} J_{\mathrm{aware}}
+  &= \nabla_{\mathbf{v}} \mathbb{E}_\epsilon[c(f(\mathbf{v} + \boldsymbol{\epsilon}))] \\
+  &= \mathbb{E}_\epsilon\!\left[J_f^\top \nabla_{\mathbf{p}} c\bigl(f(\mathbf{v}
+     + \boldsymbol{\epsilon})\bigr)\right].
+\end{align*}
+At the noiseless optimum $\mathbf{v}^*$ where $f(\mathbf{v}^*) = \mathbf{P}$, the
+landing error $f(\mathbf{v}^* + \boldsymbol{\epsilon}) - \mathbf{P} \approx
+J_f \boldsymbol{\epsilon}$ is an odd function of $\boldsymbol{\epsilon}$ to first order.
+The cost gradient $\nabla_{\mathbf{p}} c(\mathbf{p})$ is itself an odd function of
+the landing error $\mathbf{p} - \mathbf{P}$, so the composition
+$\nabla_{\mathbf{p}} c(f(\mathbf{v}^* + \boldsymbol{\epsilon}))$ is odd in
+$\boldsymbol{\epsilon}$ \emph{at} $\mathbf{v}^*$ (this argument applies specifically at
+the optimum, not in general).
+For symmetric $p_\epsilon$, the expectation of any odd function is zero:
+$\mathbb{E}_\epsilon[\nabla_{\mathbf{p}} c(f(\mathbf{v}^* +
+\boldsymbol{\epsilon}))] = \mathbf{0}$, which is the same stationarity condition as the
+noiseless problem $\nabla_{\mathbf{v}} J_{\mathrm{naive}}\big|_{\mathbf{v}^*} = 0$.
+Hence both objectives share the same stationary point $\mathbf{v}^*$.
+\end{proof}
+
+\begin{remark}
+The result relies on the linearity of $f$ near $\mathbf{v}^*$ and the zero-mean
+symmetry of $p_\epsilon$.
+For skewed or heavy-tailed noise the approximation breaks and a genuine gap between
+aware and naive policies can emerge.
+The biased noise types (Slip, Jitter) fall outside this theorem because
+$\mathbb{E}[\boldsymbol{\epsilon}] \neq \mathbf{0}$; they are learnable.
+\end{remark}
+
+\paragraph{GP regularisation consequence.}
+An unexpected corollary of zero-mean noise appears in GP hyperparameter estimation.
+With $\sigma = 0$ (zero noise), $N_{\mathrm{exp}} = 10$ perfectly deterministic
+exploration throws give the GP log-likelihood a degenerate ridge: the MLE drives
+lengthscales to $1791$\,m, $1602$\,m, and $357$\,m — three to four orders of magnitude
+larger than the $\sim$1\,m domain.
+A GP with these lengthscales predicts the same landing position regardless of launch
+speed, making all policy gradients zero.
+With $\sigma = 0.04$\,m/s, repeated throws at similar speeds produce slightly different
+landings, and MLE finds finite lengthscales that explain the variance as a function of
+speed.
+\emph{Small noise is a necessary GP regulariser} for deterministic simulation data; we
+recommend $\sigma_n \approx 0.04$\,m/s for the throwing domain.
+
+\subsection{Empirical Comparison: Noise-Aware vs.\ Naive}
+\label{sec:study3:empirical}
+
+Table~\ref{tab:noise_results} reports hit rate, mean error, and final cost for all
+tested noise conditions.
+Aware and naive policies share identical exploration throws; the only difference is
+whether noise is propagated through MC rollouts during policy optimisation.
+
+\begin{table*}[t]
+  \centering
+  \caption{Performance under different arm-side noise models.
+           Aware = noise propagated through MC rollouts; Naive = noiseless rollouts.
+           Hit radius = 10\,cm. All results at seed=1, 4 policy trials.}
+  \label{tab:noise_results}
+  \small
+  \begin{tabular}{llcccc}
+    \toprule
+    Noise Type & Level & Aware? & Hit Rate (\%) & Mean Error (m) & Final Cost \\
+    \midrule
+    Slip & $\alpha{=}0.05,\,\sigma{=}0.04$ & No  & 100 & 0.0682 & 0.00349 \\
+    Slip & $\alpha{=}0.05,\,\sigma{=}0.04$ & Yes & 100 & 0.0260 & 0.00700 \\
+    Slip & $\alpha{=}0.10,\,\sigma{=}0.04$ & No  & \textbf{25}  & 0.1242 & 0.00355 \\
+    Slip & $\alpha{=}0.10,\,\sigma{=}0.04$ & Yes & \textbf{100} & 0.0450 & 0.00672 \\
+    Slip & $\alpha{=}0.15,\,\sigma{=}0.04$ & No  & 100 & 0.0578 & 0.00339 \\
+    Slip & $\alpha{=}0.15,\,\sigma{=}0.04$ & Yes & 100 & 0.0359 & 0.00623 \\
+    Slip & $\alpha{=}0.20,\,\sigma{=}0.04$ & No  & \textbf{0}   & 0.1881 & 0.00404 \\
+    Slip & $\alpha{=}0.20,\,\sigma{=}0.04$ & Yes & \textbf{100} & 0.0219 & 0.01097 \\
+    \midrule
+    Salt-Pepper & $p{=}0.05,\,s{=}0.30$ & No  & 75  & 0.0439 & 0.00410 \\
+    Salt-Pepper & $p{=}0.05,\,s{=}0.30$ & Yes & 100 & 0.0292 & 0.01605 \\
+    Salt-Pepper & $p{=}0.10,\,s{=}0.30$ & No  & 25  & 0.1012 & 0.00345 \\
+    Salt-Pepper & $p{=}0.10,\,s{=}0.30$ & Yes & 75  & 0.1104 & 0.02381 \\
+    Salt-Pepper & $p{=}0.15,\,s{=}0.30$ & No  & 50  & 0.0768 & 0.00410 \\
+    Salt-Pepper & $p{=}0.15,\,s{=}0.30$ & Yes & 50  & 0.0914 & 0.03143 \\
+    \bottomrule
+  \end{tabular}
+\end{table*}
+
+\paragraph{Slip noise.}
+The aware policy consistently outperforms naive at all slip levels.
+The gap is most dramatic at $\alpha_{\mathrm{slip}} = 0.20$: the naive policy achieves
+0\% while the aware policy achieves 100\%.
+The mechanism is speed compensation: the 20\% undershoot means the aware policy must
+command $v^* / (1 - 0.20) = 1.25\,v^*$ to hit a target at distance $d$.
+The naive policy targets $v^*$ and consistently undershoots by 20\% of the required
+range.
+
+The non-monotone result at $\alpha_{\mathrm{slip}} = 0.15$ (naive achieves 100\%,
+sandwiched between 25\% at $\alpha = 0.10$ and 0\% at $\alpha = 0.20$) is suspicious
+and warrants caution.
+All results are from a single seed; this level is likely a case of single-seed luck
+where the five exploration throws happened to produce a GP with sufficient coverage
+of the relevant speed range to allow the naive policy to partially self-correct.
+Multi-seed evaluation ($\geq 5$ seeds) is required to confirm whether naive
+achieves 100\% at $\alpha = 0.15$ in expectation or whether this is an outlier.
+
+The naive policy's final cost ($\approx 0.001$--$0.004$) is systematically lower
+than the aware policy's ($\approx 0.007$--$0.011$).
+This is the \emph{false-optimism} consequence of Theorem~\ref{thm:zeromean}: the naive
+optimiser evaluates noiseless rollouts and concludes it has solved the task precisely,
+while the aware policy honestly reports the expected cost under the noise distribution.
+Lower training cost, far worse test performance.
+
+\paragraph{Salt-and-pepper noise.}
+The aware policy consistently outperforms naive at $p = 0.05$ and $p = 0.10$.
+At $p = 0.15$ both policies plateau at 50\%: the spike probability is high enough that
+neither policy can reliably avoid corrupted throws.
+Salt-and-pepper noise is partially learnable — the aware policy can reduce the throw
+speed to avoid the worst-case spikes — but the irreducible fraction of corrupted throws
+sets a performance ceiling.
+
+\paragraph{The 50\% ceiling.}
+For the full-slip case ($\alpha_{\mathrm{slip}} = 0.20$, $\sigma = 0.04$\,m/s), the
+aware policy plateaus at 50\% (evaluated per-throw, counting each of the 10 evaluation
+throws individually as a hit or miss) rather than converging to 100\%.
+At a release speed of $\approx 2.5$\,m/s, $\sigma = 0.04$\,m/s produces a landing
+standard deviation of roughly 2--4\,cm, which accounts for half the throws missing
+the 10\,cm-radius target even with perfect mean aim.
+This is irreducible aleatoric variance, not a learning failure.

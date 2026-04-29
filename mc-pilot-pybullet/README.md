@@ -1,113 +1,78 @@
-<!--
-Copyright (C) 2020, 2023 Mitsubishi Electric Research Laboratories (MERL)
+# mc-pilot-pybullet — Study 2: PyBullet Arm + Noise + Multi-Arm
 
-SPDX-License-Identifier: AGPL-3.0-or-later
--->
-# MC-PILCO
+Replaces the NumPy ballistic simulator with a PyBullet arm (KUKA iiwa7 by default). Introduces arm-side noise and tests three robot arms.
 
-This package implements a Model-based Reinforcement Learning algorithm called Monte Carlo Probabilistic Inference for Learning and COntrol (MC-PILCO), for modeling and control of dynamical system. The algorithm relies on Gaussian Processes (GPs) to model the system dynamics and on a Monte Carlo approach to estimate the policy gradient during optimization. The Monte Carlo approach is shown to be effective for policy optimization thanks to a proper cost function shaping and use of dropout. This defines a framework where we can study: (i) the selection of the
-cost function, (ii) the optimization of policies using dropout,
-(iii) an improved data efficiency through the use of structured
-kernels in the GP models
-The algorithm is also extended to real systems and in particular to Partially Measurable Systems and it takes the name of MC-PILCO-4PMS.
-We discuss the importance of modeling both the measurement system and
-the state estimators during policy optimization. Please, see the [paper](https://ieeexplore.ieee.org/abstract/document/9827590) for more details.
+**Two research questions:**
+1. Can a noise-aware RL policy outperform a naive policy when the arm delivers biased or stochastic velocity errors?
+2. Does the trained policy transfer across different robot URDFs (Franka Panda, KUKA iiwa7, xArm6)?
 
-## Features
+---
 
-The code is implemented in python3 and reproduces all the simulation examples in [MC-PILCO](https://ieeexplore.ieee.org/abstract/document/9827590), namely, multiple ablation studies and the solution of a cart-pole system swing-up (available both in a python simulated environment and in the physic engine MuJoCo), a trajectory controller for a UR5 (implemented in Mujoco). The results can be reproduced with statistical values via Monte Carlo simulations.
-The user has the possibility to add his own python system or Mujoco Environment and solve it with MC-PILCO or MC-PILCO-4PMS.
+## New components (not in mc-pilot/)
 
-Please refer to the [guide](./MC_PILCO_Software_Package.pdf) for a more detailed explanation of the code base.
+| File | What it does |
+|------|-------------|
+| `simulation_class/model_pybullet.py` | `PyBulletThrowingSystem` — URDF arm + ball physics, bin geometry |
+| `robot_arm/arm_controller.py` | IK solver, cubic spline trajectory, EE velocity extraction |
+| `robot_arm/noise_models.py` | `VelocitySlipNoise` (biased undershoot), `SaltAndPepperNoise` (random spikes) |
+| `robot_arm/robot_profiles.py` | URDF paths and joint configs for Franka Panda, KUKA iiwa7, xArm6 |
 
-## Installation
+---
 
-1. Download / Git clone this repo.
-2. Create a python environment with the following packages:
-
-### Dependencies
-
-- [PyTorch 1.4 or higher](<https://pytorch.org/>)
-- [NumPy](<https://numpy.org/>)
-- [Matplotlib](<https://matplotlib.org/>)
-- [Pickle](<https://docs.python.org/3/library/pickle.html>)
-- [Argparse](<https://docs.python.org/3/library/argparse.html>)
-- `gpr_lib` is provided courtesy of Alberto Dalla Libera with permission to redistribute as part of this software package (License: `MIT`).
-
-If you want to test the code on MuJoCo environments, make sure to have also MuJoCo_py and Gym libraries.
-
-### Optional Dependencies
-
-- [MuJoCo 2.00](http://www.mujoco.org/) (License: `Apache-2.0`)
-- [MuJoCo-Py](<https://github.com/openai/mujoco-py>) (License: `MIT`)
-- [Gym](<http://gym.openai.com/>) (License: `MIT`)
-
-You can create a conda environment with the above dependencies by executing:
+## Entry points
 
 ```bash
-conda env create --file environment.yaml
+# Baseline — KUKA iiwa7, no noise
+python test_mc_pilot_pb_A.py -seed 1 -num_trials 10
+
+# Noise-aware policy (velocity slip, α=0.20 — sharpest separation)
+python test_mc_pilot_pb_A_noisy.py -seed 1 -num_trials 10 -alpha 0.20
+
+# Multi-arm: Franka Panda
+python train_mc_pilot_pb_A_franka_panda.py -seed 1
+
+# Multi-arm: xArm6
+python train_mc_pilot_pb_A_xarm6.py -seed 1
+
+# Full noise paper sweep (3 seeds × all slip + salt-pepper configs):
+python run_pb_noise_paper_multiseed.py
+
+# PyBullet GUI demo (replay trained policy with arm animation):
+python demo_pybullet_gui.py --log_path results_mc_pilot_pb_A/1 --num_throws 5
+
+# Vision-guided throw (OpenCV depth camera — see also mc-pilot-pybullet-yolo/):
+python test_mc_pilot_pb_A_vision.py -seed 1 -num_trials 5
 ```
 
-## Usage
+---
 
-Please refer to the guide [MC_PILCO_Software_Package.pdf](./MC_PILCO_Software_Package.pdf).
+## Results
 
-## Testing
+**Multi-arm (commanded velocity):** 100% hit rate for all three arms — the RL algorithm is arm-agnostic.
 
-Inside 'mc_pilco' folder:
+**Noise study (3 seeds, averaged):**
 
-- Run `$ python test_mcpilco_cartpole.py` to test MC-PILCO in the cartpole swing-up task (GP model with squared-exponential+polynomial kernel).
-- Run `$ python test_mcpilco_cartpole_rbf_ker.py` to test MC-PILCO in the cartpole swing-up task (GP model with squared-exponential kernel).
-- Run `$ python test_mcpilco_cartpole_multi_init.py` to test MC-PILCO in the cartpole swing-up task stating from two separate possible initial cart positions.
-- Run `$ python test_mcpilco4pms_cartpole.py` to test MC-PILCO4PMS in the cartpole swing-up task when considering the presence of sensors and state estimation.
-- Run `$ python test_mcpilco_cartpole_mujoco.py` to test MC-PILCO in the cartpole swing-up task in MuJoCo.
-- Run `$ python test_mcpilco_ur5_mujoco.py` to use MC-PILCO to learn a joint-space controller for a UR5 robot arm in MuJoCo.
+| Noise type | Level | Aware hit rate | Naive hit rate |
+|------------|-------|---------------|---------------|
+| Slip | α = 0.10 | 100% | 50% |
+| Slip | α = 0.20 | **100%** | **0%** |
+| Salt-pepper | p = 0.05 | 100% | 75% |
+| Salt-pepper | p = 0.10 | 75% | 25% |
 
-## Citation
+Full multi-seed report: `results_mc_pilot_pb_noise_multiseed_report/`
 
-If you use the software, please cite the following ([paper](https://ieeexplore.ieee.org/abstract/document/9827590)):
+**Key theorem:** Zero-mean symmetric Gaussian noise cannot be compensated by RL — the optimal policy is unchanged. Only biased noise (slip, salt-pepper, timing jitter) is learnable.
 
-Amadio, F., Dalla Libera, A., Antonello, R., Nikovski, D., Carli, R., & Romeres, D. (2022). Model-Based Policy Search Using Monte Carlo Gradient Estimation With Real Systems Application. IEEE Transactions on Robotics, 38(6), 3879-3898.
+---
 
-```BibTeX
-@article{amadio2022model,
-  title={Model-Based Policy Search Using Monte Carlo Gradient Estimation With Real Systems Application},
-  author={Amadio, Fabio and Dalla Libera, Alberto and Antonello, Riccardo and Nikovski, Daniel and Carli, Ruggero and Romeres, Diego},
-  journal={IEEE Transactions on Robotics},
-  volume={38},
-  number={6},
-  pages={3879--3898},
-  year={2022},
-  publisher={IEEE}
-}
-```
+## File guide
 
-## Related Links
-
-You can find more information and videos at:
-
-[MERL research page](https://www.merl.com/research/license/MC-PILCO)
-
-[Youtube Presentation](https://www.youtube.com/watch?v=--73hmZYaHA)
-
-## Contact
-
-Diego Romeres: romeres@merl.com
-
-Alberto Dalla Libera: dallaliber@dei.unipd.it
-
-Fabio Amadio: amadiofa@dei.unipd.it
-
-## Contributing
-
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for our policy on contributions.
-
-## License
-Released under `AGPL-3.0-or-later` license, as found in the [LICENSE.md](LICENSE.md) file.
-
-All files:
-```
-Copyright (c) 2020, 2023 Mitsubishi Electric Research Laboratories (MERL)
-
-SPDX-License-Identifier: AGPL-3.0-or-later
-```
+- `test_mc_pilot_pb_A.py` — **main baseline entry point**
+- `test_mc_pilot_pb_A_noisy.py` — **main noise study entry point**
+- `run_pb_noise_paper_multiseed.py` — **multi-seed noise sweep**
+- `train_mc_pilot_pb_A_franka_panda.py`, `train_mc_pilot_pb_A_xarm6.py` — **multi-arm runs**
+- `demo_pybullet_gui.py` — **visual demo**
+- `compare_robot_arms.py`, `inspect_robot_arms.py` — analysis utilities
+- `tmp_split_run_diagnosis.py`, `tmp_terminal_policy_check.py` — debugging scripts (ignore)
+- `test_mc_pilot_pb_B.py`, `test_mc_pilot_pb_C.py`, `test_mc_pilot_pb_noise_study.py` — earlier study variants (ignore)
+- `apply_mcpilco_policy.py`, `log_plot_cartpole.py`, `test_mcpilco_cartpole*.py` — upstream MC-PILCO cartpole boilerplate (ignore)

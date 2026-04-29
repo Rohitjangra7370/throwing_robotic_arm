@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2023) (preloaded format=pdflatex 2026.2.21)  25 APR 2026 01:05
+This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2023) (preloaded format=pdflatex 2026.2.21)  29 APR 2026 00:43
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -401,42 +401,37 @@ Package caption Info: New subtype `subtable' on input line 239.
 (/usr/share/texlive/texmf-dist/tex/latex/base/fontenc.sty
 Package: fontenc 2021/04/29 v2.0v Standard LaTeX package
 )
-\c@proposition=\count300
-\c@remark=\count301
+\c@theorem=\count300
+\c@proposition=\count301
+\c@remark=\count302
+\c@corollary=\count303
 
 (/usr/share/texlive/texmf-dist/tex/latex/l3backend/l3backend-pdftex.def
 File: l3backend-pdftex.def 2023-01-16 L3 backend support: PDF output (pdfTeX)
-\l__color_backend_stack_int=\count302
+\l__color_backend_stack_int=\count304
 \l__pdf_internal_box=\box55
 )
-(./main.aux
-
-LaTeX Warning: Label `eq:cost' multiply defined.
-
-
-LaTeX Warning: Label `prop:zeromean' multiply defined.
-
-)
+(./main.aux)
 \openout1 = `main.aux'.
 
-LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 45.
-LaTeX Font Info:    ... okay on input line 45.
-LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 45.
-LaTeX Font Info:    ... okay on input line 45.
-LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 45.
-LaTeX Font Info:    ... okay on input line 45.
-LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 45.
-LaTeX Font Info:    ... okay on input line 45.
-LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 45.
-LaTeX Font Info:    ... okay on input line 45.
-LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 45.
-LaTeX Font Info:    ... okay on input line 45.
-LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 45.
-LaTeX Font Info:    ... okay on input line 45.
-LaTeX Font Info:    Checking defaults for PD1/pdf/m/n on input line 45.
-LaTeX Font Info:    ... okay on input line 45.
-LaTeX Font Info:    Checking defaults for PU/pdf/m/n on input line 45.
-LaTeX Font Info:    ... okay on input line 45.
+LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 47.
+LaTeX Font Info:    ... okay on input line 47.
+LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 47.
+LaTeX Font Info:    ... okay on input line 47.
+LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 47.
+LaTeX Font Info:    ... okay on input line 47.
+LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 47.
+LaTeX Font Info:    ... okay on input line 47.
+LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 47.
+LaTeX Font Info:    ... okay on input line 47.
+LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 47.
+LaTeX Font Info:    ... okay on input line 47.
+LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 47.
+LaTeX Font Info:    ... okay on input line 47.
+LaTeX Font Info:    Checking defaults for PD1/pdf/m/n on input line 47.
+LaTeX Font Info:    ... okay on input line 47.
+LaTeX Font Info:    Checking defaults for PU/pdf/m/n on input line 47.
+LaTeX Font Info:    ... okay on input line 47.
 
 *geometry* driver: auto-detecting
 *geometry* detected driver: pdftex
@@ -474,16 +469,16 @@ LaTeX Font Info:    ... okay on input line 45.
 
 (/usr/share/texlive/texmf-dist/tex/context/base/mkii/supp-pdf.mkii
 [Loading MPS to PDF converter (version 2006.09.02).]
-\scratchcounter=\count303
+\scratchcounter=\count305
 \scratchdimen=\dimen185
 \scratchbox=\box56
-\nofMPsegments=\count304
-\nofMParguments=\count305
+\nofMPsegments=\count306
+\nofMParguments=\count307
 \everyMPshowfont=\toks32
-\MPscratchCnt=\count306
+\MPscratchCnt=\count308
 \MPscratchDim=\dimen186
-\MPnumerator=\count307
-\makeMPintoPDFobject=\count308
+\MPnumerator=\count309
+\makeMPintoPDFobject=\count310
 \everyMPtoPDFconversion=\toks33
 ) (/usr/share/texlive/texmf-dist/tex/latex/epstopdf-pkg/epstopdf-base.sty
 Package: epstopdf-base 2020-01-24 v2.11 Base part for package epstopdf
@@ -502,7 +497,7 @@ G,.JBIG2,.JB2,.eps]
 File: epstopdf-sys.cfg 2010/07/13 v1.3 Configuration of (r)epstopdf for TeX Liv
 e
 ))
-Package hyperref Info: Link coloring OFF on input line 45.
+Package hyperref Info: Link coloring OFF on input line 47.
 
 (./main.out) (./main.out)
 \@outlinefile=\write3
@@ -510,29 +505,37 @@ Package hyperref Info: Link coloring OFF on input line 45.
 
 Package caption Info: Begin \AtBeginDocument code.
 Package caption Info: End \AtBeginDocument code.
-LaTeX Font Info:    Trying to load font information for U+msa on input line 47.
+LaTeX Font Info:    Trying to load font information for U+msa on input line 49.
 
 
 (/usr/share/texlive/texmf-dist/tex/latex/amsfonts/umsa.fd
 File: umsa.fd 2013/01/14 v3.01 AMS symbols A
 )
-LaTeX Font Info:    Trying to load font information for U+msb on input line 47.
+LaTeX Font Info:    Trying to load font information for U+msb on input line 49.
 
 
 (/usr/share/texlive/texmf-dist/tex/latex/amsfonts/umsb.fd
 File: umsb.fd 2013/01/14 v3.01 AMS symbols B
 )
 LaTeX Font Info:    Trying to load font information for T1+cmtt on input line 4
-7.
+9.
 
 (/usr/share/texlive/texmf-dist/tex/latex/base/t1cmtt.fd
 File: t1cmtt.fd 2022/07/10 v2.5l Standard LaTeX font definitions
 )
-(./sections/abstract.tex) (./sections/introduction.tex
-Underfull \vbox (badness 10000) has occurred while \output is active []
+(./sections/abstract.tex)
+Underfull \hbox (badness 1147) in paragraph at lines 10--52
+\T1/cmr/m/n/10 rules: a \T1/cmr/m/it/10 lengthscale-to-range scal-ing rule \T1/
+cmr/m/n/10 ($\OML/cmm/m/it/10 `[] \OMS/cmsy/m/n/10 ^^Y
+ []
 
 
-Underfull \hbox (badness 4805) in paragraph at lines 18--32
+Underfull \hbox (badness 1122) in paragraph at lines 10--52
+\T1/cmr/m/n/10 i-sa-tion with-out ad-di-tional hard-ware tri-als. We
+ []
+
+(./sections/introduction.tex
+Underfull \hbox (badness 4805) in paragraph at lines 18--31
 \T1/cmr/m/n/10 tric Re-search Lab-o-ra-to-ries[] [[]2022[]]---a Gaussian-
  []
 
@@ -541,71 +544,102 @@ dist/fonts/enc/dvips/cm-super/cm-super-t1.enc}
 
 
 ]
-Underfull \hbox (badness 1205) in paragraph at lines 60--63
+Underfull \hbox (badness 1205) in paragraph at lines 55--58
 \T1/cmr/m/n/10 self-contained bal-lis-tic sim-u-la-tor and Py-Bul-
  []
 
 
-Underfull \hbox (badness 1077) in paragraph at lines 69--72
-[]\T1/cmr/bx/n/10 Lengthscale-to-range scal-ing rule. \T1/cmr/m/n/10 The
+Underfull \hbox (badness 3407) in paragraph at lines 70--73
+\T1/cmr/m/n/10 rates across all five tested heights ($\OML/cmm/m/it/10 z \OMS/c
+msy/m/n/10 2
  []
 
 ) (./sections/background.tex
-Underfull \hbox (badness 1527) in paragraph at lines 91--1
- []\T1/cmr/bx/n/10 Paper struc-ture.[] \T1/cmr/m/n/10 Sec-tion []2[] re-views t
-he MC-
+Underfull \hbox (badness 4454) in paragraph at lines 1--1
+[]\T1/cmr/bx/n/14.4 Background and the MC-
  []
 
 [2]
-Overfull \hbox (11.58644pt too wide) detected at line 59
+Underfull \hbox (badness 7203) in paragraph at lines 61--72
+ []\T1/cmr/bx/n/10 Sparse ap-prox-i-ma-tion.[] \T1/cmr/m/n/10 Ex-act GP in-fer-
+ence
+ []
+
+
+Underfull \hbox (badness 3029) in paragraph at lines 88--105
+\T1/cmr/m/n/10 to-ries[] [[]2022[]] prop-a-gates $\OML/cmm/m/it/10 M$ \T1/cmr/m
+/n/10 stochas-tic par-ti-cles
+ []
+
+
+Underfull \hbox (badness 1097) in paragraph at lines 114--131
+ []\T1/cmr/bx/n/10 Why Monte Carlo over an-a-lytic moment-
+ []
+
+
+Underfull \hbox (badness 3029) in paragraph at lines 114--131
+\T1/cmr/bx/n/10 matching?[] \T1/cmr/m/n/10 PILCO []Deisen-roth and Ras-mussen[]
+
+ []
+
+[3]
+Overfull \hbox (11.58644pt too wide) detected at line 146
 [][][]\OML/cmm/m/it/10 ^^Y[]\OT1/cmr/m/n/10 (\OT1/cmr/bx/n/10 P\OT1/cmr/m/n/10 
 ) = []  [] \OML/cmm/m/it/10 ;
  []
 
 
-Underfull \hbox (badness 2384) in paragraph at lines 61--66
-[]\T1/cmr/m/n/10 where $\OML/cmm/m/it/10 u[]$ \T1/cmr/m/n/10 is the max-i-mum a
-l-low-able speed,
+Underfull \hbox (badness 5832) in paragraph at lines 146--152
+\T1/cmr/m/n/10 where $\OML/cmm/m/it/10 u[]$ \T1/cmr/m/n/10 is the max-i-mum al-
+low-able speed,
  []
 
-) (./sections/system.tex
+
+Underfull \hbox (badness 10000) in paragraph at lines 162--162
+[]\T1/cmr/bx/n/12 MC-PILOT Spe-cific Mod-i-fi-ca-
+ []
+
+
+Overfull \hbox (279.2818pt too wide) in paragraph at lines 218--229
+ [][] 
+ []
+
+) (./sections/system.tex [4]
 LaTeX Font Info:    Font shape `T1/cmtt/bx/n' in size <10> not available
-(Font)              Font shape `T1/cmtt/m/n' tried instead on input line 32.
- [3]
-Underfull \hbox (badness 10000) in paragraph at lines 37--41
-[]\T1/cmtt/m/n/10 mc-pilot-elevated/ \T1/cmr/m/n/10 ^^V Release-height
+(Font)              Font shape `T1/cmtt/m/n' tried instead on input line 44.
+
+Underfull \hbox (badness 10000) in paragraph at lines 49--53
+[]\T1/cmtt/m/n/10 mc-pilot-elevated/ \T1/cmr/m/n/10 --- Release-height
  []
 
 
-Underfull \hbox (badness 10000) in paragraph at lines 37--41
+Underfull \hbox (badness 10000) in paragraph at lines 49--53
 \T1/cmr/m/n/10 study. Sweeps five re-lease heights
  []
 
 
-LaTeX Warning: Reference `sec:noise' on page 4 undefined on input line 46.
+Underfull \hbox (badness 3158) in paragraph at lines 49--53
+\T1/cmr/m/n/10 bal-lis-tic sim-u-la-tor. Iso-lates the ef-fect of
+ []
 
 
-Underfull \hbox (badness 10000) in paragraph at lines 88--91
+Underfull \hbox (badness 2293) in paragraph at lines 81--84
+\T1/cmr/m/n/10 The \T1/cmtt/m/n/10 ArmController \T1/cmr/m/n/10 class wraps a m
+a-nip-u-la-tor
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 96--98
 []\T1/cmr/bx/n/10 Ball at-tach-ment and re-lease. \T1/cmr/m/n/10 A
  []
 
 
-Underfull \hbox (badness 10000) in paragraph at lines 88--91
-\T1/cmtt/m/n/10 JOINT_FIXED \T1/cmr/m/n/10 con-straint (\T1/cmtt/m/n/10 attach_
-ball()\T1/cmr/m/n/10 )
+Underfull \hbox (badness 6001) in paragraph at lines 111--111
+[]\T1/cmr/bx/n/12 PyBullet--NumPy Physics Dis-
  []
 
-) (./sections/implementation.tex
-Underfull \hbox (badness 10000) in paragraph at lines 104--1
-[][]\T1/cmr/bx/n/10 [DATA NEEDED: ar-chi-tec-ture di-a-
- []
-
-
-Underfull \hbox (badness 6708) in paragraph at lines 104--1
-\T1/cmr/bx/n/10 gram (two-layer block di-a-gram show-ing
- []
-
-
+) (./sections/implementation.tex [5{/usr/share/texlive/texmf-dist/fonts/enc/dvi
+ps/cm-super/cm-super-ts1.enc}]
 Underfull \hbox (badness 10000) in paragraph at lines 16--22
 \T1/cmr/m/n/10 raised \T1/cmtt/m/n/10 RuntimeError: element 0 of tensors
  []
@@ -637,286 +671,160 @@ Underfull \hbox (badness 1454) in paragraph at lines 23--33
 s
  []
 
-[4{/usr/share/texlive/texmf-dist/fonts/enc/dvips/cm-super/cm-super-ts1.enc}]
+
 Underfull \hbox (badness 1406) in paragraph at lines 59--65
 \T1/cmr/bx/n/10 Symptom. \T1/cmr/m/n/10 Be-fore any fix, the per-trial cost
  []
 
-[5]
-Underfull \hbox (badness 3872) in paragraph at lines 168--175
+[6]
+Underfull \hbox (badness 3872) in paragraph at lines 167--174
 []\T1/cmr/bx/n/10 Symptom B: opt_steps_list in-dex out
  []
 
 
-Underfull \hbox (badness 1117) in paragraph at lines 168--175
+Underfull \hbox (badness 1117) in paragraph at lines 167--174
 \T1/cmr/bx/n/10 of range. \T1/cmr/m/n/10 MC-PILCO in-dexes a pre-allocated
  []
 
 
-Underfull \hbox (badness 10000) in paragraph at lines 168--175
+Underfull \hbox (badness 10000) in paragraph at lines 167--174
 \T1/cmr/m/n/10 list \T1/cmtt/m/n/10 opt_steps_list \T1/cmr/m/n/10 by \T1/cmtt/m
 /n/10 trial_index\T1/cmr/m/n/10 , where
  []
 
 
-Underfull \hbox (badness 3049) in paragraph at lines 168--175
+Underfull \hbox (badness 3049) in paragraph at lines 167--174
 \T1/cmr/m/n/10 op-ti-mi-sa-tion trial), so \T1/cmtt/m/n/10 trial_index = 4 \T1/
 cmr/m/n/10 im-me-
  []
 
-) (./sections/study1_height.tex
-Underfull \hbox (badness 10000) in paragraph at lines 40--40
-[]\T1/cmr/m/n/9 Stratified
- []
+) (./sections/convergence_rules.tex
+Underfull \vbox (badness 10000) has occurred while \output is active []
 
-
-Overfull \hbox (66.10657pt too wide) in paragraph at lines 30--43
- [][] 
- []
-
-
-Underfull \vbox (badness 2073) has occurred while \output is active []
-
- [6]
-Overfull \hbox (132.42105pt too wide) in paragraph at lines 104--122
- [][] 
- []
-
-[7]
-Underfull \hbox (badness 10000) in paragraph at lines 183--183
+ [7]
+Underfull \hbox (badness 10000) in paragraph at lines 11--11
 []\T1/cmr/bx/n/12 Lengthscale-to-Range Scal-ing
  []
 
 
-Overfull \hbox (19.86649pt too wide) in paragraph at lines 228--240
+Underfull \hbox (badness 1292) in paragraph at lines 38--42
+ []\T1/cmr/bx/n/10 The rule.[] \T1/cmr/m/n/10 Set-ting $\OML/cmm/m/it/10 `[] \O
+MS/cmsy/m/n/10 ^^Y \OT1/cmr/m/n/10 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 15 \OMS/c
+msy/m/n/10 ^^B \OT1/cmr/m/n/10 ^^A[]$ \T1/cmr/m/n/10 where
+ []
+
+
+Overfull \hbox (10.84381pt too wide) in paragraph at lines 64--76
  [][] 
  []
 
-) (./sections/study2_noise.tex
-Underfull \hbox (badness 10000) in paragraph at lines 26--30
-\T1/cmr/m/n/10 All three mod-els are re-alised
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 26--30
-\T1/cmr/m/n/10 through the \T1/cmtt/m/n/10 perturb_numpy \T1/cmr/m/n/10 in-ter-
-face:
- []
-
-
-Underfull \hbox (badness 1735) in paragraph at lines 26--30
-[]\OT1/cmr/m/n/10 (\OT1/cmr/bx/n/10 v[]\OML/cmm/m/it/10 ;  n\OT1/cmr/m/n/10 ) \
-OMS/cmsy/m/n/10 ! \OT1/cmr/m/n/10 (\OML/cmm/m/it/10 ;  []\OT1/cmr/m/n/10 )$\T1
-/cmr/m/n/10 , re-turn-ing a
- []
-
-[8]
-Underfull \hbox (badness 10000) in paragraph at lines 52--53
- []\T1/cmr/bx/n/10 VelocitySlipNoise.[] \T1/cmr/m/n/10 A mul-ti-plica-tive unde
-r-
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 75--75
-[]\T1/cmr/bx/n/12 Zero-Mean Un-learn-abil-ity and
- []
-
-
-Underfull \hbox (badness 2717) in paragraph at lines 130--130
-[]\T1/cmr/bx/n/12 Empirical Com-par-i-son: Noise-
- []
-
-
-Overfull \hbox (48.92099pt too wide) in paragraph at lines 145--153
+) (./sections/study1_height.tex [8]
+Overfull \hbox (30.81325pt too wide) in paragraph at lines 26--39
  [][] 
  []
 
-[9]) (./sections/study3_combined.tex
-Underfull \hbox (badness 1152) in paragraph at lines 6--18
-\T1/cmr/m/n/10 us-ing the NumPy bal-lis-tic sim-u-la-tor. Study 2
+
+Overfull \hbox (25.74689pt too wide) in paragraph at lines 53--71
+ [][] 
  []
 
 
-Underfull \hbox (badness 10000) in paragraph at lines 25--40
- []\T1/cmr/bx/n/10 Joint ve-loc-ity cap.[] \T1/cmr/m/n/10 The KUKA
+Underfull \hbox (badness 1077) in paragraph at lines 92--95
+ []\T1/cmr/bx/n/10 E-Strat (0/10): cov-er-age fail-ure.[] \T1/cmr/m/n/10 Stan-d
+ard
+ []
+
+[9]) (./sections/study2_multiarm.tex
+Underfull \hbox (badness 2452) in paragraph at lines 18--22
+\T1/cmr/m/n/10 dis-tinct arm URDFs in Py-Bul-let and com-par-
  []
 
 
-Underfull \hbox (badness 10000) in paragraph at lines 25--40
-\T1/cmr/m/n/10 iiwa7 hard-ware joint ve-loc-ity lim-its are
- []
-
-
-Underfull \hbox (badness 3460) in paragraph at lines 25--40
-\OT1/cmr/m/n/10 [1\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 71\OML/cmm/m/it/10 ;  \OT1/
-cmr/m/n/10 1\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 71\OML/cmm/m/it/10 ;  \OT1/cmr/m/
-n/10 1\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 75\OML/cmm/m/it/10 ;  \OT1/cmr/m/n/10 2
-\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 27\OML/cmm/m/it/10 ;  \OT1/cmr/m/n/10 2\OML/c
-mm/m/it/10 :\OT1/cmr/m/n/10 44\OML/cmm/m/it/10 ;  \OT1/cmr/m/n/10 3\OML/cmm/m/i
-t/10 :\OT1/cmr/m/n/10 14\OML/cmm/m/it/10 ;  \OT1/cmr/m/n/10 3\OML/cmm/m/it/10 :
-\OT1/cmr/m/n/10 14]$\T1/cmr/m/n/10 rad/s. For
- []
-
-
-Underfull \hbox (badness 1253) in paragraph at lines 25--40
-\T1/cmr/m/n/10 multi-joint co-or-di-nated mo-tion, these lim-its cap
- []
-
-
-Underfull \hbox (badness 1028) in paragraph at lines 25--40
-\T1/cmr/m/n/10 the achiev-able end-effector (EE) lin-ear speed at
+Overfull \hbox (74.50165pt too wide) in paragraph at lines 67--77
+ [][] 
  []
 
 [10]
-Overfull \hbox (3.94229pt too wide) in paragraph at lines 60--69
+Underfull \hbox (badness 1365) in paragraph at lines 99--103
+ []\T1/cmr/bx/n/10 Cross-arm fig-ure.[] \T1/cmr/m/n/10 Fig-ure []1[] shows the 
+multi-
+ []
+
+<../ppt/cross-arm-results.png, id=483, 2826.56pt x 1541.76pt>
+File: ../ppt/cross-arm-results.png Graphic file (type png)
+<use ../ppt/cross-arm-results.png>
+Package pdftex.def Info: ../ppt/cross-arm-results.png  used on input line 106.
+(pdftex.def)             Requested size: 229.8775pt x 125.3665pt.
+) (./sections/study3_noise.tex
+Underfull \hbox (badness 10000) in paragraph at lines 21--22
+\T1/cmr/m/n/10 All noise mod-els are re-alised through the
+ []
+
+[11 <../ppt/cross-arm-results.png>]
+Underfull \hbox (badness 5771) in paragraph at lines 132--144
+ []\T1/cmr/bx/n/10 GP reg-u-lar-i-sa-tion con-se-quence.[] \T1/cmr/m/n/10 An un
+-ex-
+ []
+
+
+Underfull \hbox (badness 2717) in paragraph at lines 145--145
+[]\T1/cmr/bx/n/12 Empirical Com-par-i-son: Noise-
+ []
+
+[12]) (./sections/study4_wind.tex [13]
+Underfull \hbox (badness 1742) in paragraph at lines 76--80
+ []\T1/cmr/bx/n/10 W3 ^^V Ornstein-Uhlenbeck tur-bu-lence.[] \T1/cmr/m/n/10 A
+ []
+
+
+Overfull \hbox (30.34659pt too wide) in paragraph at lines 94--112
  [][] 
  []
 
 
-Underfull \hbox (badness 5189) in paragraph at lines 74--82
-\T1/cmtt/m/n/10 mc-pilot-pb-elevated/ \T1/cmr/m/n/10 was cre-ated by copy-
+Underfull \hbox (badness 1571) in paragraph at lines 122--127
+ []\T1/cmr/bx/n/10 The coun-ter-in-tu-itive find-ing: blind beats
+ []
+
+[14]
+<../ppt/performance_analysis_plots/hit_rates.png, id=545, 867.24pt x 433.62pt>
+File: ../ppt/performance_analysis_plots/hit_rates.png Graphic file (type png)
+<use ../ppt/performance_analysis_plots/hit_rates.png>
+Package pdftex.def Info: ../ppt/performance_analysis_plots/hit_rates.png  used 
+on input line 178.
+(pdftex.def)             Requested size: 229.8775pt x 114.93521pt.
+) (./sections/study5_vision.tex
+Underfull \hbox (badness 1383) in paragraph at lines 17--20
+ []\T1/cmr/bx/n/10 Setup.[] \T1/cmr/m/n/10 A depth cam-era (em-u-lated via Py-B
+ul-
  []
 
 
-Underfull \hbox (badness 10000) in paragraph at lines 74--82
-\T1/cmr/m/n/10 ing \T1/cmtt/m/n/10 mc-pilot-pybullet/ \T1/cmr/m/n/10 (which con
--tains
+Underfull \hbox (badness 10000) in paragraph at lines 47--47
+[]\T1/cmr/bx/n/12 YOLOv8n Learning-Based
  []
 
 
-Underfull \hbox (badness 10000) in paragraph at lines 74--82
-\T1/cmr/m/n/10 all Py-Bul-let plumb-ing) and adapt-ing it to
+Underfull \hbox (badness 2351) in paragraph at lines 65--70
+ []\T1/cmr/bx/n/10 Deployment.[] \T1/cmr/m/n/10 At in-fer-ence time, the de-tec
+ted
  []
 
-
-Underfull \hbox (badness 10000) in paragraph at lines 74--82
-\T1/cmr/m/n/10 the el-e-vated hy-per-pa-ram-e-ter sets. Noise-
+[15 <../ppt/performance_analysis_plots/hit_rates.png>]
+Underfull \hbox (badness 1968) in paragraph at lines 89--89
+[]\T1/cmr/bx/n/12 Robustness to Cam-era Place-
  []
 
-
-Underfull \hbox (badness 10000) in paragraph at lines 74--82
-\T1/cmr/m/n/10 specific scripts (\T1/cmtt/m/n/10 test_mc_pilot_pb_B.py\T1/cmr/m
-/n/10 ,
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 74--82
-\T1/cmtt/m/n/10 test_mc_pilot_pb_C.py\T1/cmr/m/n/10 ) were re-moved; the
- []
-
-
-Overfull \hbox (138.28787pt too wide) in paragraph at lines 84--85
-[]\T1/cmtt/m/n/10 PyBulletThrowingSystem(base_position=...,vel_limit_multiplier
-=1.5) 
- []
-
-
-Overfull \hbox (17.56735pt too wide) in paragraph at lines 85--87
-[]\T1/cmtt/m/n/10 ArmController(...,vel_limit_multiplier=1.5)
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 85--87
-\T1/cmr/m/n/10 via \T1/cmtt/m/n/10 self._qd_max =
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 94--103
- []\T1/cmr/bx/n/10 Verification.[] \T1/cmr/m/n/10 Run-ning \T1/cmtt/m/n/10 stan
-dalone_throw.py
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 94--103
-\T1/cmtt/m/n/10 --direct --speed 3.5 --z_release 1.0 \T1/cmr/m/n/10 con-firms
- []
-
-
-Underfull \hbox (badness 1655) in paragraph at lines 94--103
-\T1/cmr/m/n/10 B---a 5--10% up-ward off-set at-tributable to per-
- []
-
-
-Underfull \hbox (badness 1803) in paragraph at lines 94--103
-\T1/cmr/m/n/10 (not NumPy pre-dic-tions), it learns the cor-rect
- []
-
-
-Underfull \hbox (badness 6001) in paragraph at lines 104--104
-[]\T1/cmr/bx/n/12 PyBullet--NumPy Physics Dis-
- []
-
-
-Underfull \hbox (badness 1097) in paragraph at lines 122--128
-\T1/cmr/m/n/10 After train-ing com-pletes, \T1/cmtt/m/n/10 demo_pybullet_gui.py
-
- []
-
-
-Underfull \hbox (badness 6775) in paragraph at lines 122--128
-\T1/cmr/m/n/10 loads the saved pol-icy from \T1/cmtt/m/n/10 log.pkl \T1/cmr/m/n
-/10 (read-
- []
-
-
-Underfull \hbox (badness 6708) in paragraph at lines 122--128
-\T1/cmr/m/n/10 ing \T1/cmtt/m/n/10 parameters_trial_list[-1]\T1/cmr/m/n/10 , wh
-ich stores
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 134--138
-\T1/cmr/m/n/10 Optional flags: \T1/cmtt/m/n/10 --record output.mp4 \T1/cmr/m/n/
-10 (via
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 134--138
-\T1/cmtt/m/n/10 startStateLogging(STATE_LOGGING_VIDEO_MP4)\T1/cmr/m/n/10 )
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 134--138
-\T1/cmr/m/n/10 and \T1/cmtt/m/n/10 --slow N \T1/cmr/m/n/10 to mul-ti-ply \T1/cm
-tt/m/n/10 time.sleep(dt)
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 134--138
-\T1/cmr/m/n/10 for slower play-back. Com-mand:
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 134--138
-\T1/cmtt/m/n/10 python demo_pybullet_gui.py --log_path
- []
-
-
-Underfull \hbox (badness 2119) in paragraph at lines 143--144
-[]\T1/cmr/bx/n/10 [DATA NEEDED: Run Study 3 train-ing
- []
-
-) (./sections/study4_wind.tex [11]
-Underfull \hbox (badness 1783) in paragraph at lines 7--10
-[]\T1/cmr/m/n/10 Outdoor or atrium-deployed throw-ing sys-tems
- []
-
-) (./sections/discussion.tex
-Underfull \hbox (badness 2237) in paragraph at lines 4--4
-[]\T1/cmr/bx/n/12 Geometry-Dependence of Al-go-
- []
-
-
-Underfull \vbox (badness 3158) has occurred while \output is active []
-
- [12]
-Underfull \hbox (badness 10000) in paragraph at lines 91--97
-\T1/cmr/m/n/10 Setting the ball ve-loc-ity ex-plic-itly via
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 91--97
-\T1/cmtt/m/n/10 resetBaseVelocity \T1/cmr/m/n/10 at re-lease de-cou-ples arm
+<../ppt/robot_arm_flowchart.jpeg, id=565, 1445.4pt x 1124.2pt>
+File: ../ppt/robot_arm_flowchart.jpeg Graphic file (type jpg)
+<use ../ppt/robot_arm_flowchart.jpeg>
+Package pdftex.def Info: ../ppt/robot_arm_flowchart.jpeg  used on input line 10
+2.
+(pdftex.def)             Requested size: 229.8775pt x 178.77782pt.
+) (./sections/discussion.tex [16 <../ppt/robot_arm_flowchart.jpeg>]
+Underfull \hbox (badness 4531) in paragraph at lines 100--103
+ []\T1/cmr/bx/n/10 Vision quan-ti-ta-tive eval-u-a-tion.[] \T1/cmr/m/n/10 The v
+i-sion
  []
 
 ) (./sections/conclusion.tex
@@ -924,73 +832,53 @@ Underfull \hbox (badness 1057) in paragraph at lines 4--7
 \T1/cmr/m/n/10 We pre-sented a di-ag-nos-tic re-pro-duc-tion of MC-
  []
 
-
-Underfull \vbox (badness 1755) has occurred while \output is active []
-
- [13]
-Underfull \hbox (badness 10000) in paragraph at lines 26--33
-[]\T1/cmr/m/n/10 Third, the release-height gen-er-al-i-sa-tion
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 26--33
-\T1/cmr/m/n/10 study demon-strates 100% hit rates on
- []
-
-
-Underfull \hbox (badness 1215) in paragraph at lines 26--33
-\OML/cmm/m/it/10 z \OMS/cmsy/m/n/10 2 f\OT1/cmr/m/n/10 0\OML/cmm/m/it/10 :\OT1/
-cmr/m/n/10 5\OML/cmm/m/it/10 ; \OT1/cmr/m/n/10 1\OML/cmm/m/it/10 :\OT1/cmr/m/n/
-10 0\OML/cmm/m/it/10 ; \OT1/cmr/m/n/10 1\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 5\OML
-/cmm/m/it/10 ; \OT1/cmr/m/n/10 2\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 0\OMS/cmsy/m/
-n/10 g$\T1/cmr/m/n/10 m with mean land-ing er-
- []
-
-
-Underfull \hbox (badness 1314) in paragraph at lines 26--33
-\T1/cmr/m/n/10 con-firm that the cor-rected al-go-rithm gen-er-alises
+[17]
+Underfull \hbox (badness 2744) in paragraph at lines 52--56
+\T1/cmr/m/n/10 bounding-box cen-troid back-projection) pipelines
  []
 
 ) (./main.bbl
-Underfull \hbox (badness 1527) in paragraph at lines 9--14
+Underfull \hbox (badness 3919) in paragraph at lines 21--25
+\T1/cmr/m/n/10 for stochas-tic op-ti-miza-tion.  \T1/cmr/m/it/10 arXiv preprint
+
+ []
+
+
+Underfull \hbox (badness 1527) in paragraph at lines 33--38
 \T1/cmr/m/n/10 learning-based con-trol.  []$\T1/cmtt/m/n/10 https : / / github 
 . com /
  []
 
 
-Underfull \vbox (badness 10000) has occurred while \output is active []
-
-
-Underfull \hbox (badness 6825) in paragraph at lines 17--22
+Underfull \hbox (badness 6825) in paragraph at lines 57--62
 []\T1/cmr/m/n/10 N. Tur-cato, G. Gi-a-co-muzzo, R. Carli, and
  []
 
-) [14] (./sections/appendix.tex
-Overfull \hbox (133.3043pt too wide) in paragraph at lines 21--41
+
+Underfull \hbox (badness 1565) in paragraph at lines 64--69
+[]\T1/cmr/m/n/10 A. Zeng, S. Song, J. Lee, A. Ro-driguez, and
+ []
+
+) [18] (./sections/appendix.tex
+Overfull \hbox (103.6026pt too wide) in paragraph at lines 20--44
  [][] 
  []
 
-[15
+[19
 
 
-]) [16] (./main.aux)
-
-LaTeX Warning: There were undefined references.
-
-
-LaTeX Warning: There were multiply-defined labels.
-
+]) [20] (./main.aux)
 Package rerunfilecheck Info: File `main.out' has not changed.
-(rerunfilecheck)             Checksum: F257FCC0C4ED05E2B71FF35E46CAE629;8566.
+(rerunfilecheck)             Checksum: F48CECA4AFB8F87F1C459ECE8C9E650F;11165.
  ) 
 Here is how much of TeX's memory you used:
- 13200 strings out of 477985
- 207153 string characters out of 5839380
- 1875388 words of memory out of 6000000
- 33021 multiletter control sequences out of 15000+600000
- 535834 words of font info for 94 fonts, out of 8000000 for 9000
+ 13385 strings out of 477985
+ 210530 string characters out of 5839380
+ 1878388 words of memory out of 6000000
+ 33121 multiletter control sequences out of 15000+600000
+ 534442 words of font info for 91 fonts, out of 8000000 for 9000
  14 hyphenation exceptions out of 8191
- 75i,15n,77p,513b,539s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 75i,13n,77p,482b,534s stack positions out of 10000i,1000n,20000p,200000b,200000s
 </usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx10.pfb></us
 r/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx7.pfb></usr/share
 /texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmex10.pfb></usr/share/texli
@@ -1015,16 +903,17 @@ lic/cm-super/sfbx0900.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/cm-
 super/sfbx1000.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/cm-super/s
 fbx1200.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/cm-super/sfbx1440
 .pfb></usr/share/texlive/texmf-dist/fonts/type1/public/cm-super/sfbx1728.pfb></
-usr/share/texlive/texmf-dist/fonts/type1/public/cm-super/sfrm0900.pfb></usr/sha
-re/texlive/texmf-dist/fonts/type1/public/cm-super/sfrm1000.pfb></usr/share/texl
-ive/texmf-dist/fonts/type1/public/cm-super/sfrm1200.pfb></usr/share/texlive/tex
-mf-dist/fonts/type1/public/cm-super/sfti1000.pfb></usr/share/texlive/texmf-dist
-/fonts/type1/public/cm-super/sftt1000.pfb></usr/share/texlive/texmf-dist/fonts/
-type1/public/cm-super/sftt1200.pfb>
-Output written on main.pdf (16 pages, 574913 bytes).
+usr/share/texlive/texmf-dist/fonts/type1/public/cm-super/sfrm0700.pfb></usr/sha
+re/texlive/texmf-dist/fonts/type1/public/cm-super/sfrm0900.pfb></usr/share/texl
+ive/texmf-dist/fonts/type1/public/cm-super/sfrm1000.pfb></usr/share/texlive/tex
+mf-dist/fonts/type1/public/cm-super/sfrm1200.pfb></usr/share/texlive/texmf-dist
+/fonts/type1/public/cm-super/sfti1000.pfb></usr/share/texlive/texmf-dist/fonts/
+type1/public/cm-super/sftt1000.pfb></usr/share/texlive/texmf-dist/fonts/type1/p
+ublic/cm-super/sftt1200.pfb>
+Output written on main.pdf (20 pages, 4398196 bytes).
 PDF statistics:
- 614 PDF objects out of 1000 (max. 8388607)
- 525 compressed objects within 6 object streams
- 140 named destinations out of 1000 (max. 500000)
- 361 words of extra memory for PDF output out of 10000 (max. 10000000)
+ 820 PDF objects out of 1000 (max. 8388607)
+ 718 compressed objects within 8 object streams
+ 214 named destinations out of 1000 (max. 500000)
+ 496 words of extra memory for PDF output out of 10000 (max. 10000000)
 

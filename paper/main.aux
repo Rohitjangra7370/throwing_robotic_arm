@@ -15,176 +15,272 @@
 \providecommand\HyField@AuxAddToCoFields[2]{}
 \citation{turcato2025mcpilot}
 \citation{turcato2025mcpilot}
+\citation{tossbot}
 \citation{turcato2025mcpilot}
 \citation{mcpilco}
 \@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
 \newlabel{sec:introduction}{{1}{1}{Introduction}{section.1}{}}
-\citation{mcpilco}
-\citation{turcato2025mcpilot}
 \@writefile{toc}{\contentsline {paragraph}{Contributions.}{2}{section*.2}\protected@file@percent }
 \@writefile{toc}{\contentsline {paragraph}{Paper structure.}{2}{section*.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {2}Background}{2}{section.2}\protected@file@percent }
-\newlabel{sec:background}{{2}{2}{Background}{section.2}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}MC-PILCO}{2}{subsection.2.1}\protected@file@percent }
-\newlabel{sec:background:mcpilco}{{2.1}{2}{MC-PILCO}{subsection.2.1}{}}
-\newlabel{eq:mcpilco_gradient}{{1}{2}{MC-PILCO}{equation.2.1}{}}
-\citation{turcato2025mcpilot}
-\citation{turcato2025mcpilot}
-\citation{turcato2025mcpilot}
-\citation{turcato2025mcpilot}
-\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}MC-PILOT Modifications}{3}{subsection.2.2}\protected@file@percent }
-\newlabel{sec:background:mcpilot}{{2.2}{3}{MC-PILOT Modifications}{subsection.2.2}{}}
-\@writefile{toc}{\contentsline {paragraph}{Augmented state.}{3}{section*.4}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Single-shot policy.}{3}{section*.5}\protected@file@percent }
-\newlabel{eq:policy}{{2}{3}{Single-shot policy}{equation.2.2}{}}
-\@writefile{toc}{\contentsline {paragraph}{Landing cost.}{3}{section*.6}\protected@file@percent }
-\newlabel{eq:cost}{{3}{3}{Landing cost}{equation.2.3}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}Aerodynamic Drag Model}{3}{subsection.2.3}\protected@file@percent }
-\newlabel{sec:background:drag}{{2.3}{3}{Aerodynamic Drag Model}{subsection.2.3}{}}
-\newlabel{eq:drag}{{4}{3}{Aerodynamic Drag Model}{equation.2.4}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {2.4}Omitted Components}{3}{subsection.2.4}\protected@file@percent }
-\newlabel{sec:background:omissions}{{2.4}{3}{Omitted Components}{subsection.2.4}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {3}System Overview}{3}{section.3}\protected@file@percent }
-\newlabel{sec:system}{{3}{3}{System Overview}{section.3}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Design Rationale: Decoupled Algorithm and Simulation Layers}{3}{subsection.3.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Sub-Project Structure}{3}{subsection.3.2}\protected@file@percent }
-\citation{turcato2025mcpilot}
+\@writefile{toc}{\contentsline {section}{\numberline {2}Background and the MC-PILOT Algorithm}{2}{section.2}\protected@file@percent }
+\newlabel{sec:background}{{2}{2}{Background and the MC-PILOT Algorithm}{section.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Problem Formulation}{2}{subsection.2.1}\protected@file@percent }
+\newlabel{sec:background:problem}{{2.1}{2}{Problem Formulation}{subsection.2.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{MDP and state space.}{2}{section*.4}\protected@file@percent }
+\newlabel{eq:augmented_state}{{1}{2}{MDP and state space}{equation.2.1}{}}
+\citation{rasmussen2006gp}
 \citation{turcato2025mcpilot}
 \citation{mcpilco}
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Ballistic Simulator}{4}{subsection.3.3}\protected@file@percent }
-\newlabel{eq:vel_update}{{5}{4}{Ballistic Simulator}{equation.3.5}{}}
-\newlabel{eq:pos_update}{{6}{4}{Ballistic Simulator}{equation.3.6}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}PyBullet Arm Pipeline}{4}{subsection.3.4}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {4}Implementation and Diagnosis}{4}{section.4}\protected@file@percent }
-\newlabel{sec:implementation}{{4}{4}{Implementation and Diagnosis}{section.4}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Broken Policy Gradient Path}{4}{subsection.4.1}\protected@file@percent }
-\newlabel{sec:fix_gradient}{{4.1}{4}{Broken Policy Gradient Path}{subsection.4.1}{}}
+\citation{kingma2014auto}
+\citation{kingma2015adam}
+\citation{pilco}
+\@writefile{toc}{\contentsline {paragraph}{Landing cost.}{3}{section*.5}\protected@file@percent }
+\newlabel{eq:cost}{{2}{3}{Landing cost}{equation.2.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Gaussian Process Dynamics}{3}{subsection.2.2}\protected@file@percent }
+\newlabel{sec:background:gp}{{2.2}{3}{Gaussian Process Dynamics}{subsection.2.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Why GPs?}{3}{section*.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Sparse approximation.}{3}{section*.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Speed-integration model.}{3}{section*.8}\protected@file@percent }
+\newlabel{eq:vel_update}{{3}{3}{Speed-integration model}{equation.2.3}{}}
+\newlabel{eq:pos_update}{{4}{3}{Speed-integration model}{equation.2.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}Monte Carlo Policy Gradient}{3}{subsection.2.3}\protected@file@percent }
+\newlabel{sec:background:mcpg}{{2.3}{3}{Monte Carlo Policy Gradient}{subsection.2.3}{}}
+\newlabel{eq:mcpilco_gradient}{{5}{3}{Monte Carlo Policy Gradient}{equation.2.5}{}}
+\@writefile{toc}{\contentsline {paragraph}{Why Monte Carlo over analytic moment-matching?}{3}{section*.9}\protected@file@percent }
 \citation{turcato2025mcpilot}
-\newlabel{eq:vx}{{7}{5}{Broken Policy Gradient Path}{equation.4.7}{}}
-\newlabel{eq:vy}{{8}{5}{Broken Policy Gradient Path}{equation.4.8}{}}
-\newlabel{eq:vz}{{9}{5}{Broken Policy Gradient Path}{equation.4.9}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Post-Landing GP Hallucination}{5}{subsection.4.2}\protected@file@percent }
-\newlabel{sec:fix_landing}{{4.2}{5}{Post-Landing GP Hallucination}{subsection.4.2}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Cost Lengthscale Bootstrapping Failure}{5}{subsection.4.3}\protected@file@percent }
-\newlabel{sec:fix_lc}{{4.3}{5}{Cost Lengthscale Bootstrapping Failure}{subsection.4.3}{}}
-\newlabel{eq:cost}{{10}{5}{Cost Lengthscale Bootstrapping Failure}{equation.4.10}{}}
-\newlabel{eq:lc_rule}{{11}{5}{Cost Lengthscale Bootstrapping Failure}{equation.4.11}{}}
+\citation{shahriari2016bo}
 \citation{turcato2025mcpilot}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Simulation Horizon and Indexing Bugs}{6}{subsection.4.4}\protected@file@percent }
-\newlabel{sec:fix_horizon}{{4.4}{6}{Simulation Horizon and Indexing Bugs}{subsection.4.4}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Release-height configurations. All other hyperparameters follow the baseline (Table\nobreakspace  {}\textcolor {blue}{\textbf  {[DATA NEEDED: baseline hyperparams table reference]}}). $N_{\mathrm  {exp}} = 5$ exploration throws for A; $N_{\mathrm  {exp}} \in \{5, 10\}$ for B–E as noted.\relax }}{6}{table.caption.7}\protected@file@percent }
+\citation{tossbot}
+\citation{pilco}
+\citation{mcpilco}
+\citation{turcato2025mcpilot}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.4}The Squashed-RBF Policy}{4}{subsection.2.4}\protected@file@percent }
+\newlabel{sec:background:policy}{{2.4}{4}{The Squashed-RBF Policy}{subsection.2.4}{}}
+\newlabel{eq:policy}{{6}{4}{The Squashed-RBF Policy}{equation.2.6}{}}
+\@writefile{toc}{\contentsline {paragraph}{Geometric interpretation.}{4}{section*.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.5}MC-PILOT Specific Modifications}{4}{subsection.2.5}\protected@file@percent }
+\newlabel{sec:background:mcpilot}{{2.5}{4}{MC-PILOT Specific Modifications}{subsection.2.5}{}}
+\@writefile{toc}{\contentsline {paragraph}{Single-shot policy.}{4}{section*.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Gripper delay estimation.}{4}{section*.12}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Algorithmic lineage from model-free RL to MC-PILOT{}.\relax }}{4}{table.caption.13}\protected@file@percent }
 \providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
-\newlabel{tab:height_configs}{{1}{6}{Release-height configurations. All other hyperparameters follow the baseline (Table~\needdata {baseline hyperparams table reference}). $N_{\mathrm {exp}} = 5$ exploration throws for A; $N_{\mathrm {exp}} \in \{5, 10\}$ for B–E as noted.\relax }{table.caption.7}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {5}Study 1: Release-Height Generalisation}{6}{section.5}\protected@file@percent }
-\newlabel{sec:study1}{{5}{6}{Study 1: Release-Height Generalisation}{section.5}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Experimental Setup}{6}{subsection.5.1}\protected@file@percent }
-\newlabel{sec:study1:setup}{{5.1}{6}{Experimental Setup}{subsection.5.1}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Stratified Exploration}{7}{subsection.5.2}\protected@file@percent }
-\newlabel{sec:study1:stratified}{{5.2}{7}{Stratified Exploration}{subsection.5.2}{}}
-\@writefile{toc}{\contentsline {paragraph}{The failure mode with random exploration.}{7}{section*.8}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{The fix: stratified band sampling.}{7}{section*.9}\protected@file@percent }
-\newlabel{eq:stratified}{{12}{7}{The fix: stratified band sampling}{equation.5.12}{}}
-\@writefile{toc}{\contentsline {paragraph}{Effect.}{7}{section*.10}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Results: Configs B, C, D}{7}{subsection.5.3}\protected@file@percent }
-\newlabel{sec:study1:results_bcd}{{5.3}{7}{Results: Configs B, C, D}{subsection.5.3}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Per-trial landing errors (mm) for Configs B-Strat through D-Strat. All 10/10 trials hit the target (error $< 50$\,mm threshold used as the hit criterion). Mean computed over all 10 trials.\relax }}{7}{table.caption.11}\protected@file@percent }
-\newlabel{tab:bcd_errors}{{2}{7}{Per-trial landing errors (mm) for Configs B-Strat through D-Strat. All 10/10 trials hit the target (error $< 50$\,mm threshold used as the hit criterion). Mean computed over all 10 trials.\relax }{table.caption.11}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Config E: A Progressive Diagnosis of RBF Blindness}{7}{subsection.5.4}\protected@file@percent }
-\newlabel{sec:study1:config_e}{{5.4}{7}{Config E: A Progressive Diagnosis of RBF Blindness}{subsection.5.4}{}}
-\@writefile{toc}{\contentsline {paragraph}{E-Strat: stratified exploration over $[0, u_M]$ (0/10).}{7}{section*.12}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{E-Strat2: targeted exploration over $[2.5, u_M]$ (0/10).}{7}{section*.13}\protected@file@percent }
+\newlabel{tab:lineage}{{1}{4}{Algorithmic lineage from model-free RL to \mcpilot {}.\relax }{table.caption.13}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.6}Aerodynamic Drag}{4}{subsection.2.6}\protected@file@percent }
+\newlabel{sec:background:drag}{{2.6}{4}{Aerodynamic Drag}{subsection.2.6}{}}
+\newlabel{eq:drag}{{7}{4}{Aerodynamic Drag}{equation.2.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.7}Algorithmic Lineage}{4}{subsection.2.7}\protected@file@percent }
+\newlabel{sec:background:lineage}{{2.7}{4}{Algorithmic Lineage}{subsection.2.7}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {3}System Architecture}{4}{section.3}\protected@file@percent }
+\newlabel{sec:system}{{3}{4}{System Architecture}{section.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Two-Layer Decoupled Design}{4}{subsection.3.1}\protected@file@percent }
+\newlabel{sec:system:design}{{3.1}{4}{Two-Layer Decoupled Design}{subsection.3.1}{}}
 \citation{turcato2025mcpilot}
-\@writefile{toc}{\contentsline {paragraph}{E-Strat3: targeted exploration, $N_{\mathrm  {exp}} = 10$ (0/10).}{8}{section*.14}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{E-Strat4: reduced cost lengthscale $\ell _c = 0.25$ (0/10).}{8}{section*.15}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{E-Strat5: $\ell _s = [0.15, 0.15]$ (10/10, mean 26\,mm).}{8}{section*.16}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.5}Lengthscale-to-Range Scaling Rule}{8}{subsection.5.5}\protected@file@percent }
-\newlabel{sec:study1:scaling}{{5.5}{8}{Lengthscale-to-Range Scaling Rule}{subsection.5.5}{}}
-\newlabel{eq:rbf_sensitivity}{{13}{8}{Lengthscale-to-Range Scaling Rule}{equation.5.13}{}}
-\@writefile{toc}{\contentsline {paragraph}{Calibration against Config A.}{8}{section*.17}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces RBF sensitivity $S$ for each configuration using the default $\ell _s = 1.0$\,m and (where applicable) the tuned $\ell _s^*$. Config E with default $\ell _s$ is near-unity, confirming policy blindness; E-Strat5 with $\ell _s^* = 0.15$\,m recovers the same discriminability as Config A.\relax }}{8}{table.caption.19}\protected@file@percent }
-\newlabel{tab:sensitivity}{{3}{8}{RBF sensitivity $S$ for each configuration using the default $\ell _s = 1.0$\,m and (where applicable) the tuned $\ell _s^*$. Config E with default $\ell _s$ is near-unity, confirming policy blindness; E-Strat5 with $\ell _s^* = 0.15$\,m recovers the same discriminability as Config A.\relax }{table.caption.19}{}}
-\@writefile{toc}{\contentsline {paragraph}{The rule.}{8}{section*.18}\protected@file@percent }
+\citation{turcato2025mcpilot}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Sub-Project Structure}{5}{subsection.3.2}\protected@file@percent }
+\newlabel{sec:system:subprojects}{{3.2}{5}{Sub-Project Structure}{subsection.3.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}NumPy Ballistic Simulator}{5}{subsection.3.3}\protected@file@percent }
+\newlabel{sec:system:numpy}{{3.3}{5}{NumPy Ballistic Simulator}{subsection.3.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}PyBullet Arm Pipeline}{5}{subsection.3.4}\protected@file@percent }
+\newlabel{sec:system:pybullet}{{3.4}{5}{PyBullet Arm Pipeline}{subsection.3.4}{}}
+\citation{turcato2025mcpilot}
+\citation{mcpilco}
+\citation{turcato2025mcpilot}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.5}PyBullet--NumPy Physics Discrepancy}{6}{subsection.3.5}\protected@file@percent }
+\newlabel{sec:system:discrepancy}{{3.5}{6}{PyBullet--NumPy Physics Discrepancy}{subsection.3.5}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}Implementation and Diagnosis}{6}{section.4}\protected@file@percent }
+\newlabel{sec:implementation}{{4}{6}{Implementation and Diagnosis}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Broken Policy Gradient Path}{6}{subsection.4.1}\protected@file@percent }
+\newlabel{sec:fix_gradient}{{4.1}{6}{Broken Policy Gradient Path}{subsection.4.1}{}}
+\newlabel{eq:vx}{{8}{6}{Broken Policy Gradient Path}{equation.4.8}{}}
+\newlabel{eq:vy}{{9}{6}{Broken Policy Gradient Path}{equation.4.9}{}}
+\newlabel{eq:vz}{{10}{6}{Broken Policy Gradient Path}{equation.4.10}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Post-Landing GP Hallucination}{6}{subsection.4.2}\protected@file@percent }
+\newlabel{sec:fix_landing}{{4.2}{6}{Post-Landing GP Hallucination}{subsection.4.2}{}}
+\citation{turcato2025mcpilot}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Cost Lengthscale Bootstrapping Failure}{7}{subsection.4.3}\protected@file@percent }
+\newlabel{sec:fix_lc}{{4.3}{7}{Cost Lengthscale Bootstrapping Failure}{subsection.4.3}{}}
+\newlabel{eq:cost_lc}{{11}{7}{Cost Lengthscale Bootstrapping Failure}{equation.4.11}{}}
+\newlabel{eq:lc_rule}{{12}{7}{Cost Lengthscale Bootstrapping Failure}{equation.4.12}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Simulation Horizon and Indexing Bugs}{7}{subsection.4.4}\protected@file@percent }
+\newlabel{sec:fix_horizon}{{4.4}{7}{Simulation Horizon and Indexing Bugs}{subsection.4.4}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5}Two Convergence Rules}{8}{section.5}\protected@file@percent }
+\newlabel{sec:convergence}{{5}{8}{Two Convergence Rules}{section.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Lengthscale-to-Range Scaling Rule}{8}{subsection.5.1}\protected@file@percent }
+\newlabel{sec:convergence:lengthscale}{{5.1}{8}{Lengthscale-to-Range Scaling Rule}{subsection.5.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{The problem.}{8}{section*.14}\protected@file@percent }
+\newlabel{eq:rbf_sensitivity}{{13}{8}{The problem}{equation.5.13}{}}
+\@writefile{toc}{\contentsline {paragraph}{The rule.}{8}{section*.15}\protected@file@percent }
 \newlabel{eq:ls_rule}{{14}{8}{The rule}{equation.5.14}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {6}Study 2: Arm-Side Stochasticity}{8}{section.6}\protected@file@percent }
-\newlabel{sec:study2}{{6}{8}{Study 2: Arm-Side Stochasticity}{section.6}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}Motivation}{8}{subsection.6.1}\protected@file@percent }
-\newlabel{sec:study2:motivation}{{6.1}{8}{Motivation}{subsection.6.1}{}}
-\citation{turcato2025mcpilot}
-\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}Three Noise Models}{9}{subsection.6.2}\protected@file@percent }
-\newlabel{sec:study2:models}{{6.2}{9}{Three Noise Models}{subsection.6.2}{}}
-\newlabel{eq:perturb_interface}{{15}{9}{Three Noise Models}{equation.6.15}{}}
-\@writefile{toc}{\contentsline {paragraph}{VelocityBiasNoise.}{9}{section*.20}\protected@file@percent }
-\newlabel{eq:bias_noise}{{16}{9}{VelocityBiasNoise}{equation.6.16}{}}
-\@writefile{toc}{\contentsline {paragraph}{VelocitySlipNoise.}{9}{section*.21}\protected@file@percent }
-\newlabel{eq:slip_noise}{{17}{9}{VelocitySlipNoise}{equation.6.17}{}}
-\@writefile{toc}{\contentsline {paragraph}{ReleaseTimingJitter (paper-faithful).}{9}{section*.22}\protected@file@percent }
-\newlabel{eq:jitter_noise}{{18}{9}{ReleaseTimingJitter (paper-faithful)}{equation.6.18}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {6.3}Zero-Mean Unlearnability and GP Degeneration}{9}{subsection.6.3}\protected@file@percent }
-\newlabel{sec:study2:theory}{{6.3}{9}{Zero-Mean Unlearnability and GP Degeneration}{subsection.6.3}{}}
-\newlabel{prop:zeromean}{{1}{9}{Zero-mean noise is unlearnable}{proposition.1}{}}
-\@writefile{toc}{\contentsline {paragraph}{GP degeneration under exact data.}{9}{section*.23}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {6.4}Empirical Comparison: Noise-Aware vs.\ Naive Policy}{9}{subsection.6.4}\protected@file@percent }
-\newlabel{sec:study2:empirical}{{6.4}{9}{Empirical Comparison: Noise-Aware vs.\ Naive Policy}{subsection.6.4}{}}
-\@writefile{toc}{\contentsline {paragraph}{Interpretation.}{9}{section*.26}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Aggregate performance of noise-aware and naive policies under 20\% velocity-slip noise ($\sigma = 0.04$). ``Total'' counts all 15 throws (5 exploration + 10 evaluation); ``policy-only'' counts evaluation throws 6–15 only.\relax }}{10}{table.caption.24}\protected@file@percent }
-\newlabel{tab:noise_aggregate}{{4}{10}{Aggregate performance of noise-aware and naive policies under 20\% velocity-slip noise ($\sigma = 0.04$). ``Total'' counts all 15 throws (5 exploration + 10 evaluation); ``policy-only'' counts evaluation throws 6–15 only.\relax }{table.caption.24}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Per-throw landing errors for evaluation throws 6–15 (in metres). Checkmarks denote hits (error $< 0.10$\,m). Naive cost $\approx 0.001$ is falsely optimistic: it is evaluated without noise.\relax }}{10}{table.caption.25}\protected@file@percent }
-\newlabel{tab:noise_pershot}{{5}{10}{Per-throw landing errors for evaluation throws 6–15 (in metres). Checkmarks denote hits (error $< 0.10$\,m). Naive cost $\approx 0.001$ is falsely optimistic: it is evaluated without noise.\relax }{table.caption.25}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {7}Study 3: PyBullet + Elevated Combined}{10}{section.7}\protected@file@percent }
-\newlabel{sec:study3}{{7}{10}{Study 3: PyBullet + Elevated Combined}{section.7}{}}
+\@writefile{toc}{\contentsline {paragraph}{Validation.}{8}{section*.16}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces RBF sensitivity $S$ at target range $\Delta _{\mathrm  {range}}$ for each configuration. Config\nobreakspace  {}E with default $\ell _s = 1.0$\,m is near-unity; E-Strat5 with $\ell _s = 0.15$\,m recovers the working discriminability of Config\nobreakspace  {}A.\relax }}{8}{table.caption.17}\protected@file@percent }
+\newlabel{tab:sensitivity}{{2}{8}{RBF sensitivity $S$ at target range $\Delta _{\mathrm {range}}$ for each configuration. Config~E with default $\ell _s = 1.0$\,m is near-unity; E-Strat5 with $\ell _s = 0.15$\,m recovers the working discriminability of Config~A.\relax }{table.caption.17}{}}
+\@writefile{toc}{\contentsline {paragraph}{Practical implication.}{8}{section*.18}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Stratified Exploration Rule}{8}{subsection.5.2}\protected@file@percent }
+\newlabel{sec:convergence:stratified}{{5.2}{8}{Stratified Exploration Rule}{subsection.5.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{The problem.}{8}{section*.19}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{The fix: stratified band sampling.}{8}{section*.20}\protected@file@percent }
+\newlabel{eq:stratified}{{15}{8}{The fix: stratified band sampling}{equation.5.15}{}}
+\@writefile{toc}{\contentsline {paragraph}{Evidence.}{8}{section*.21}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Release-height configurations. $N_{\mathrm  {exp}} = 5$ for A; varied for B--E. ``Strat'' = stratified exploration.\relax }}{9}{table.caption.22}\protected@file@percent }
+\newlabel{tab:height_configs}{{3}{9}{Release-height configurations. $N_{\mathrm {exp}} = 5$ for A; varied for B--E. ``Strat'' = stratified exploration.\relax }{table.caption.22}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {6}Study 1: Release-Height Generalisation}{9}{section.6}\protected@file@percent }
+\newlabel{sec:study1}{{6}{9}{Study 1: Release-Height Generalisation}{section.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}Experimental Setup}{9}{subsection.6.1}\protected@file@percent }
+\newlabel{sec:study1:setup}{{6.1}{9}{Experimental Setup}{subsection.6.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}Results: Configs B, C, D}{9}{subsection.6.2}\protected@file@percent }
+\newlabel{sec:study1:results_bcd}{{6.2}{9}{Results: Configs B, C, D}{subsection.6.2}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Per-trial landing errors (mm) for Configs B-Strat through D-Strat. All 10/10 trials hit (error $<$ 50\,mm). Mean over 10 trials.\relax }}{9}{table.caption.23}\protected@file@percent }
+\newlabel{tab:bcd_errors}{{4}{9}{Per-trial landing errors (mm) for Configs B-Strat through D-Strat. All 10/10 trials hit (error $<$ 50\,mm). Mean over 10 trials.\relax }{table.caption.23}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.3}Config E: Progressive Diagnosis of RBF Blindness}{9}{subsection.6.3}\protected@file@percent }
+\newlabel{sec:study1:config_e}{{6.3}{9}{Config E: Progressive Diagnosis of RBF Blindness}{subsection.6.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{E-Strat (0/10): coverage failure.}{9}{section*.24}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{E-Strat2 (0/10): cost plateau persists after targeted coverage.}{9}{section*.25}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{E-Strat3 (0/10): doubling exploration fails.}{9}{section*.26}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{E-Strat4 (0/10): tighter cost does not help.}{9}{section*.27}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{E-Strat5 (10/10, mean 26\,mm): $\ell _s = 0.15$\,m resolves blindness.}{10}{section*.28}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.4}Summary}{10}{subsection.6.4}\protected@file@percent }
+\newlabel{sec:study1:summary}{{6.4}{10}{Summary}{subsection.6.4}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {7}Study 2: Multi-Arm Portability}{10}{section.7}\protected@file@percent }
+\newlabel{sec:study2}{{7}{10}{Study 2: Multi-Arm Portability}{section.7}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {7.1}Motivation}{10}{subsection.7.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {7.2}Engineering Challenges}{10}{subsection.7.2}\protected@file@percent }
-\newlabel{sec:study3:challenges}{{7.2}{10}{Engineering Challenges}{subsection.7.2}{}}
-\@writefile{toc}{\contentsline {paragraph}{Joint velocity cap.}{10}{section*.27}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{EE reach at elevated heights.}{10}{section*.28}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces Per-configuration parameters for Study 3 (PBE-B/C/D). All three share $u_M = 3.5$\,m/s, $N_{\mathrm  {exp}} = 5$, $\ell _c = 0.5$\,m, $\ell _s^{\mathrm  {init}} = [1.0, 1.0]$, stratified exploration over $[0, u_M]$.\relax }}{11}{table.caption.29}\protected@file@percent }
-\newlabel{tab:pbe_configs}{{6}{11}{Per-configuration parameters for Study 3 (PBE-B/C/D). All three share $u_M = 3.5$\,m/s, $N_{\mathrm {exp}} = 5$, $\ell _c = 0.5$\,m, $\ell _s^{\mathrm {init}} = [1.0, 1.0]$, stratified exploration over $[0, u_M]$.\relax }{table.caption.29}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {7.3}Implementation}{11}{subsection.7.3}\protected@file@percent }
-\newlabel{sec:study3:impl}{{7.3}{11}{Implementation}{subsection.7.3}{}}
-\@writefile{toc}{\contentsline {paragraph}{Verification.}{11}{section*.30}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {7.4}PyBullet--NumPy Physics Discrepancy}{11}{subsection.7.4}\protected@file@percent }
-\newlabel{sec:study3:discrepancy}{{7.4}{11}{PyBullet--NumPy Physics Discrepancy}{subsection.7.4}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {7.5}Visualisation Pipeline}{11}{subsection.7.5}\protected@file@percent }
-\newlabel{sec:study3:viz}{{7.5}{11}{Visualisation Pipeline}{subsection.7.5}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {7.6}Expected Results}{11}{subsection.7.6}\protected@file@percent }
-\newlabel{sec:study3:results}{{7.6}{11}{Expected Results}{subsection.7.6}{}}
+\newlabel{sec:study2:motivation}{{7.1}{10}{Motivation}{subsection.7.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.2}Robot Platforms}{10}{subsection.7.2}\protected@file@percent }
+\newlabel{sec:study2:platforms}{{7.2}{10}{Robot Platforms}{subsection.7.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Franka Panda (7-DoF).}{10}{section*.29}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Multi-arm portability results across three target positions ($P_x \in \{0.7, 0.9, 1.1\}$\,m). \emph  {Commanded}: ball velocity set to $\mathbf  {v}_{\mathrm  {cmd}}$ (measures RL quality). \emph  {Achieved}: ball velocity from actual EE velocity at release (measures arm tracking). Hit radius 10\,cm. Errors in millimetres.\relax }}{10}{table.caption.32}\protected@file@percent }
+\newlabel{tab:multiarm}{{5}{10}{Multi-arm portability results across three target positions ($P_x \in \{0.7, 0.9, 1.1\}$\,m). \emph {Commanded}: ball velocity set to $\mathbf {v}_{\mathrm {cmd}}$ (measures RL quality). \emph {Achieved}: ball velocity from actual EE velocity at release (measures arm tracking). Hit radius 10\,cm. Errors in millimetres.\relax }{table.caption.32}{}}
+\@writefile{toc}{\contentsline {paragraph}{KUKA iiwa7 (7-DoF).}{10}{section*.30}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{xArm6 (6-DoF).}{10}{section*.31}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.3}Results}{10}{subsection.7.3}\protected@file@percent }
+\newlabel{sec:study2:results}{{7.3}{10}{Results}{subsection.7.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Interpretation.}{10}{section*.33}\protected@file@percent }
 \citation{turcato2025mcpilot}
-\@writefile{toc}{\contentsline {section}{\numberline {8}Study 4: Wind Robustness}{12}{section.8}\protected@file@percent }
-\newlabel{sec:study4}{{8}{12}{Study 4: Wind Robustness}{section.8}{}}
-\newlabel{eq:wind}{{19}{12}{Study 4: Wind Robustness}{equation.8.19}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {9}Discussion}{12}{section.9}\protected@file@percent }
-\newlabel{sec:discussion}{{9}{12}{Discussion}{section.9}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {9.1}Geometry-Dependence of Algorithm Defaults}{12}{subsection.9.1}\protected@file@percent }
-\newlabel{sec:discussion:geometry}{{9.1}{12}{Geometry-Dependence of Algorithm Defaults}{subsection.9.1}{}}
-\@writefile{toc}{\contentsline {paragraph}{RBF lengthscale.}{12}{section*.31}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Cost lengthscale.}{12}{section*.32}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Exploration coverage.}{12}{section*.33}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Multi-metric comparison of Franka Panda, KUKA iiwa7, and xArm6 under the commanded-velocity protocol. All three arms achieve 100\% hit rate (top panel). Mean and max errors grow modestly from Franka to xArm6, reflecting differences in URDF simulation fidelity rather than RL policy quality.\relax }}{11}{figure.caption.35}\protected@file@percent }
+\newlabel{fig:cross_arm}{{1}{11}{Multi-metric comparison of Franka Panda, KUKA iiwa7, and xArm6 under the commanded-velocity protocol. All three arms achieve 100\% hit rate (top panel). Mean and max errors grow modestly from Franka to xArm6, reflecting differences in URDF simulation fidelity rather than RL policy quality.\relax }{figure.caption.35}{}}
+\@writefile{toc}{\contentsline {paragraph}{Cross-arm figure.}{11}{section*.34}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {8}Study 3: Noise Models and Zero-Mean Invariance}{11}{section.8}\protected@file@percent }
+\newlabel{sec:study3}{{8}{11}{Study 3: Noise Models and Zero-Mean Invariance}{section.8}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.1}Motivation}{11}{subsection.8.1}\protected@file@percent }
+\newlabel{sec:study3:motivation}{{8.1}{11}{Motivation}{subsection.8.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.2}Four Noise Models}{11}{subsection.8.2}\protected@file@percent }
+\newlabel{sec:study3:models}{{8.2}{11}{Four Noise Models}{subsection.8.2}{}}
+\newlabel{eq:perturb_interface}{{16}{11}{Four Noise Models}{equation.8.16}{}}
+\@writefile{toc}{\contentsline {paragraph}{VelocityBiasNoise (Gaussian).}{11}{section*.36}\protected@file@percent }
+\newlabel{eq:bias_noise}{{17}{11}{VelocityBiasNoise (Gaussian)}{equation.8.17}{}}
+\@writefile{toc}{\contentsline {paragraph}{VelocitySlipNoise.}{11}{section*.37}\protected@file@percent }
+\newlabel{eq:slip_noise}{{18}{11}{VelocitySlipNoise}{equation.8.18}{}}
+\@writefile{toc}{\contentsline {paragraph}{Salt-and-Pepper Noise.}{11}{section*.38}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{ReleaseTimingJitter (paper-faithful).}{11}{section*.39}\protected@file@percent }
+\newlabel{eq:jitter_noise}{{19}{11}{ReleaseTimingJitter (paper-faithful)}{equation.8.19}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.3}Zero-Mean Noise Invariance Theorem}{12}{subsection.8.3}\protected@file@percent }
+\newlabel{sec:study3:theory}{{8.3}{12}{Zero-Mean Noise Invariance Theorem}{subsection.8.3}{}}
+\newlabel{thm:zeromean}{{1}{12}{Optimal Action Invariance Under Symmetric Noise}{theorem.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{GP regularisation consequence.}{12}{section*.40}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.4}Empirical Comparison: Noise-Aware vs.\ Naive}{12}{subsection.8.4}\protected@file@percent }
+\newlabel{sec:study3:empirical}{{8.4}{12}{Empirical Comparison: Noise-Aware vs.\ Naive}{subsection.8.4}{}}
+\@writefile{toc}{\contentsline {paragraph}{Slip noise.}{12}{section*.42}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Salt-and-pepper noise.}{12}{section*.43}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces Performance under different arm-side noise models. Aware = noise propagated through MC rollouts; Naive = noiseless rollouts. Hit radius = 10\,cm. All results at seed=1, 4 policy trials.\relax }}{13}{table.caption.41}\protected@file@percent }
+\newlabel{tab:noise_results}{{6}{13}{Performance under different arm-side noise models. Aware = noise propagated through MC rollouts; Naive = noiseless rollouts. Hit radius = 10\,cm. All results at seed=1, 4 policy trials.\relax }{table.caption.41}{}}
+\@writefile{toc}{\contentsline {paragraph}{The 50\% ceiling.}{13}{section*.44}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {9}Study 4: Wind Robustness}{13}{section.9}\protected@file@percent }
+\newlabel{sec:study4}{{9}{13}{Study 4: Wind Robustness}{section.9}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.1}Hit-Rate Threshold}{13}{subsection.9.1}\protected@file@percent }
+\newlabel{sec:study4:threshold}{{9.1}{13}{Hit-Rate Threshold}{subsection.9.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.2}Air-Relative Drag Correction}{13}{subsection.9.2}\protected@file@percent }
+\newlabel{sec:study4:physics}{{9.2}{13}{Air-Relative Drag Correction}{subsection.9.2}{}}
+\newlabel{eq:wind_drag}{{20}{13}{Air-Relative Drag Correction}{equation.9.20}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.3}State Augmentation: 8-D to 11-D}{13}{subsection.9.3}\protected@file@percent }
+\newlabel{sec:study4:state}{{9.3}{13}{State Augmentation: 8-D to 11-D}{subsection.9.3}{}}
+\newlabel{eq:wind_state}{{21}{13}{State Augmentation: 8-D to 11-D}{equation.9.21}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces Wind robustness results (15 trials each). All blind models outperform their aware counterparts. Hit radius = 10\,cm (consistent with all other studies).\relax }}{14}{table.caption.48}\protected@file@percent }
+\newlabel{tab:wind_results}{{7}{14}{Wind robustness results (15 trials each). All blind models outperform their aware counterparts. Hit radius = 10\,cm (consistent with all other studies).\relax }{table.caption.48}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.4}Wind Models}{14}{subsection.9.4}\protected@file@percent }
+\newlabel{sec:study4:windmodels}{{9.4}{14}{Wind Models}{subsection.9.4}{}}
+\@writefile{toc}{\contentsline {paragraph}{W1 — Constant wind.}{14}{section*.45}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{W2 — Random gusts.}{14}{section*.46}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{W3 — Ornstein-Uhlenbeck turbulence.}{14}{section*.47}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.5}Results}{14}{subsection.9.5}\protected@file@percent }
+\newlabel{sec:study4:results}{{9.5}{14}{Results}{subsection.9.5}{}}
+\@writefile{toc}{\contentsline {paragraph}{Constant wind is absorbed implicitly.}{14}{section*.49}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{The counterintuitive finding: blind beats aware in all conditions.}{14}{section*.50}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Root cause: curse of dimensionality.}{14}{section*.51}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{RBF centre initialisation failure.}{14}{section*.52}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.6}Sample-Efficiency Analysis}{14}{subsection.9.6}\protected@file@percent }
+\newlabel{sec:study4:dimscaling}{{9.6}{14}{Sample-Efficiency Analysis}{subsection.9.6}{}}
+\citation{yolov8}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Hit rates across all 9 wind configurations. Blind models (solid) consistently outperform aware models (hatched) within the 15-trial budget.\relax }}{15}{figure.caption.54}\protected@file@percent }
+\newlabel{fig:wind_hitrates}{{2}{15}{Hit rates across all 9 wind configurations. Blind models (solid) consistently outperform aware models (hatched) within the 15-trial budget.\relax }{figure.caption.54}{}}
+\@writefile{toc}{\contentsline {paragraph}{Practical guidance.}{15}{section*.53}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {10}Study 5: Closed-Loop Vision Pipeline}{15}{section.10}\protected@file@percent }
+\newlabel{sec:study5}{{10}{15}{Study 5: Closed-Loop Vision Pipeline}{section.10}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {10.1}Motivation}{15}{subsection.10.1}\protected@file@percent }
+\newlabel{sec:study5:motivation}{{10.1}{15}{Motivation}{subsection.10.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {10.2}OpenCV Geometric Pipeline}{15}{subsection.10.2}\protected@file@percent }
+\newlabel{sec:study5:opencv}{{10.2}{15}{OpenCV Geometric Pipeline}{subsection.10.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Setup.}{15}{section*.55}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Detection.}{15}{section*.56}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Near-face bias correction.}{15}{section*.57}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Failure handling.}{15}{section*.58}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {10.3}YOLOv8n Learning-Based Pipeline}{15}{subsection.10.3}\protected@file@percent }
+\newlabel{sec:study5:yolo}{{10.3}{15}{YOLOv8n Learning-Based Pipeline}{subsection.10.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Synthetic dataset.}{15}{section*.59}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Training.}{15}{section*.60}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Deployment.}{15}{section*.61}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {10.4}End-to-End Integration}{15}{subsection.10.4}\protected@file@percent }
+\newlabel{sec:study5:integration}{{10.4}{15}{End-to-End Integration}{subsection.10.4}{}}
 \citation{turcato2025mcpilot}
-\@writefile{toc}{\contentsline {subsection}{\numberline {9.2}Zero-Mean Noise as GP Regularisation}{13}{subsection.9.2}\protected@file@percent }
-\newlabel{sec:discussion:noise}{{9.2}{13}{Zero-Mean Noise as GP Regularisation}{subsection.9.2}{}}
-\newlabel{prop:zeromean}{{2}{13}{Zero-mean unlearnability}{proposition.2}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {9.3}Decoupled Arm--RL Pipeline}{13}{subsection.9.3}\protected@file@percent }
-\newlabel{sec:discussion:decoupled}{{9.3}{13}{Decoupled Arm--RL Pipeline}{subsection.9.3}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {9.4}Limitations}{13}{subsection.9.4}\protected@file@percent }
-\newlabel{sec:discussion:limitations}{{9.4}{13}{Limitations}{subsection.9.4}{}}
-\@writefile{toc}{\contentsline {paragraph}{Simulation only.}{13}{section*.34}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Fixed launch angle.}{13}{section*.35}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Single-seed statistics.}{13}{section*.36}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Particle freeze approximation.}{13}{section*.37}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces End-to-end system flowchart: perception (OpenCV or YOLO), policy inference, arm trajectory, and ball flight.\relax }}{16}{figure.caption.62}\protected@file@percent }
+\newlabel{fig:system_flowchart}{{3}{16}{End-to-end system flowchart: perception (OpenCV or YOLO), policy inference, arm trajectory, and ball flight.\relax }{figure.caption.62}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {10.5}Robustness to Camera Placement}{16}{subsection.10.5}\protected@file@percent }
+\newlabel{sec:study5:robustness}{{10.5}{16}{Robustness to Camera Placement}{subsection.10.5}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {11}Discussion}{16}{section.11}\protected@file@percent }
+\newlabel{sec:discussion}{{11}{16}{Discussion}{section.11}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {11.1}Geometry-Dependence of Algorithm Defaults}{16}{subsection.11.1}\protected@file@percent }
+\newlabel{sec:discussion:geometry}{{11.1}{16}{Geometry-Dependence of Algorithm Defaults}{subsection.11.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {11.2}Two Faces of Disturbance Handling}{16}{subsection.11.2}\protected@file@percent }
+\newlabel{sec:discussion:disturbances}{{11.2}{16}{Two Faces of Disturbance Handling}{subsection.11.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Zero-mean noise cannot be conditioned out.}{16}{section*.63}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Biased disturbances can be conditioned out, but only when the trial budget supports the extra GP dimensions.}{16}{section*.64}\protected@file@percent }
+\citation{turcato2025mcpilot}
+\@writefile{toc}{\contentsline {subsection}{\numberline {11.3}The Decoupled Architecture as Portability Mechanism}{17}{subsection.11.3}\protected@file@percent }
+\newlabel{sec:discussion:decoupled}{{11.3}{17}{The Decoupled Architecture as Portability Mechanism}{subsection.11.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {11.4}Limitations}{17}{subsection.11.4}\protected@file@percent }
+\newlabel{sec:discussion:limitations}{{11.4}{17}{Limitations}{subsection.11.4}{}}
+\@writefile{toc}{\contentsline {paragraph}{Simulation only.}{17}{section*.65}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Multi-seed statistics.}{17}{section*.66}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Fixed launch angle.}{17}{section*.67}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Wind trial budget.}{17}{section*.68}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Vision quantitative evaluation.}{17}{section*.69}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Particle freeze approximation.}{17}{section*.70}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {12}Conclusion}{17}{section.12}\protected@file@percent }
+\newlabel{sec:conclusion}{{12}{17}{Conclusion}{section.12}{}}
+\@writefile{toc}{\contentsline {paragraph}{Implementation.}{17}{section*.71}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Convergence rules.}{17}{section*.72}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Release-height and multi-arm generalisation.}{17}{section*.73}\protected@file@percent }
 \bibstyle{abbrvnat}
 \bibdata{refs}
-\bibcite{mcpilco}{{1}{2022}{{Mitsubishi Electric Research Laboratories}}{{}}}
-\bibcite{turcato2025mcpilot}{{2}{2025}{{Turcato et~al.}}{{Turcato, Giacomuzzo, Carli, and Romeres}}}
-\@writefile{toc}{\contentsline {section}{\numberline {10}Conclusion}{14}{section.10}\protected@file@percent }
-\newlabel{sec:conclusion}{{10}{14}{Conclusion}{section.10}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {A}Full Hyperparameter Table}{15}{appendix.A}\protected@file@percent }
-\newlabel{app:hyperparams}{{A}{15}{Full Hyperparameter Table}{appendix.A}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces Complete hyperparameter table for all experimental configurations. Shared across all: $M{=}400$, $N_b{=}250$, $u_M{=}3.5$\,m/s, $\ell _m{=}0.75$\,m, $\gamma _M{=}\pi /6$, $T_s{=}0.02$\,s, $N_{\mathrm  {opt}}{=}1500$, $\alpha _{\mathrm  {launch}}{=}35^\circ $, ball ($m{=}0.0577$\,kg, $r{=}0.0327$\,m). ``Strat'' = stratified exploration; ``Rnd'' = random.\relax }}{15}{table.caption.39}\protected@file@percent }
-\newlabel{tab:full_hyperparams}{{7}{15}{Complete hyperparameter table for all experimental configurations. Shared across all: $M{=}400$, $N_b{=}250$, $u_M{=}3.5$\,m/s, $\ell _m{=}0.75$\,m, $\gamma _M{=}\pi /6$, $T_s{=}0.02$\,s, $N_{\mathrm {opt}}{=}1500$, $\alpha _{\mathrm {launch}}{=}35^\circ $, ball ($m{=}0.0577$\,kg, $r{=}0.0327$\,m). ``Strat'' = stratified exploration; ``Rnd'' = random.\relax }{table.caption.39}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {B}Zero-Mean Unlearnability: Proof Sketch}{15}{appendix.B}\protected@file@percent }
-\newlabel{app:zeromean}{{B}{15}{Zero-Mean Unlearnability: Proof Sketch}{appendix.B}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {C}Lengthscale Scaling Rule Derivation}{15}{appendix.C}\protected@file@percent }
-\newlabel{app:lengthscale}{{C}{15}{Lengthscale Scaling Rule Derivation}{appendix.C}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {D}Particle Freeze Approximation at Landing}{16}{appendix.D}\protected@file@percent }
-\newlabel{app:freeze}{{D}{16}{Particle Freeze Approximation at Landing}{appendix.D}{}}
-\gdef \@abspage@last{16}
+\bibcite{pilco}{{1}{2011}{{Deisenroth and Rasmussen}}{{}}}
+\bibcite{yolov8}{{2}{2023}{{Jocher et~al.}}{{Jocher, Chaurasia, and Qiu}}}
+\bibcite{kingma2015adam}{{3}{2015}{{Kingma and Ba}}{{}}}
+\bibcite{kingma2014auto}{{4}{2014}{{Kingma and Welling}}{{}}}
+\bibcite{mcpilco}{{5}{2022}{{Mitsubishi Electric Research Laboratories}}{{}}}
+\bibcite{rasmussen2006gp}{{6}{2006}{{Rasmussen and Williams}}{{}}}
+\bibcite{shahriari2016bo}{{7}{2016}{{Shahriari et~al.}}{{Shahriari, Swersky, Wang, Adams, and de~Freitas}}}
+\bibcite{turcato2025mcpilot}{{8}{2025}{{Turcato et~al.}}{{Turcato, Giacomuzzo, Carli, and Romeres}}}
+\bibcite{tossbot}{{9}{2020}{{Zeng et~al.}}{{Zeng, Song, Lee, Rodriguez, and Funkhouser}}}
+\@writefile{toc}{\contentsline {paragraph}{Noise study.}{18}{section*.74}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Wind study.}{18}{section*.75}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Vision pipeline.}{18}{section*.76}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Open questions.}{18}{section*.77}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {A}Full Hyperparameter Table}{19}{appendix.A}\protected@file@percent }
+\newlabel{app:hyperparams}{{A}{19}{Full Hyperparameter Table}{appendix.A}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {8}{\ignorespaces Complete hyperparameter table. Shared across all: $M{=}400$, $N_b{=}250$, $u_M{=}3.5$\,m/s, $\ell _m{=}0.75$\,m, $\gamma _M{=}\pi /6$, $T_s{=}0.02$\,s, $N_{\mathrm  {opt}}{=}1500$, $\alpha _{\mathrm  {launch}}{=}35^\circ $, ball ($m{=}0.0577$\,kg, $r{=}0.0327$\,m). ``Strat'' = stratified; ``Rnd'' = random.\relax }}{19}{table.caption.79}\protected@file@percent }
+\newlabel{tab:full_hyperparams}{{8}{19}{Complete hyperparameter table. Shared across all: $M{=}400$, $N_b{=}250$, $u_M{=}3.5$\,m/s, $\ell _m{=}0.75$\,m, $\gamma _M{=}\pi /6$, $T_s{=}0.02$\,s, $N_{\mathrm {opt}}{=}1500$, $\alpha _{\mathrm {launch}}{=}35^\circ $, ball ($m{=}0.0577$\,kg, $r{=}0.0327$\,m). ``Strat'' = stratified; ``Rnd'' = random.\relax }{table.caption.79}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {B}Proof of Theorem\nobreakspace  {}\ref {thm:zeromean}}{19}{appendix.B}\protected@file@percent }
+\newlabel{app:zeromean}{{B}{19}{Proof of Theorem~\ref {thm:zeromean}}{appendix.B}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {C}Lengthscale Scaling Rule Derivation}{20}{appendix.C}\protected@file@percent }
+\newlabel{app:lengthscale}{{C}{20}{Lengthscale Scaling Rule Derivation}{appendix.C}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {D}Particle Freeze Approximation}{20}{appendix.D}\protected@file@percent }
+\newlabel{app:freeze}{{D}{20}{Particle Freeze Approximation}{appendix.D}{}}
+\gdef \@abspage@last{20}

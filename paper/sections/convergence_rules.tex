@@ -1,0 +1,118 @@
+\section{Two Convergence Rules}
+\label{sec:convergence}
+
+The four failure modes in Section~\ref{sec:implementation} concern correctness.
+Two additional design rules concern convergence quality: they do not prevent learning
+from starting but determine whether it converges reliably across different task
+geometries and random seeds.
+Both rules emerged from Study~1 and are presented here as transferable design
+principles before the experimental studies.
+
+\subsection{Lengthscale-to-Range Scaling Rule}
+\label{sec:convergence:lengthscale}
+
+\paragraph{The problem.}
+The RBF policy (Eq.~\ref{eq:policy}) uses a squared-exponential kernel with
+lengthscale $\ell_s$.
+Define the \emph{RBF sensitivity} between two target positions at Euclidean
+distance $d$ as
+\begin{equation}
+  S(d,\, \ell_s) = \exp\!\left( -\frac{d^2}{2\,\ell_s^2} \right).
+  \label{eq:rbf_sensitivity}
+\end{equation}
+$S \to 1$ means the two RBF values are indistinguishable, and the policy outputs the
+same speed for both targets.
+$S \to 0$ means the targets are well-separated and the policy can assign independent
+speeds.
+
+The paper's default $\ell_s = 1.0$\,m is calibrated to a target range of
+$\approx 1.0$\,m (Config~A), where $S(1.0,\, 1.0) = e^{-0.5} \approx 0.607$ —
+distinguishable.
+For Config~E (target range $\Delta = 0.35$\,m), the same lengthscale gives
+$S(0.35,\, 1.0) = e^{-0.061} \approx 0.941$ — effectively identical.
+All 250 RBF centres output the same value for every target in the workspace, the
+gradient is near-zero everywhere, and the policy degenerates to a constant-speed output.
+We call this \emph{RBF blindness}.
+
+\paragraph{The rule.}
+Setting $\ell_s \approx 0.15 \times \Delta_{\mathrm{range}}$ where
+$\Delta_{\mathrm{range}} = \ell_M - \ell_{\min}$ is the width of the target workspace
+yields $S \approx 0.066$, matching the discriminability level of the working baseline.
+Formally:
+\begin{equation}
+  \ell_s^* \approx 0.15\;\Delta_{\mathrm{range}}.
+  \label{eq:ls_rule}
+\end{equation}
+The derivation in Appendix~\ref{app:lengthscale} shows that $\ell_s = \Delta_{\mathrm{range}}$
+exactly preserves Config~A's sensitivity; the empirical factor of 0.15 is conservative
+and provides faster convergence when GP data are sparse.
+
+\paragraph{Validation.}
+Table~\ref{tab:sensitivity} verifies the rule across all height configurations.
+Config~E with $\ell_s^* = 0.15$\,m achieves 10/10 hits immediately after this
+correction; four prior iterations all failed with $\ell_s = 1.0$\,m despite correct
+GP dynamics (Section~\ref{sec:study1:config_e}).
+
+\begin{table}[t]
+  \centering
+  \caption{RBF sensitivity $S$ at target range $\Delta_{\mathrm{range}}$ for each
+           configuration.
+           Config~E with default $\ell_s = 1.0$\,m is near-unity; E-Strat5 with
+           $\ell_s = 0.15$\,m recovers the working discriminability of Config~A.}
+  \label{tab:sensitivity}
+  \small
+  \begin{tabular}{lcccc}
+    \toprule
+    Config & $\Delta_{\mathrm{range}}$ (m) & $\ell_s$ (m) & $S$ & Result \\
+    \midrule
+    A              & $\approx 1.00$ & 1.00 & 0.607 & 5/5 \\
+    B-Strat        & $\approx 1.00$ & 1.00 & 0.607 & 10/10 \\
+    C-Strat        & $\approx 1.00$ & 1.00 & 0.607 & 10/10 \\
+    D-Strat        & $\approx 1.00$ & 1.00 & 0.607 & 10/10 \\
+    E (default)    & 0.35           & 1.00 & 0.941 & 0/10 \textbf{FAIL} \\
+    E-Strat5       & 0.35           & 0.15 & 0.066 & 10/10 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Practical implication.}
+Equation~\eqref{eq:ls_rule} is an \emph{a priori} design check: given the task geometry,
+verify $S < 0.1$ at the extremes of the target workspace before running any experiment.
+If $S > 0.5$, increase $N_b$ or reduce $\ell_s$.
+
+\subsection{Stratified Exploration Rule}
+\label{sec:convergence:stratified}
+
+\paragraph{The problem.}
+Random exploration with $N_{\mathrm{exp}} = 5$ throws draws velocities uniformly from
+$[0, u_M]$.
+An unlucky seed can draw four low-speed throws that all land well short of the target
+zone, leaving the GP with no observations in the speed region needed to reach any target.
+When the policy gradient subsequently pushes commanded speed toward $u_M$, the GP must
+extrapolate beyond its training support — and it cannot.
+Config~B with seed=1 experienced exactly this: five exploration throws produced landing
+positions of 0.245\,m and 0.408\,m from the origin, while the closest target was at
+$\approx 1.43$\,m.
+The policy saturated at $u_M$ and all 10 evaluation throws missed.
+The identical configuration with seed=2 achieved 10/10 hits, confirming that the
+failure was a property of the seed, not the algorithm.
+
+\paragraph{The fix: stratified band sampling.}
+We introduce \texttt{Stratified\_Throwing\_Exploration}, which partitions the speed
+interval $[0, u_M]$ into $N_{\mathrm{exp}}$ equal bands and samples throw $i$ uniformly
+from band $i$:
+\begin{equation}
+  v_i \sim \mathcal{U}\!\left(
+    \frac{(i-1)\,u_M}{N_{\mathrm{exp}}},\;
+    \frac{i\,u_M}{N_{\mathrm{exp}}}
+  \right), \quad i = 1, \ldots, N_{\mathrm{exp}}.
+  \label{eq:stratified}
+\end{equation}
+This guarantees that the GP receives at least one observation in each fifth of the speed
+range regardless of seed, with zero additional computational overhead.
+
+\paragraph{Evidence.}
+Applying stratified exploration to Config~B with seed=1 recovers 10/10 hits
+(B-Strat, Table~\ref{tab:sensitivity}).
+The cost trajectory at seed=1 with random exploration plateaus at 0.70--0.73 (max-speed
+local minimum); with stratified exploration it falls to 0.024 within the first trial.

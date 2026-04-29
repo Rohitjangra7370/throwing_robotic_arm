@@ -1,113 +1,58 @@
-<!--
-Copyright (C) 2020, 2023 Mitsubishi Electric Research Laboratories (MERL)
+# mc-pilot — MC-PILOT Baseline
 
-SPDX-License-Identifier: AGPL-3.0-or-later
--->
-# MC-PILCO
+Implements the MC-PILOT throwing algorithm in a pure NumPy ballistic simulator — no ROS, no Gazebo, no PyBullet.
 
-This package implements a Model-based Reinforcement Learning algorithm called Monte Carlo Probabilistic Inference for Learning and COntrol (MC-PILCO), for modeling and control of dynamical system. The algorithm relies on Gaussian Processes (GPs) to model the system dynamics and on a Monte Carlo approach to estimate the policy gradient during optimization. The Monte Carlo approach is shown to be effective for policy optimization thanks to a proper cost function shaping and use of dropout. This defines a framework where we can study: (i) the selection of the
-cost function, (ii) the optimization of policies using dropout,
-(iii) an improved data efficiency through the use of structured
-kernels in the GP models
-The algorithm is also extended to real systems and in particular to Partially Measurable Systems and it takes the name of MC-PILCO-4PMS.
-We discuss the importance of modeling both the measurement system and
-the state estimators during policy optimization. Please, see the [paper](https://ieeexplore.ieee.org/abstract/document/9827590) for more details.
+**Study:** Baseline reproduction. Ground-plane targets, z_release = 0.5 m, Franka Panda geometry.
 
-## Features
+Paper: Turcato et al., arXiv:2502.05595
 
-The code is implemented in python3 and reproduces all the simulation examples in [MC-PILCO](https://ieeexplore.ieee.org/abstract/document/9827590), namely, multiple ablation studies and the solution of a cart-pole system swing-up (available both in a python simulated environment and in the physic engine MuJoCo), a trajectory controller for a UR5 (implemented in Mujoco). The results can be reproduced with statistical values via Monte Carlo simulations.
-The user has the possibility to add his own python system or Mujoco Environment and solve it with MC-PILCO or MC-PILCO-4PMS.
+---
 
-Please refer to the [guide](./MC_PILCO_Software_Package.pdf) for a more detailed explanation of the code base.
+## Our code vs MC-PILCO boilerplate
 
-## Installation
+This folder was copied from `../MC-PILCO/` and modified. The files we wrote or changed are:
 
-1. Download / Git clone this repo.
-2. Create a python environment with the following packages:
+| File | What it does |
+|------|-------------|
+| `simulation_class/model.py` | `ThrowingSystem` — NumPy ballistic ODE with drag, particle landing freeze |
+| `model_learning/Model_learning.py` | `Ballistic_Model_learning_RBF` — GP on 6-D ball state, velocity-increment output |
+| `policy_learning/Policy.py` | `Throwing_Policy` (RBF, π(Px,Py)→speed), `Random_Throwing_Exploration`, `Stratified_Throwing_Exploration` |
+| `policy_learning/Cost_function.py` | Landing-based cost with ℓc = 0.5 m |
+| `policy_learning/MC_PILCO.py` | `MC_PILOT` — single-shot policy application, augmented 8-D state |
+| `test_mc_pilot.py` | Main entry point |
 
-### Dependencies
+Everything else (`apply_mcpilco_policy.py`, `log_plot_cartpole.py`, `test_mcpilco_cartpole*.py`, `MC_PILCO_Software_Package.pdf`, etc.) is upstream MC-PILCO boilerplate for the cartpole task — not used here.
 
-- [PyTorch 1.4 or higher](<https://pytorch.org/>)
-- [NumPy](<https://numpy.org/>)
-- [Matplotlib](<https://matplotlib.org/>)
-- [Pickle](<https://docs.python.org/3/library/pickle.html>)
-- [Argparse](<https://docs.python.org/3/library/argparse.html>)
-- `gpr_lib` is provided courtesy of Alberto Dalla Libera with permission to redistribute as part of this software package (License: `MIT`).
+---
 
-If you want to test the code on MuJoCo environments, make sure to have also MuJoCo_py and Gym libraries.
-
-### Optional Dependencies
-
-- [MuJoCo 2.00](http://www.mujoco.org/) (License: `Apache-2.0`)
-- [MuJoCo-Py](<https://github.com/openai/mujoco-py>) (License: `MIT`)
-- [Gym](<http://gym.openai.com/>) (License: `MIT`)
-
-You can create a conda environment with the above dependencies by executing:
+## Run
 
 ```bash
-conda env create --file environment.yaml
+python test_mc_pilot.py -seed 1 -num_trials 10
 ```
 
-## Usage
+Results saved to `results_mc_pilot/<seed>/`. Expected: 5/5 hits by trial 5, cost converging from 0.74 to ≈ 0.001.
 
-Please refer to the guide [MC_PILCO_Software_Package.pdf](./MC_PILCO_Software_Package.pdf).
+---
 
-## Testing
+## Key parameters
 
-Inside 'mc_pilco' folder:
+| Parameter | Our value | Paper value | Why different |
+|-----------|-----------|-------------|---------------|
+| `lc` | 0.5 m | 0.1 m | lc=0.1 saturates cost for all early misses (0.3–1.5 m), killing gradients |
+| `Ts` | 0.02 s | 0.01 s | Doubled for ~3× speedup; no accuracy regression |
+| `T` | 0.7 s | 1.0 s | Ball lands by ~0.58 s; trimmed horizon saves compute |
+| `Nexp` | 5 | 5 | Matches paper |
+| `M` | 400 | 400 | Matches paper |
+| `uM` | 3.5 m/s | 3.5 m/s | Matches paper |
 
-- Run `$ python test_mcpilco_cartpole.py` to test MC-PILCO in the cartpole swing-up task (GP model with squared-exponential+polynomial kernel).
-- Run `$ python test_mcpilco_cartpole_rbf_ker.py` to test MC-PILCO in the cartpole swing-up task (GP model with squared-exponential kernel).
-- Run `$ python test_mcpilco_cartpole_multi_init.py` to test MC-PILCO in the cartpole swing-up task stating from two separate possible initial cart positions.
-- Run `$ python test_mcpilco4pms_cartpole.py` to test MC-PILCO4PMS in the cartpole swing-up task when considering the presence of sensors and state estimation.
-- Run `$ python test_mcpilco_cartpole_mujoco.py` to test MC-PILCO in the cartpole swing-up task in MuJoCo.
-- Run `$ python test_mcpilco_ur5_mujoco.py` to use MC-PILCO to learn a joint-space controller for a UR5 robot arm in MuJoCo.
+---
 
-## Citation
+## Four silent bugs fixed during reproduction
 
-If you use the software, please cite the following ([paper](https://ieeexplore.ieee.org/abstract/document/9827590)):
-
-Amadio, F., Dalla Libera, A., Antonello, R., Nikovski, D., Carli, R., & Romeres, D. (2022). Model-Based Policy Search Using Monte Carlo Gradient Estimation With Real Systems Application. IEEE Transactions on Robotics, 38(6), 3879-3898.
-
-```BibTeX
-@article{amadio2022model,
-  title={Model-Based Policy Search Using Monte Carlo Gradient Estimation With Real Systems Application},
-  author={Amadio, Fabio and Dalla Libera, Alberto and Antonello, Riccardo and Nikovski, Daniel and Carli, Ruggero and Romeres, Diego},
-  journal={IEEE Transactions on Robotics},
-  volume={38},
-  number={6},
-  pages={3879--3898},
-  year={2022},
-  publisher={IEEE}
-}
-```
-
-## Related Links
-
-You can find more information and videos at:
-
-[MERL research page](https://www.merl.com/research/license/MC-PILCO)
-
-[Youtube Presentation](https://www.youtube.com/watch?v=--73hmZYaHA)
-
-## Contact
-
-Diego Romeres: romeres@merl.com
-
-Alberto Dalla Libera: dallaliber@dei.unipd.it
-
-Fabio Amadio: amadiofa@dei.unipd.it
-
-## Contributing
-
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for our policy on contributions.
-
-## License
-Released under `AGPL-3.0-or-later` license, as found in the [LICENSE.md](LICENSE.md) file.
-
-All files:
-```
-Copyright (c) 2020, 2023 Mitsubishi Electric Research Laboratories (MERL)
-
-SPDX-License-Identifier: AGPL-3.0-or-later
-```
+| # | Bug | Symptom | Fix |
+|---|-----|---------|-----|
+| 1 | Speed channel stripped from GP input | No gradient reaches policy | Embed speed in particle initial velocity |
+| 2 | Underground particles continue propagating | Cost stuck at 0.998 | Freeze particle state when z ≤ 0 |
+| 3 | Cost lengthscale ℓc = 0.1 m too tight | Gradient < 1e-3 for all early errors | Set ℓc = 0.5 m |
+| 4 | Simulation horizon unit mismatch | 10,000-step tensor → RAM crash | Pass integer steps, not float seconds |

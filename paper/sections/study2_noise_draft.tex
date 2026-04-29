@@ -75,7 +75,7 @@ where $\gamma$ is the arm deceleration rate.  This matches the gripper-delay mod
 \subsection{Zero-Mean Unlearnability and GP Degeneration}
 \label{sec:study2:theory}
 
-\begin{proposition}[Zero-mean noise is unlearnable]
+\begin{proposition}[Optimal Action Invariance Under Symmetric Noise]
 \label{prop:zeromean}
 Let $f: \mathbb{R}^3 \to \mathbb{R}^2$ be the deterministic ballistic map from release
 velocity to landing position, and let $\boldsymbol{\epsilon} \sim p_\epsilon$ with
@@ -86,7 +86,9 @@ $J_{\mathrm{aware}}(\theta) = \mathbb{E}_{\boldsymbol{\epsilon}}[c(f(\mathbf{v}_
 and the noiseless objective
 $J_{\mathrm{naive}}(\theta) = c(f(\mathbf{v}_{\mathrm{cmd}}), \mathbf{P})$.
 If $p_\epsilon$ is symmetric around zero, the minimisers of $J_{\mathrm{aware}}$ and
-$J_{\mathrm{naive}}$ coincide; \ie{}, zero-mean noise does not shift the optimal policy.
+$J_{\mathrm{naive}}$ coincide.
+That is, symmetric zero-mean noise does not shift the optimal mean action of the policy,
+even though the GP correctly learns the increased aleatoric uncertainty it induces.
 \end{proposition}
 
 \begin{proof}[Proof sketch]

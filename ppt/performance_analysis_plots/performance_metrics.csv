@@ -1,0 +1,10 @@
+Config,Status,Trials,Hits,Hit Rate (%),Mean Error (cm),Std Error (cm),Final Cost
+W1-calm,OK,15,11,73,10.3,15.4,0.3147
+W1-light,OK,15,8,53,19.9,21.7,0.2941
+W1-moderate,OK,15,8,53,22.0,23.3,0.2615
+W1-strong,OK,15,7,47,23.5,20.3,0.2417
+W1-aware,OK,15,7,47,24.6,24.5,0.2920
+W2-blind,OK,15,8,53,24.2,25.0,0.2887
+W2-aware,OK,15,6,40,28.2,25.2,0.3307
+W3-blind,OK,15,9,60,17.0,21.2,0.2874
+W3-aware,OK,15,7,47,25.9,24.3,0.3034
