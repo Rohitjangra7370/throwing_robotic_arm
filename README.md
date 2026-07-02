@@ -1,7 +1,5 @@
 # Geometry, Noise, and Disturbances: A Diagnostic Study of Model-Based Reinforcement Learning for Data-Efficient Robotic Throwing
-**AR525 — Reinforcement Learning in Robotics | IIT Mandi, Group-3**
-
-Members: Rishang Yadav · Bhumika Gupta · Aarya Agarwal · Yajesh Chandra
+**AR525 — Reinforcement Learning in Robotics | IIT Mandi**
 
 Paper reproduced: Turcato et al., "Data-Efficient Robotic Object Throwing with Model-Based Reinforcement Learning," arXiv:2502.05595
 
