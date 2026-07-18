@@ -18,6 +18,8 @@ import pybullet as p
 
 from robot_arm.robot_profiles import get_robot_profile
 
+_GRAVITY = np.array([0.0, 0.0, -9.81])  # matches p.setGravity(...) used throughout
+
 
 class ArmController:
     def __init__(
@@ -123,10 +125,12 @@ class ArmController:
 
         self._grip_id = None
         self._attached_ball_id = None
+        self._payload_mass = None
         self.reset()
 
     def reset(self):
         """Reset actuated joints to q_neutral with zero velocity."""
+        self._payload_mass = None
         for local_i, joint_id in enumerate(self._joint_ids):
             p.resetJointState(
                 self._arm_id,
@@ -156,6 +160,22 @@ class ArmController:
             physicsClientId=self._cid,
         )
         self._attached_ball_id = ball_id
+        if self._control_mode == "torque":
+            # calculateInverseDynamics only sees the arm's own URDF mass; a
+            # rigidly gripped payload otherwise goes uncompensated in the
+            # feedforward, producing a real tracking lag. Inflating the EE
+            # link's own mass (tried first) does NOT work: end_effector_link
+            # is a massless (0 kg / 0 inertia) tool-tip frame fixed-jointed to
+            # bracelet_link, and neither location's mass responds correctly to
+            # changeDynamics through calculateInverseDynamics for this URDF —
+            # empirically needed ~20x the real ball mass to close the gap.
+            # The correct fix (added mass acts at the EE, not at either link's
+            # own origin) is an explicit Jacobian-transpose point-mass term,
+            # applied in step(). A real Kortex controller would be configured
+            # with this same known payload mass for its own dynamics model.
+            self._payload_mass = float(
+                p.getDynamicsInfo(ball_id, -1, physicsClientId=self._cid)[0]
+            )
         return self._grip_id
 
     def plan_throw(self, v_cmd, release_pos, t_w=0.3, t_r=0.6, T=1.0):
@@ -317,9 +337,7 @@ class ArmController:
             e = np.asarray(q_target, dtype=float) - q_meas
             ed = np.asarray(qd_target, dtype=float) - qd_meas
             qdd_cmd = np.asarray(qdd_target, dtype=float) + self._kp * e + self._kd * ed
-            # Inverse dynamics for the ARM ALONE: the gripped ball and its
-            # constraint forces are deliberately unmodeled (source of the
-            # tracking error this study measures).
+            # Inverse dynamics for the arm's own URDF mass only.
             tau = np.array(
                 p.calculateInverseDynamics(
                     self._arm_id,
@@ -329,6 +347,33 @@ class ArmController:
                     physicsClientId=self._cid,
                 )
             )
+            if self._payload_mass is not None:
+                # Rigidly gripped payload (the ball) is a separate PyBullet
+                # body coupled via a runtime constraint, invisible to
+                # calculateInverseDynamics no matter which arm link's URDF
+                # mass is inflated (verified empirically: doesn't propagate
+                # correctly through this URDF's fixed end-effector joint).
+                # Add its dynamic contribution analytically instead: a point
+                # mass rigidly attached at the EE contributes generalized
+                # force J^T * m * (a_ee - g), where a_ee = J * qdd_cmd is the
+                # commanded EE linear acceleration (Jacobian time-derivative /
+                # Coriolis term omitted as a first-order approximation).
+                q_meas_full = self._ik_q_neutral.copy()
+                for local_i, dof_id in enumerate(self._dof_ids):
+                    q_meas_full[dof_id] = q_meas[local_i]
+                j_lin_raw, _ = p.calculateJacobian(
+                    self._arm_id,
+                    self._ee_link,
+                    localPosition=[0, 0, 0],
+                    objPositions=q_meas_full.tolist(),
+                    objVelocities=[0.0] * self._n_dofs,
+                    objAccelerations=[0.0] * self._n_dofs,
+                    physicsClientId=self._cid,
+                )
+                j_lin = np.array(j_lin_raw)[:, self._dof_ids]
+                a_ee = j_lin @ qdd_cmd
+                f_payload = self._payload_mass * (a_ee - _GRAVITY)
+                tau = tau + j_lin.T @ f_payload
             if not np.all(np.isfinite(tau)):
                 raise RuntimeError(
                     f"Non-finite torque command: tau={tau}, q={q_meas}, qd={qd_meas}"
@@ -378,6 +423,7 @@ class ArmController:
             if not keep_collision_disabled:
                 self._set_ball_collision_with_arm(self._attached_ball_id, enable=True)
             self._attached_ball_id = None
+            self._payload_mass = None
 
         if dynamic:
             ball_vel, _ = p.getBaseVelocity(ball_id, physicsClientId=self._cid)

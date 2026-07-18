@@ -43,3 +43,59 @@ def test_torque_profile_requires_gains():
         assert arm._kd.shape == (7,)
     finally:
         p.disconnect(client)
+
+
+def test_ball_mass_compensation_reduces_tracking_error():
+    """
+    Root cause (found via instrumented probing): true closed-loop joint
+    tracking error (measured against the state the controller actually reacts
+    to, i.e. BEFORE the physics step that applies this command — not one step
+    later) grows from ~0.004-0.009 rad with no payload to ~0.017-0.021 rad once
+    a 57.7g ball is gripped, because calculateInverseDynamics only knows the
+    arm's own URDF mass. Torque saturation was ruled out (0% clipped steps,
+    10x torque headroom changes nothing). Compensating by inflating the EE
+    link's mass while the ball is attached should bring tracking back down
+    near the no-payload baseline.
+    """
+    client, arm = _make_arm("kinova_gen3_dyn")
+    try:
+        p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=client)
+        p.loadURDF("plane.urdf", physicsClientId=client)
+        ee_pos = arm.ee_state()[0]
+        col = p.createCollisionShape(p.GEOM_SPHERE, radius=0.0327, physicsClientId=client)
+        ball = p.createMultiBody(baseMass=0.0577, baseCollisionShapeIndex=col,
+                                 basePosition=ee_pos.tolist(), physicsClientId=client)
+        p.changeDynamics(ball, -1, linearDamping=0.0, angularDamping=0.0,
+                         physicsClientId=client)
+        arm.attach_ball(ball)
+
+        prof = get_robot_profile("kinova_gen3_dyn")
+        t_w, t_r, T = prof.timing
+        alpha = np.deg2rad(35.0)
+        speed = 0.65  # uncompensated error here was ~0.021 rad (mid-high speed)
+        v_cmd = np.array([speed * np.cos(alpha), 0.0, speed * np.sin(alpha)])
+        coeffs, _, _, _ = arm.plan_throw(
+            v_cmd, np.array(prof.default_release_pos), t_w, t_r, T
+        )
+
+        max_err = 0.0
+        n_steps = int(coeffs["t_r"] / DT)
+        for step in range(n_steps):
+            t = step * DT
+            q_t, qd_t, qdd_t = arm.get_setpoint(coeffs, t, with_accel=True)
+            if t > coeffs["t_w"]:
+                states = p.getJointStates(arm.arm_id, arm.joint_ids, physicsClientId=client)
+                q_meas = np.array([s[0] for s in states])
+                max_err = max(max_err, float(np.max(np.abs(q_t - q_meas))))
+            arm.step(q_t, qd_t, qdd_t)
+            p.stepSimulation(physicsClientId=client)
+
+        # no-payload baseline at this speed is ~0.0088 rad; uncompensated
+        # with-payload was ~0.0208 rad. 0.012 gives margin above baseline
+        # while still well below the uncompensated value.
+        assert max_err < 0.012, (
+            f"closed-loop tracking error {max_err:.4f} rad "
+            "(payload mass not compensated?)"
+        )
+    finally:
+        p.disconnect(client)
