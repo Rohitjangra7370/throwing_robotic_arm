@@ -81,6 +81,22 @@ def torque_margin_map(out_dir, sweep_npz=None):
 # ---------------------------------------------------------------------------
 
 def joint_tracking_grid(out_dir, u_grid, angle_grid):
+    """
+    Measures TRUE closed-loop joint tracking error: q_meas is sampled BEFORE
+    the step that applies this command, i.e. against the state the controller
+    actually reacted to. Sampling AFTER stepSimulation (compared against an
+    earlier tried version of this function, and still the convention in
+    tests/test_dynamic_release.py's single-speed gate check) mixes in a
+    |qd|*dt timing artifact from the trajectory's own motion between samples
+    -- not real tracking error. That artifact grows with commanded speed and
+    plateaus once qd_release saturates qd_max, which is why an earlier run of
+    this exact grid (before this fix) showed error plateauing at 0.035 rad
+    instead of the true ~0.02 rad.
+
+    A ball is gripped for the whole grid (the realistic deployment case) so
+    this exercises the Jacobian-transpose payload correction in
+    ArmController.step(), not just the empty-gripper case.
+    """
     prof = get_robot_profile("kinova_gen3_dyn")
     t_w, t_r, T = prof.timing
     dt = 0.02
@@ -103,6 +119,14 @@ def joint_tracking_grid(out_dir, u_grid, angle_grid):
         for ang in angle_grid:
             i += 1
             arm.reset()
+            ee_pos = arm.ee_state()[0]
+            col = p.createCollisionShape(p.GEOM_SPHERE, radius=0.0327, physicsClientId=client)
+            ball = p.createMultiBody(baseMass=0.0577, baseCollisionShapeIndex=col,
+                                     basePosition=ee_pos.tolist(), physicsClientId=client)
+            p.changeDynamics(ball, -1, linearDamping=0.0, angularDamping=0.0,
+                             physicsClientId=client)
+            arm.attach_ball(ball)
+
             v_cmd = np.array([
                 u * np.cos(alpha) * np.cos(ang),
                 u * np.cos(alpha) * np.sin(ang),
@@ -114,12 +138,14 @@ def joint_tracking_grid(out_dir, u_grid, angle_grid):
             for step in range(n_steps):
                 t = step * dt
                 q_t, qd_t, qdd_t = arm.get_setpoint(coeffs, t, with_accel=True)
-                arm.step(q_t, qd_t, qdd_t)
-                p.stepSimulation(physicsClientId=client)
                 if t > coeffs["t_w"]:
                     states = p.getJointStates(arm.arm_id, arm.joint_ids, physicsClientId=client)
                     q_meas = np.array([s[0] for s in states])
                     max_err = max(max_err, float(np.max(np.abs(q_t - q_meas))))
+                arm.step(q_t, qd_t, qdd_t)
+                p.stepSimulation(physicsClientId=client)
+            arm.release_ball(ball, dynamic=True, keep_collision_disabled=True)
+            p.removeBody(ball, physicsClientId=client)
             rec_u.append(u)
             rec_ang.append(ang)
             rec_err.append(max_err)
