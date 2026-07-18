@@ -24,6 +24,8 @@ Available classes:
     SaltAndPepperVelocityNoise — sparse impulse outliers on release velocity
   ReleaseTimingJitter — gripper opens t_d ~ U(a,b) seconds late (learnable: policy must
                         compensate for arm deceleration during the delay; matches paper §5)
+  TrackingErrorNoise — speed-dependent bias + scatter fitted from measured
+                       torque-tracking error (velocity-from-dynamics study)
 """
 
 import numpy as np
@@ -232,3 +234,84 @@ class ReleaseTimingJitter(ArmNoise):
         scale = 1.0 - self.decel_rate * t_d / v_mag          # (n,)
         scale = np.clip(scale, 0.0, 1.0)
         return scale, np.zeros((n, 3))
+
+
+def _throw_frame(v_cmd):
+    """Orthonormal frame aligned with a command: (parallel, lateral, vertical-ish).
+
+    e_par is the unit command direction; e_lat is horizontal, perpendicular to
+    the command azimuth; e_ver completes the right-handed frame (mostly +z).
+    """
+    v = np.asarray(v_cmd, dtype=float)
+    n = np.linalg.norm(v)
+    e_par = v / n if n > 1e-9 else np.array([1.0, 0.0, 0.0])
+    up = np.array([0.0, 0.0, 1.0])
+    e_lat = np.cross(up, e_par)
+    ln = np.linalg.norm(e_lat)
+    e_lat = e_lat / ln if ln > 1e-9 else np.array([0.0, 1.0, 0.0])
+    e_ver = np.cross(e_par, e_lat)
+    return np.stack([e_par, e_lat, e_ver])  # rows = frame axes
+
+
+class TrackingErrorNoise(ArmNoise):
+    """
+    Release-velocity error measured from torque-tracked throws (velocity-from-
+    dynamics study), applied as noise for noise-aware training on the
+    kinematic profile.
+
+    Fit (from measure_tracking_error.py output) is done in the throw-aligned
+    frame so azimuth symmetry is respected:
+        dv_frame_i = coef_a[i] * u + coef_b[i] + N(0, resid_cov)
+    with i = (parallel-to-command, lateral, vertical), u = ||v_cmd||.
+
+    Parameters
+    ----------
+    coef_a, coef_b : (3,) — linear bias coefficients per aligned component
+    resid_cov      : (3, 3) — residual covariance in the aligned frame
+    seed           : optional int
+    """
+
+    def __init__(self, coef_a, coef_b, resid_cov, seed=None):
+        self.coef_a = np.asarray(coef_a, dtype=float)
+        self.coef_b = np.asarray(coef_b, dtype=float)
+        self.resid_cov = np.asarray(resid_cov, dtype=float)
+        self.rng = np.random.default_rng(seed)
+
+    @classmethod
+    def from_measurements(cls, npz_path, seed=None):
+        d = np.load(npz_path)
+        ok = d["flag"] < 0.5
+        u = d["u_cmd"][ok]
+        v_cmd = d["v_cmd"][ok]
+        dv_world = d["v_release"][ok] - v_cmd
+
+        dv_frame = np.empty_like(dv_world)
+        for i in range(len(u)):
+            dv_frame[i] = _throw_frame(v_cmd[i]) @ dv_world[i]
+
+        A = np.stack([u, np.ones_like(u)], axis=1)          # (N, 2)
+        coef, *_ = np.linalg.lstsq(A, dv_frame, rcond=None)  # (2, 3)
+        resid = dv_frame - A @ coef
+        resid_cov = np.cov(resid.T)
+        return cls(coef[0], coef[1], resid_cov, seed=seed)
+
+    def _bias(self, u):
+        return self.coef_a * u + self.coef_b
+
+    def pybullet_release_vel(self, v_cmd, ee_vel):
+        v_cmd = np.asarray(v_cmd, dtype=float)
+        frame = _throw_frame(v_cmd)
+        u = np.linalg.norm(v_cmd)
+        dv_frame = self._bias(u) + self.rng.multivariate_normal(
+            np.zeros(3), self.resid_cov
+        )
+        return v_cmd + frame.T @ dv_frame
+
+    def perturb_numpy(self, v3d_np, n):
+        additive = np.zeros((n, 3))
+        scatter = self.rng.multivariate_normal(np.zeros(3), self.resid_cov, n)
+        for i in range(n):
+            frame = _throw_frame(v3d_np[i])
+            u = np.linalg.norm(v3d_np[i])
+            additive[i] = frame.T @ (self._bias(u) + scatter[i])
+        return np.ones(n), additive
