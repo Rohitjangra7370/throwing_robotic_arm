@@ -219,16 +219,68 @@ class ArmController:
         q_windup = np.clip(q_windup, self._q_lo, self._q_hi)
         q_follow = self._q_neutral.copy()
 
+        dt_throw = t_r - t_w
+        follow_dur = T - t_r
+        time_scale = 1.0
+        throw_coeffs = _cubic_to_velocity(q_windup, q_release, qd_release, dt_throw)
+
+        if self._control_mode == "torque":
+            for _ in range(6):
+                ratio, worst_tau = self._throw_peak_torque_ratio(throw_coeffs, dt_throw)
+                if ratio <= 1.0:
+                    break
+                dt_throw *= 1.2
+                time_scale *= 1.2
+                throw_coeffs = _cubic_to_velocity(
+                    q_windup, q_release, qd_release, dt_throw
+                )
+            else:
+                ratio, worst_tau = self._throw_peak_torque_ratio(throw_coeffs, dt_throw)
+                if ratio > 1.0:
+                    report = ", ".join(
+                        f"j{j}: {abs(t):.1f}/{m:.1f} Nm"
+                        for j, (t, m) in enumerate(zip(worst_tau, self._tau_max))
+                    )
+                    raise RuntimeError(
+                        f"Throw infeasible after 6 time-scaling iterations "
+                        f"(peak ratio {ratio:.2f}): {report}"
+                    )
+
+        t_r_actual = t_w + dt_throw
+        T_actual = t_r_actual + follow_dur
+
         coeffs = {
             "windup": _cubic_rest_to_rest(self._q_neutral, q_windup, t_w),
-            "throw": _cubic_to_velocity(q_windup, q_release, qd_release, t_r - t_w),
-            "follow": _cubic_from_velocity(q_release, qd_release, q_follow, T - t_r),
+            "throw": throw_coeffs,
+            "follow": _cubic_from_velocity(q_release, qd_release, q_follow, follow_dur),
             "t_w": t_w,
-            "t_r": t_r,
-            "T": T,
+            "t_r": t_r_actual,
+            "T": T_actual,
             "clip_scale": clip_scale,
+            "time_scale": time_scale,
         }
         return coeffs, q_release, qd_release, v_achieved
+
+    def _throw_peak_torque_ratio(self, throw_coeffs, dt_throw, n_samples=50):
+        """Max over the throw phase of max_j |tau_j| / tau_max_j."""
+        worst = 0.0
+        worst_tau = None
+        for tau_t in np.linspace(0.0, dt_throw, n_samples):
+            q, qd, qdd = _eval_cubic(throw_coeffs, tau_t, with_accel=True)
+            torque = np.array(
+                p.calculateInverseDynamics(
+                    self._arm_id,
+                    q.tolist(),
+                    qd.tolist(),
+                    qdd.tolist(),
+                    physicsClientId=self._cid,
+                )
+            )
+            ratio = float(np.max(np.abs(torque) / self._tau_max))
+            if ratio > worst:
+                worst = ratio
+                worst_tau = torque
+        return worst, worst_tau
 
     def get_setpoint(self, coeffs, t, with_accel=False):
         """Evaluate the piecewise cubic at time t."""
