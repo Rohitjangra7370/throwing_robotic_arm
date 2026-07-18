@@ -7,8 +7,8 @@ def test_kinova_gen3_dyn_profile_exists():
     prof = get_robot_profile("kinova_gen3_dyn")
     assert prof.control_mode == "torque"
     assert prof.tau_max == (39.0, 39.0, 39.0, 39.0, 9.0, 9.0, 9.0)
-    assert prof.kp == (100.0,) * 7
-    assert prof.kd == (20.0,) * 7
+    assert prof.kp == (400.0,) * 7
+    assert prof.kd == (60.0,) * 7
     # kinematics identical to the kinematic kinova_gen3 profile
     base = get_robot_profile("kinova_gen3")
     assert prof.urdf_rel_path == base.urdf_rel_path

@@ -362,9 +362,14 @@ class ArmController:
         dv_noise=None,
         release_pos=None,
         keep_collision_disabled=False,
+        dynamic=False,
     ):
         """
         Remove the grip constraint and optionally override the ball velocity.
+
+        dynamic=True: the ball keeps whatever velocity the physics engine gave
+        it while dragged by the constraint — no resetBaseVelocity, no
+        repositioning; set_vel/dv_noise/release_pos are ignored.
         """
         if self._grip_id is not None:
             p.removeConstraint(self._grip_id, physicsClientId=self._cid)
@@ -373,6 +378,10 @@ class ArmController:
             if not keep_collision_disabled:
                 self._set_ball_collision_with_arm(self._attached_ball_id, enable=True)
             self._attached_ball_id = None
+
+        if dynamic:
+            ball_vel, _ = p.getBaseVelocity(ball_id, physicsClientId=self._cid)
+            return np.array(ball_vel)
 
         if release_pos is not None:
             p.resetBasePositionAndOrientation(
