@@ -35,6 +35,9 @@ class RobotProfile:
     force_scale: float = 1.5
     control_mode: str = "position"
     use_safe_release: bool = False
+    tau_max: tuple[float, ...] | None = None
+    kp: tuple[float, ...] | None = None
+    kd: tuple[float, ...] | None = None
     notes: str = ""
 
 
@@ -72,6 +75,50 @@ _PROFILES: Dict[str, RobotProfile] = {
         control_mode="position",
         use_safe_release=True,
         notes="7-DoF Franka arm; EE link is the hand reached through fixed joints after joint 7.",
+    ),
+    "kinova_gen3": RobotProfile(
+        name="kinova_gen3",
+        urdf_rel_path="kinova_gen3/gen3.urdf",
+        joint_ids=(0, 1, 2, 3, 4, 5, 6),
+        ee_link=7,
+        q_neutral=(-0.01, 0.382, -0.04, 1.46, -0.012, 0.731, 0.0),
+        qd_max=(1.3963, 1.3963, 1.3963, 1.3963, 1.2218, 1.2218, 1.2218),
+        default_release_pos=(0.55, 0.00, 0.45),
+        speed_bounds=(0.3, 1.0),
+        timing=(0.40, 0.80, 1.60),
+        position_gain=0.6,
+        velocity_gain=0.3,
+        force_scale=0.5,
+        control_mode="kinematic",
+        use_safe_release=True,
+        notes=(
+            "Kinova Gen3 7-DoF (lab hardware target). URDF: official ros_kortex "
+            "GEN3-7DOF-VISION V12, meshes vendored into pybullet_data/kinova_gen3. "
+            "Joint velocity limits from URDF (1.396/1.222 rad/s) cap EE speed at "
+            "~1.0 m/s along the 35-deg throw direction -> short-range throws only."
+        ),
+    ),
+    "kinova_gen3_dyn": RobotProfile(
+        name="kinova_gen3_dyn",
+        urdf_rel_path="kinova_gen3/gen3.urdf",
+        joint_ids=(0, 1, 2, 3, 4, 5, 6),
+        ee_link=7,
+        q_neutral=(-0.01, 0.382, -0.04, 1.46, -0.012, 0.731, 0.0),
+        qd_max=(1.3963, 1.3963, 1.3963, 1.3963, 1.2218, 1.2218, 1.2218),
+        default_release_pos=(0.55, 0.00, 0.45),
+        speed_bounds=(0.3, 1.0),
+        timing=(0.40, 0.80, 1.60),
+        control_mode="torque",
+        use_safe_release=False,
+        tau_max=(39.0, 39.0, 39.0, 39.0, 9.0, 9.0, 9.0),
+        kp=(100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0),
+        kd=(20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0),
+        notes=(
+            "Kinova Gen3 under computed-torque control (velocity-from-dynamics "
+            "study). Same kinematics as kinova_gen3; release velocity comes from "
+            "tracked arm motion, not resetBaseVelocity. tau_max: 39 Nm large "
+            "actuators (joints 1-4), 9 Nm wrists (5-7)."
+        ),
     ),
     "xarm6": RobotProfile(
         name="xarm6",
@@ -122,6 +169,9 @@ def profile_to_dict(profile: RobotProfile) -> dict:
         "force_scale": profile.force_scale,
         "control_mode": profile.control_mode,
         "use_safe_release": profile.use_safe_release,
+        "tau_max": list(profile.tau_max) if profile.tau_max is not None else None,
+        "kp": list(profile.kp) if profile.kp is not None else None,
+        "kd": list(profile.kd) if profile.kd is not None else None,
         "notes": profile.notes,
     }
 
