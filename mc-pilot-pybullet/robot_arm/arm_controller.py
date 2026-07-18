@@ -85,6 +85,35 @@ class ArmController:
         self._velocity_gain = float(self._profile.velocity_gain)
         self._force_scale = float(self._profile.force_scale)
         self._control_mode = str(self._profile.control_mode)
+        self._tau_max = None
+        self._kp = None
+        self._kd = None
+        if self._control_mode == "torque":
+            if (
+                self._profile.tau_max is None
+                or self._profile.kp is None
+                or self._profile.kd is None
+            ):
+                raise ValueError(
+                    f"Profile '{self._profile.name}' uses torque mode but lacks "
+                    "tau_max/kp/kd."
+                )
+            if self._n_dofs != len(self._joint_ids):
+                raise ValueError(
+                    "Torque mode requires every DOF to be actuated "
+                    f"({self._n_dofs} DOFs vs {len(self._joint_ids)} actuated)."
+                )
+            self._tau_max = np.array(self._profile.tau_max, dtype=float)
+            self._kp = np.array(self._profile.kp, dtype=float)
+            self._kd = np.array(self._profile.kd, dtype=float)
+            # Disable PyBullet's default velocity motors so TORQUE_CONTROL acts.
+            p.setJointMotorControlArray(
+                self._arm_id,
+                self._joint_ids,
+                controlMode=p.VELOCITY_CONTROL,
+                forces=[0.0] * len(self._joint_ids),
+                physicsClientId=client_id,
+            )
         if q_neutral is None:
             self._q_neutral = np.array(self._profile.q_neutral, dtype=float)
         else:
@@ -212,8 +241,8 @@ class ArmController:
             return _eval_cubic(coeffs["throw"], t - t_w, with_accel)
         return _eval_cubic(coeffs["follow"], min(t - t_r, T - t_r), with_accel)
 
-    def step(self, q_target, qd_target):
-        """Command actuated joints via POSITION_CONTROL for one sim step."""
+    def step(self, q_target, qd_target, qdd_target=None):
+        """Command actuated joints for one sim step (mode set by profile)."""
         if self._control_mode == "kinematic":
             for local_i, joint_id in enumerate(self._joint_ids):
                 p.resetJointState(
@@ -223,6 +252,43 @@ class ArmController:
                     targetVelocity=float(qd_target[local_i]),
                     physicsClientId=self._cid,
                 )
+            return
+
+        if self._control_mode == "torque":
+            if qdd_target is None:
+                qdd_target = np.zeros(len(self._joint_ids))
+            states = p.getJointStates(
+                self._arm_id, self._joint_ids, physicsClientId=self._cid
+            )
+            q_meas = np.array([s[0] for s in states])
+            qd_meas = np.array([s[1] for s in states])
+            e = np.asarray(q_target, dtype=float) - q_meas
+            ed = np.asarray(qd_target, dtype=float) - qd_meas
+            qdd_cmd = np.asarray(qdd_target, dtype=float) + self._kp * e + self._kd * ed
+            # Inverse dynamics for the ARM ALONE: the gripped ball and its
+            # constraint forces are deliberately unmodeled (source of the
+            # tracking error this study measures).
+            tau = np.array(
+                p.calculateInverseDynamics(
+                    self._arm_id,
+                    q_meas.tolist(),
+                    qd_meas.tolist(),
+                    qdd_cmd.tolist(),
+                    physicsClientId=self._cid,
+                )
+            )
+            if not np.all(np.isfinite(tau)):
+                raise RuntimeError(
+                    f"Non-finite torque command: tau={tau}, q={q_meas}, qd={qd_meas}"
+                )
+            tau = np.clip(tau, -self._tau_max, self._tau_max)
+            p.setJointMotorControlArray(
+                self._arm_id,
+                self._joint_ids,
+                controlMode=p.TORQUE_CONTROL,
+                forces=tau.tolist(),
+                physicsClientId=self._cid,
+            )
             return
 
         p.setJointMotorControlArray(
