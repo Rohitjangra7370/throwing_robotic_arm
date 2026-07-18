@@ -35,6 +35,7 @@ class PyBulletThrowingSystem:
         t_r=_T_R,
         gui_mode=False,
         robot_name="kuka_iiwa",
+        target_height=0.0,
     ):
         self.mass = mass
         self.radius = radius
@@ -44,9 +45,21 @@ class PyBulletThrowingSystem:
         self.arm_noise = arm_noise
         self.t_w = t_w
         self.t_r = t_r
+        # Landing plane height (m). 0.0 = ground; >0 = elevated target (basket on
+        # a platform). The trajectory is cut at the descending crossing of this
+        # plane and the landing point interpolated onto it.
+        self.target_height = float(target_height)
         self._gui_mode = gui_mode
         self.robot_name = robot_name
         self._profile = get_robot_profile(robot_name)
+        self._dynamic_release = self._profile.control_mode == "torque"
+        if self._dynamic_release and self.arm_noise is not None:
+            raise ValueError(
+                "arm_noise is not supported with torque-mode profiles: the "
+                "tracking error IS the noise being measured. Use the kinematic "
+                "profile + TrackingErrorNoise for noise-aware training."
+            )
+        self.last_release_info = None
         self._urdf_path = pybullet_data.getDataPath() + "/" + self._profile.urdf_rel_path
         self._plane_urdf = "plane.urdf"
         
@@ -63,7 +76,12 @@ class PyBulletThrowingSystem:
         """
         release_pos = np.array(s0[0:3], dtype=float)
         target_xy = np.array(s0[6:8], dtype=float)
+        target_full = np.array(s0[6:], dtype=float)  # (Px,Py) or (Px,Py,Ph)
         state_dim = len(s0)
+        # Height-conditioned task (9-D state): landing plane comes from the
+        # per-episode target height rather than the fixed constructor value.
+        if not self.wind_aware and len(target_full) >= 3:
+            self.target_height = float(target_full[2])
 
         u0 = np.array(policy(s0, 0.0)).flatten()
         speed = float(u0[0])
@@ -84,10 +102,10 @@ class PyBulletThrowingSystem:
         if self.wind_aware:
             state_dim = 10
         else:
-            state_dim = 8
+            state_dim = 6 + len(target_full)   # 8 for (Px,Py), 9 for (Px,Py,Ph)
 
         # Build state arrays
-        target_col   = np.tile(target_xy, (n, 1))
+        target_col   = np.tile(target_xy if self.wind_aware else target_full, (n, 1))
         if self.wind_aware:
             clean_states = np.hstack([pos_traj, vel_traj, target_col, wind_traj])
         else:
@@ -98,7 +116,7 @@ class PyBulletThrowingSystem:
         noise_used = noise_arr[:state_dim]
         noisy_states = clean_states.copy()
         noisy_states += noise_used * np.random.randn(n, state_dim)
-        noisy_states[:, 6:8] = clean_states[:, 6:8]
+        noisy_states[:, 6:] = clean_states[:, 6:]   # targets (and Ph/wind) stay noise-free
         if self.wind_aware:
             noisy_states[:, 8:10] = clean_states[:, 8:10]
 
@@ -163,37 +181,62 @@ class PyBulletThrowingSystem:
         arm.attach_ball(ball_id)
         profile_t_arm = self._profile.timing[2]
         t_arm = max(_T_ARM, profile_t_arm, T + self.t_r)
-        coeffs, _, _, _ = arm.plan_throw(v_cmd, release_pos, self.t_w, self.t_r, t_arm)
+        coeffs, _, _, v_planned = arm.plan_throw(
+            v_cmd, release_pos, self.t_w, self.t_r, t_arm
+        )
+        t_r_actual = coeffs["t_r"]  # torque mode may have stretched the throw
 
         release_offset = 0
         if self.arm_noise is not None:
             release_offset = self.arm_noise.sample_release_offset()
-        release_step = int(self.t_r / dt) + release_offset
+        release_step = int(t_r_actual / dt) + release_offset
         pos_traj = []
         vel_traj = []
         wind_traj = []
         released = False
-        total_steps = int((self.t_r + T) / dt) + 100
+        total_steps = int((t_r_actual + T) / dt) + 100
         speed_norm = np.linalg.norm(v_cmd)
         release_dir = v_cmd / speed_norm if speed_norm > 1e-9 else np.zeros(3)
 
         for step in range(total_steps):
             t = step * dt
             if not released:
-                q_t, qd_t = arm.get_setpoint(coeffs, t)
-                arm.step(q_t, qd_t)
+                q_t, qd_t, qdd_t = arm.get_setpoint(coeffs, t, with_accel=True)
+                arm.step(q_t, qd_t, qdd_t)
 
                 if step >= release_step:
                     ee_pos, ee_vel, _, _ = arm.ee_state()
                     safe_release_pos = ee_pos + release_dir * (1.25 * self.radius)
                     use_safe_release = self._profile.use_safe_release
-                    if self.arm_noise is not None:
+                    # Ball-arm collision stays disabled after release: the arm's
+                    # follow-through otherwise strikes the just-released ball,
+                    # injecting contact impulses into the first flight transitions
+                    # (observed as |dvz| up to 8x gravity at z~=0.5 in GP data,
+                    # degrading the model as such points accumulate).
+                    if self._dynamic_release:
+                        ee_pos_rel = ee_pos.copy()
+                        actual_release_vel = arm.release_ball(
+                            ball_id,
+                            dynamic=True,
+                            keep_collision_disabled=True,
+                        )
+                        self.last_release_info = {
+                            "v_cmd": v_cmd.copy(),
+                            "v_planned": np.array(v_planned, dtype=float),
+                            "v_release": actual_release_vel.copy(),
+                            "release_pos_err": float(
+                                np.linalg.norm(ee_pos_rel - release_pos)
+                            ),
+                            "clip_scale": float(coeffs["clip_scale"]),
+                            "time_scale": float(coeffs["time_scale"]),
+                        }
+                    elif self.arm_noise is not None:
                         actual_release_vel = self.arm_noise.pybullet_release_vel(v_cmd, ee_vel)
                         arm.release_ball(
                             ball_id,
                             set_vel=None,
                             release_pos=safe_release_pos if use_safe_release else None,
-                            keep_collision_disabled=use_safe_release,
+                            keep_collision_disabled=True,
                         )
                         p.resetBaseVelocity(
                             ball_id,
@@ -206,7 +249,7 @@ class PyBulletThrowingSystem:
                             ball_id,
                             set_vel=v_cmd,
                             release_pos=safe_release_pos if use_safe_release else None,
-                            keep_collision_disabled=use_safe_release,
+                            keep_collision_disabled=True,
                         )
 
                     released = True
@@ -242,21 +285,30 @@ class PyBulletThrowingSystem:
                 vel_traj.append(vel.copy())
                 wind_traj.append(w[:2])
 
-                if pos[2] <= self.radius + 0.005 and len(pos_traj) > 2:
+                h = self.target_height
+                if (pos[2] <= h + self.radius + 0.005 and vel[2] < 0.0
+                        and len(pos_traj) > 2):
                     prev_pos = pos_traj[-2]
-                    if prev_pos[2] > 0:
-                        frac = prev_pos[2] / (prev_pos[2] - pos[2])
+                    if prev_pos[2] > h:
+                        frac = (prev_pos[2] - h) / (prev_pos[2] - pos[2])
                         land_pos = prev_pos + frac * (pos - prev_pos)
-                        land_pos[2] = 0.0
+                        land_pos[2] = h
                         land_vel = vel_traj[-2] + frac * (vel - vel_traj[-2])
                         pos_traj[-1] = land_pos
                         vel_traj[-1] = land_vel
-                        
+
                         w_land = self.wind_model((len(pos_traj) - 2) * dt + frac * dt)
                         wind_traj[-1] = w_land[:2]
                     break
 
             p.stepSimulation(physicsClientId=client)
+
+            # Optional visualization hook (set `system.frame_hook = fn` before
+            # rollout); receives the client id each physics step. No effect on
+            # training when unset.
+            hook = getattr(self, "frame_hook", None)
+            if hook is not None:
+                hook(client)
 
         p.disconnect(client)
 
