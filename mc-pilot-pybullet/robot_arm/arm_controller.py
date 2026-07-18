@@ -201,16 +201,16 @@ class ArmController:
         }
         return coeffs, q_release, qd_release, v_achieved
 
-    def get_setpoint(self, coeffs, t):
+    def get_setpoint(self, coeffs, t, with_accel=False):
         """Evaluate the piecewise cubic at time t."""
         t_w = coeffs["t_w"]
         t_r = coeffs["t_r"]
         T = coeffs["T"]
         if t <= t_w:
-            return _eval_cubic(coeffs["windup"], t)
+            return _eval_cubic(coeffs["windup"], t, with_accel)
         if t <= t_r:
-            return _eval_cubic(coeffs["throw"], t - t_w)
-        return _eval_cubic(coeffs["follow"], min(t - t_r, T - t_r))
+            return _eval_cubic(coeffs["throw"], t - t_w, with_accel)
+        return _eval_cubic(coeffs["follow"], min(t - t_r, T - t_r), with_accel)
 
     def step(self, q_target, qd_target):
         """Command actuated joints via POSITION_CONTROL for one sim step."""
@@ -355,8 +355,11 @@ def _cubic_from_velocity(q_start, qd_start, q_end, dt):
     return np.stack([a0, a1, a2, a3], axis=1)
 
 
-def _eval_cubic(coeffs, tau):
+def _eval_cubic(coeffs, tau, with_accel=False):
     a0, a1, a2, a3 = coeffs[:, 0], coeffs[:, 1], coeffs[:, 2], coeffs[:, 3]
     q = a0 + a1 * tau + a2 * tau**2 + a3 * tau**3
     qd = a1 + 2.0 * a2 * tau + 3.0 * a3 * tau**2
-    return q, qd
+    if not with_accel:
+        return q, qd
+    qdd = 2.0 * a2 + 6.0 * a3 * tau
+    return q, qd, qdd
