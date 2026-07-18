@@ -111,8 +111,8 @@ _PROFILES: Dict[str, RobotProfile] = {
         control_mode="torque",
         use_safe_release=False,
         tau_max=(39.0, 39.0, 39.0, 39.0, 9.0, 9.0, 9.0),
-        kp=(100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0),
-        kd=(20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0),
+        kp=(400.0, 400.0, 400.0, 400.0, 400.0, 400.0, 400.0),
+        kd=(60.0, 60.0, 60.0, 60.0, 60.0, 60.0, 60.0),
         notes=(
             "Kinova Gen3 under computed-torque control (velocity-from-dynamics "
             "study). Same kinematics as kinova_gen3; release velocity comes from "
