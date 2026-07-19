@@ -1093,3 +1093,103 @@ We also wanted a fresh compact dataset inside `mc-pilot-pybullet/` without touch
 ### Environment note
 
 Some runs reported a PyBullet import/control-policy issue in this Windows setup, so the study script's existing `auto` backend fallback remains important. The paper-report scripts are designed to summarize whichever backend successfully completed and record that in the raw CSV.
+
+## Exploration 6: Velocity-from-Dynamics — Torque Control, Real Release, and Three Systematic Biases (mc-pilot-pybullet/, 2026-07-19)
+
+Goal: release velocity from tracked arm motion (torque control) instead of
+`resetBaseVelocity` injection, on the Kinova Gen3 profile (lab hardware target).
+Spec/plan: `docs/superpowers/specs/2026-07-19-velocity-from-dynamics-design.md`,
+`docs/superpowers/plans/2026-07-19-velocity-from-dynamics.md`.
+
+### What was built
+
+- `kinova_gen3_dyn` profile (`robot_arm/robot_profiles.py`): computed-torque control,
+  `tau_max=(39x4, 9x3)` Nm, gains kp=400/kd=60 (tuned; 800/80 oscillates at the 50 Hz
+  control step), same kinematics as `kinova_gen3`.
+- `ArmController` torque branch: `tau = ID(q_meas, qd_meas, qdd_des + Kp e + Kd ed)`
+  clipped to `tau_max`; `get_setpoint(..., with_accel=True)` returns cubic accelerations.
+- **Jacobian-transpose payload compensation**: `calculateInverseDynamics` only knows the
+  arm's URDF mass; the gripped ball (separate body, runtime constraint) is invisible to
+  it. Inflating a link's URDF mass does NOT work (needed ~20x real mass — wrong
+  mechanism; `end_effector_link` is massless in the official URDF). Correct fix: add
+  `J^T m_ball (a_ee - g)` analytically in `step()`. Tracking error with ball:
+  0.017-0.021 rad -> 0.004-0.009 rad, matching the no-payload baseline exactly.
+- Torque-feasibility time scaling in `plan_throw` (stretch throw phase x1.2 until
+  demanded torque fits; at u=1.0 the 9 Nm wrists force time_scale ~2.07).
+- Dynamic release: constraint removed, ball keeps physics velocity (`dynamic=True` in
+  `release_ball`); `PyBulletThrowingSystem` exposes `last_release_info`.
+- `measure_tracking_error.py` (225-throw sweep), `TrackingErrorNoise` (throw-aligned-frame
+  fit; parallel-axis `dv = -0.290 u + 0.114`, resid std (0.061, 0.012, 0.002) m/s),
+  `eval_sim2sim_gap.py`, `validate_dynamics.py`, `eval_generalization.py`,
+  `eval_noise_stress.py`. First pytest suite in the repo: `mc-pilot-pybullet/tests/`
+  (17 tests).
+
+### Three systematic biases found by validation (each root-caused, not tuned away)
+
+1. **Test-timing artifact**: sampling `q_meas` AFTER `stepSimulation` vs the setpoint of
+   the previous instant bakes a `|qd| dt` term into "tracking error" (plateaued at
+   0.0354 rad exactly where qd_release saturates qd_max). Real closed-loop error is
+   measured BEFORE the step. (commit 38b1655)
+2. **Speed-envelope miscalibration**: `kinova_gen3`'s `speed_bounds=(0.3, 1.0)` was
+   measured on-axis; `plan_throw`'s own qd_max `clip_scale` shows clipping from u=0.625
+   and a true zero-clip ceiling of u=0.61 across the +-30 deg wedge. Recalibrated to
+   (0.3, 0.6), target range (0.67, 0.74). (commit 276c9bf)
+3. **Unreachable polar target wedge — also a boundary condition of the MC-PILOT paper's
+   own convention**: targets sampled as (distance-from-origin, angle) ignore the release
+   offset (0.55, 0); off-axis cells need up to ~3x more FLIGHT distance than on-axis at
+   the same "distance". At uM=0.6 (max flight 0.199 m) nothing beyond ~15 deg azimuth was
+   reachable at all; the policy pegged u=uM off-axis and ate a constant miss (0.033 cost
+   floor, flat from trial 1, immune to more trials). The paper's Panda escapes this only
+   through speed headroom. Fix: `--flight_targets` samples a flight-distance annulus
+   around the release point. Training cost floor: 0.033 -> 0.0002. (commit 632a7ce)
+
+### The deepest finding: model-belief vs ground truth, and the release-position bias
+
+- `cost_trial_list` ("Final trial cost") is computed by particle simulation through the
+  LEARNED GP MODEL — it is a model-belief metric, never ground truth. All landing-error
+  claims must come from real-rollout evaluation scripts.
+- Oracle bisection against true physics showed the trained policy commanding 17-28%
+  excess speed on 12/12 targets, unchanged with 2.5x more trials (structural, not
+  data-starvation).
+- Root cause: **particles started at the NOMINAL release position, but reality launches
+  elsewhere** — the safe-release teleport shifts the kinematic launch ~4 cm downrange
+  (1.25 x radius; measured 5.5 cm flight difference at u=0.5), and the EE tracks the
+  release pose imperfectly (~1.6 cm) even without it. A start-point mismatch is a ~1:1
+  landing bias the GP cannot learn away (it only models velocity dynamics), so the
+  policy over-throws reality while believing itself on target.
+- Fix (commit 86164d5): particles propagate from the EMPIRICAL mean release position of
+  the collected trials (aim direction stays nominal, matching `_speed_to_velocity`).
+  Data-driven; corrects any profile/release convention automatically.
+- Verified: oracle excess +17.7% -> -3.6% (12/12 overshoot -> 0/12); kinematic landing
+  error 2.5-2.9 cm -> **0.52 cm mean / 1.16 cm max** (n=30). The earlier
+  "dynamic-beats-kinematic" inversion is fully explained as two opposite biases
+  cancelling (over-throwing policy x dynamic release starting ~5 cm behind the
+  kinematic teleport point).
+
+### End-to-end dynamic training (the hardware configuration)
+
+Training MC-PILOT directly on `kinova_gen3_dyn` (torque tracking, physics release,
+empirical-release fix): **1.67 cm mean / 3.17 cm max** (n=30 fresh targets, seed 1).
+This number is DERIVABLE: TrackingErrorNoise residual std (0.0614 m/s parallel) x flight
+slope (0.29 m per m/s) ~ 1.8 cm landing std -> ~1.4-1.8 cm expected mean |error|. So
+1.67 cm is the irreducible per-throw scatter floor of the 50 Hz sim controller, not a
+calibration residual; the 1 kHz Kortex rate on real hardware should sit below it.
+Cross-mode evaluation degrades as predicted (release-mode-specific calibration:
+kinematic-trained under dynamic 4.42 cm; dynamic-trained under kinematic 2.35 cm).
+
+### Supporting results
+
+- Multi-arm generality (post flight-fix, pre release-fix): kuka 1.39 / franka 1.59 /
+  xarm6 2.73 cm mean — all seeds spot-checked. NOTE: these carry the release-position
+  bias (partially cancelled) and are being regenerated with the fixed MC_PILCO.py.
+- Object sweep (mass 30-150 g x radius 2-4.5 cm, dynamic release): flat 1.38-1.46 cm —
+  drag is ~4 orders below gravity at these speeds and payload compensation reads true
+  mass; would NOT hold at higher speeds.
+- Noise dose-response (n=50): zero-mean bias noise degrades monotonically (validates the
+  unlearnable-noise taxonomy); speed-reducing noise improved the mean ONLY by cancelling
+  the (then-unfixed) overshoot bias, while worsening max error in every condition.
+- GPU benchmark: CUDA slower than CPU here (215.6 s vs 156.6 s / 3 trials) — small
+  tensors + CPU-bound PyBullet; use parallel CPU seeds.
+- Superseded checkpoint generations kept for before/after evidence:
+  `results_mc_pilot_pb_A_kinova_gen3_uncalibrated/` (0.87-range),
+  `results_mc_pilot_pb_A_kinova_gen3_releasebias/` (flight-fix but pre release-fix).
