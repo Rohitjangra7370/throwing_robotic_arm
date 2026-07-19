@@ -1120,6 +1120,7 @@ class MC_PILOT(MC_PILCO):
         dtype=torch.float64,
         device=torch.device("cpu"),
         arm_noise=None,
+        target_height=0.0,
     ):
         # We pass a dummy f_sim to MC_PILCO.__init__; we replace self.system below.
         # Using a trivial lambda avoids importing ode_systems for a model we never use.
@@ -1148,6 +1149,9 @@ class MC_PILOT(MC_PILCO):
         self.release_position = np.array(release_position, dtype=float)
         # Shared with PyBulletThrowingSystem; both sample from the same instance
         self.arm_noise = arm_noise
+        # Landing plane height — particles freeze at z <= target_height during
+        # GP rollout, matching the simulator's elevated-basket landing plane.
+        self.target_height = float(target_height)
 
     def _make_augmented_s0(self, target=None):
         """Build augmented initial state [release_pos, zeros, target]."""
@@ -1213,8 +1217,28 @@ class MC_PILOT(MC_PILCO):
         inputs_sequence_list = []
 
         # --- release position (no grad needed) ---
-        ball_pos = torch.tensor(
+        # Aim direction must use the NOMINAL release position: that is what the
+        # real pipeline uses to build v_cmd from the policy's speed. But the
+        # ball's true ballistic start point can differ from nominal (the
+        # safe-release offset teleports it ~1.25*radius along the throw
+        # direction on use_safe_release profiles, and even without that the EE
+        # tracks the release pose imperfectly). A start-position mismatch
+        # translates ~1:1 into a landing-distance bias the GP cannot correct
+        # (it only learns velocity dynamics), which the policy then compensates
+        # by systematically over/under-throwing against reality. So propagate
+        # particles from the EMPIRICAL mean release position observed in the
+        # collected trials instead of the nominal one.
+        aim_pos = torch.tensor(
             self.release_position, dtype=self.dtype, device=self.device
+        ).unsqueeze(0).expand(num_particles, -1)                                 # [M, 3]
+        if len(self.noiseless_states_history) > 0:
+            start_np = np.mean(
+                [trial[0][0:3] for trial in self.noiseless_states_history], axis=0
+            )
+        else:
+            start_np = np.asarray(self.release_position, dtype=float)
+        ball_pos = torch.tensor(
+            start_np, dtype=self.dtype, device=self.device
         ).unsqueeze(0).expand(num_particles, -1)                                 # [M, 3]
 
         # --- diverse random targets per particle ---
@@ -1225,18 +1249,20 @@ class MC_PILOT(MC_PILCO):
 
         # --- build policy input (ball at rest + target) ---
         zero_vel = torch.zeros(num_particles, 3, dtype=self.dtype, device=self.device)
-        policy_input = torch.cat([ball_pos, zero_vel, targets], dim=1)          # [M, 8]
+        policy_input = torch.cat([aim_pos, zero_vel, targets], dim=1)           # [M, 8]
 
         # --- call policy once at t=0 to get release speed (with grad) ---
         speed = self.control_policy(policy_input, t=0, p_dropout=p_dropout)     # [M, 1]
 
         # --- convert scalar speed → 3-D release velocity via torch ops ---
         # This keeps the gradient path open: cost ← position ← velocity ← speed
+        # (direction from the nominal aim position, matching _speed_to_velocity
+        # in the real pipeline)
         alpha = torch.tensor(
             self.system.launch_angle, dtype=self.dtype, device=self.device
         )
-        dx = targets[:, 0:1] - ball_pos[:, 0:1]
-        dy = targets[:, 1:2] - ball_pos[:, 1:2]
+        dx = targets[:, 0:1] - aim_pos[:, 0:1]
+        dy = targets[:, 1:2] - aim_pos[:, 1:2]
         azimuth = torch.atan2(dy, dx)                                           # [M, 1]
         vx = speed * torch.cos(alpha) * torch.cos(azimuth)
         vy = speed * torch.cos(alpha) * torch.sin(azimuth)
@@ -1276,8 +1302,14 @@ class MC_PILOT(MC_PILCO):
             # Freeze already-landed particles at their previous (landing) state
             prev = states_sequence_list[t - 1]
             frozen = torch.where(landed.unsqueeze(1), prev, next_particles)
-            # Mark any particle whose z <= 0 as landed (so it freezes next step)
-            landed = landed | (next_particles[:, 2] <= 0.0)
+            # Mark any particle at/below the landing plane as landed.
+            # 9-D state ([..., Px, Py, Ph]): per-particle plane from dim 8;
+            # 8-D state: fixed scalar target_height (0.0 for ground targets).
+            if next_particles.shape[1] >= 9:
+                plane = next_particles[:, 8]
+            else:
+                plane = getattr(self, "target_height", 0.0)
+            landed = landed | (next_particles[:, 2] <= plane)
             states_sequence_list.append(frozen)
             inputs_sequence_list.append(zero_input)
 
