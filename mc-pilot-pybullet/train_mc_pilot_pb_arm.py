@@ -34,9 +34,12 @@ DEFAULT_RANGE_BY_ROBOT = {
     # achievable; qd_max clip_scale showed clipping starts at u=0.625 and the
     # true zero-clipping ceiling across the full +-30-deg azimuth range is
     # u=0.61 (see robot_profiles.py's kinova_gen3 notes and speed_bounds).
-    # 0.75 m measured via a real rollout at u=0.60.
-    "kinova_gen3": (0.67, 0.75),
-    "kinova_gen3_dyn": (0.67, 0.75),
+    # 0.75 m was measured via a real rollout at u=0.60 — but a target AT that
+    # distance needs u = uM exactly, which the (uM/2)(tanh+1) squash can only
+    # approach asymptotically; 0.74 (needs u~0.57) leaves the policy headroom.
+    # Use with --flight_targets so the whole domain is reachable off-axis too.
+    "kinova_gen3": (0.67, 0.74),
+    "kinova_gen3_dyn": (0.67, 0.74),
 }
 
 
@@ -105,6 +108,21 @@ def build_parser():
         default=0.0,
         help="landing-plane height in metres (elevated basket); 0.0 = ground",
     )
+    parser.add_argument(
+        "--flight_targets",
+        action="store_true",
+        help=(
+            "sample targets by FLIGHT distance from the release point instead of "
+            "the paper's polar-from-origin convention. The polar convention "
+            "ignores the release-position offset, so off-axis cells of the "
+            "(lm,lM)x(+-gM) wedge can need far more flight than the arm's speed "
+            "ceiling delivers (for kinova_gen3 at uM=0.6, nothing beyond ~15 deg "
+            "azimuth is reachable). With this flag, lm/lM keep their on-axis "
+            "landing-distance meaning and are converted to a flight-distance "
+            "annulus around the release point, so every sampled target is "
+            "reachable at every azimuth."
+        ),
+    )
     return parser
 
 
@@ -153,10 +171,27 @@ def main():
     )
     lengthscales_init = np.array([lengthscale_xy, lengthscale_xy], dtype=float)
 
-    def sample_target():
-        dist = np.random.uniform(lm, lM)
-        angle = np.random.uniform(-gM, gM)
-        return np.array([dist * np.cos(angle), dist * np.sin(angle)])
+    release_xy = np.array(profile.default_release_pos[:2], dtype=float)
+    if args.flight_targets:
+        # lm/lM are on-axis landing distances (release y = 0, so on-axis
+        # flight = distance - release_x); convert to a flight annulus.
+        f_lo = lm - release_xy[0]
+        f_hi = lM - release_xy[0]
+        if not (0.0 < f_lo < f_hi):
+            raise ValueError(
+                f"flight_targets: invalid flight range [{f_lo:.3f}, {f_hi:.3f}] "
+                f"from lm={lm}, lM={lM}, release_x={release_xy[0]}"
+            )
+
+        def sample_target():
+            flight = np.random.uniform(f_lo, f_hi)
+            beta = np.random.uniform(-gM, gM)
+            return release_xy + flight * np.array([np.cos(beta), np.sin(beta)])
+    else:
+        def sample_target():
+            dist = np.random.uniform(lm, lM)
+            angle = np.random.uniform(-gM, gM)
+            return np.array([dist * np.cos(angle), dist * np.sin(angle)])
 
     throwing_system = PyBulletThrowingSystem(
         mass=0.0577,
@@ -209,12 +244,22 @@ def main():
     }
     f_rand_exploration_policy = Policy.Stratified_Throwing_Exploration
 
-    centers_init = np.column_stack(
-        [
-            np.random.uniform(lm * np.cos(-gM), lM, Nb),
-            np.random.uniform(lm * np.sin(-gM), lM * np.sin(gM), Nb),
-        ]
-    )
+    if args.flight_targets:
+        # RBF centers must cover the flight-annulus target domain, which is a
+        # much smaller region around the release point than the polar wedge.
+        centers_init = np.column_stack(
+            [
+                np.random.uniform(release_xy[0], release_xy[0] + f_hi, Nb),
+                np.random.uniform(-f_hi * np.sin(gM), f_hi * np.sin(gM), Nb),
+            ]
+        )
+    else:
+        centers_init = np.column_stack(
+            [
+                np.random.uniform(lm * np.cos(-gM), lM, Nb),
+                np.random.uniform(lm * np.sin(-gM), lM * np.sin(gM), Nb),
+            ]
+        )
     weight_init = uM * (np.random.rand(1, Nb) - 0.5)
 
     control_policy_par = {
@@ -340,6 +385,7 @@ def main():
         "lm": lm,
         "lM": lM,
         "gM": float(gM),
+        "flight_targets": bool(args.flight_targets),
         "lengthscales_init": list(lengthscales_init),
         "results_root": results_root,
     }
