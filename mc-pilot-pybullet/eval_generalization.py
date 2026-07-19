@@ -8,9 +8,18 @@ Three sweeps, all through the true PyBulletThrowingSystem.rollout pipeline:
                 how landing error degrades for unseen objects (drag + payload
                 dynamics both change). Payload compensation reads the actual
                 ball mass, so the controller adapts; the POLICY does not.
-  2. height   — elevated landing plane on a ground-trained policy (kinematic
-                profile; torque profile evaluated too). Motivates a future
-                height-generalized kinova policy.
+  2. height   — NOT a generalization test. A ground-trained (height-blind)
+                policy has no way to retarget for an elevated plane; cutting
+                the same ground-aimed trajectory short at height h and
+                comparing against the *original ground-XY target* measures
+                naive-transfer sensitivity (how much a shorter, un-adapted
+                flight misses by), not whether the arm/policy can hit a true
+                3-D target. That's expected to grow with h for any policy.
+                A real height-generalized kinova policy (analogous to the
+                existing kuka h25/h45/hgen work) is a separate, unbuilt
+                capability — flight budget check (2026-07-19): ~0.15-0.19m
+                flight survives a 0.05-0.20m height range at u~0.57, so it's
+                buildable, just not what this sweep measures.
   3. noise    — release-velocity noise stress on the kinematic profile
                 (torque profiles reject arm_noise by design): fitted
                 TrackingErrorNoise and VelocitySlipNoise levels.
@@ -135,7 +144,7 @@ def main():
     results["radii"] = np.array(radii)
 
     # ---- 2. height sweep (ground-trained policy) --------------------------
-    print("\n=== 2. Elevated-target sweep (ground-trained policy) ===")
+    print("\n=== 2. Naive height-transfer sensitivity (NOT a generalization test -- see docstring) ===")
     heights = [0.0, 0.1, 0.2, 0.3]
     h_rows = []
     for h in heights:
