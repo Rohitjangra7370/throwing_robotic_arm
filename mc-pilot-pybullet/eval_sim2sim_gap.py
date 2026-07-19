@@ -62,12 +62,22 @@ def main():
             return np.array([float(policy_obj(inp, t=0, p_dropout=0.0).item())])
 
     rng = np.random.default_rng(args.seed)
+    flight_mode = bool(cfg.get("flight_targets", False))
     targets = []
     for _ in range(args.num_throws):
-        dist = rng.uniform(lm, lM)
-        ang = rng.uniform(-gM, gM)
-        targets.append([dist * np.cos(ang), dist * np.sin(ang)])
+        if flight_mode:
+            # match training: flight-distance annulus around the release point
+            flight = rng.uniform(lm - release_pos[0], lM - release_pos[0])
+            beta = rng.uniform(-gM, gM)
+            targets.append([release_pos[0] + flight * np.cos(beta),
+                            release_pos[1] + flight * np.sin(beta)])
+        else:
+            dist = rng.uniform(lm, lM)
+            ang = rng.uniform(-gM, gM)
+            targets.append([dist * np.cos(ang), dist * np.sin(ang)])
     targets = np.array(targets)
+    if flight_mode:
+        print("(targets sampled in flight-space, matching training config)")
 
     results = {}
     for label, robot in (("kinematic", "kinova_gen3"), ("dynamic", "kinova_gen3_dyn")):
