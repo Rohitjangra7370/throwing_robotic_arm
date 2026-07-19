@@ -28,7 +28,7 @@ def _plan(arm, prof, speed):
 
 def test_planned_throw_is_torque_feasible_at_max_speed(arm):
     controller, prof = arm
-    coeffs, _, _, _ = _plan(controller, prof, 1.0)  # top of speed_bounds
+    coeffs, _, _, _ = _plan(controller, prof, 1.0)  # stress speed, beyond speed_bounds
     assert coeffs["time_scale"] >= 1.0
     # Re-check demanded torque over the (possibly stretched) throw phase.
     dt_throw = coeffs["t_r"] - coeffs["t_w"]

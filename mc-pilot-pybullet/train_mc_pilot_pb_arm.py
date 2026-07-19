@@ -30,13 +30,22 @@ DEFAULT_RANGE_BY_ROBOT = {
     "kuka_iiwa": (0.6, 1.1),
     "franka_panda": (0.6, 1.1),
     "xarm6": (0.6, 1.0),
+    # Recalibrated: (0.67, 0.87) assumed speed_bounds up to 1.0 m/s was fully
+    # achievable; qd_max clip_scale showed clipping starts at u=0.625 and the
+    # true zero-clipping ceiling across the full +-30-deg azimuth range is
+    # u=0.61 (see robot_profiles.py's kinova_gen3 notes and speed_bounds).
+    # 0.75 m measured via a real rollout at u=0.60.
+    "kinova_gen3": (0.67, 0.75),
+    "kinova_gen3_dyn": (0.67, 0.75),
 }
 
 
-def default_results_root(robot_name: str) -> str:
-    if robot_name == "kuka_iiwa":
-        return "results_mc_pilot_pb_A"
-    return f"results_mc_pilot_pb_A_{robot_name}"
+def default_results_root(robot_name: str, target_height: float = 0.0) -> str:
+    base = ("results_mc_pilot_pb_A" if robot_name == "kuka_iiwa"
+            else f"results_mc_pilot_pb_A_{robot_name}")
+    if target_height and target_height > 0.0:
+        base += f"_h{int(round(target_height * 100)):02d}"
+    return base
 
 
 def build_parser():
@@ -89,6 +98,12 @@ def build_parser():
         type=float,
         default=None,
         help="shared XY policy lengthscale; defaults to 0.15 times the target range",
+    )
+    parser.add_argument(
+        "--target_height",
+        type=float,
+        default=0.0,
+        help="landing-plane height in metres (elevated basket); 0.0 = ground",
     )
     return parser
 
@@ -151,6 +166,7 @@ def main():
         t_w=T_W,
         t_r=T_R,
         robot_name=profile.name,
+        target_height=args.target_height,
     )
 
     num_gp = 3
@@ -230,7 +246,7 @@ def main():
     }
     f_cost_function = Cost_function.Throwing_Cost
 
-    results_root = args.results_root or default_results_root(profile.name)
+    results_root = args.results_root or default_results_root(profile.name, args.target_height)
     log_path = os.path.join(results_root, str(seed))
     os.makedirs(log_path, exist_ok=True)
 
@@ -254,6 +270,7 @@ def main():
         dtype=dtype,
         device=device,
         arm_noise=None,
+        target_height=args.target_height,
     )
 
     model_optimization_opt_dict = {}
