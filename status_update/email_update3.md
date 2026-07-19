@@ -43,16 +43,17 @@ it was on target. The fix is to propagate particles from the empirical mean rele
 position observed in the collected trials — data-driven, works for any arm or release
 convention.
 
-4) Results after the fix
-- Kinematic release (idealised): 0.52 cm mean / 1.16 cm max on 30 fresh targets — the
-  best accuracy in the project so far, and the systematic overshoot is gone (was 12/12
-  targets over; now centred).
+4) Results after the fix (5 seeds x 30 fresh targets each, real-physics evaluation)
+- Kinematic release (idealised): 0.34 +- 0.07 cm mean across seeds, worst single throw
+  1.00 cm — the best accuracy in the project so far, and the systematic overshoot is
+  gone (was 12/12 targets over; now centred).
 - Training directly on the dynamic (torque) release — the hardware configuration:
-  1.67 cm mean / 3.17 cm max. This number is derivable, not just observed: the measured
-  per-throw tracking scatter (0.06 m/s) times the flight-per-speed slope (0.29 m per
-  m/s) predicts a ~1.4-1.8 cm floor. So 1.67 cm is the irreducible scatter of a 50 Hz
-  controller, not a modelling residual — and the real Gen3's 1 kHz Kortex loop should
-  sit below it.
+  1.54 +- 0.09 cm mean across seeds, worst single throw 3.23 cm. This number is
+  derivable, not just observed: the measured per-throw tracking scatter (0.06 m/s)
+  times the flight-per-speed slope (0.29 m per m/s) predicts a ~1.4-1.8 cm floor, and
+  all five seeds land inside it (1.42-1.67 cm). So this is the irreducible scatter of
+  a 50 Hz controller, not a modelling residual — the real Gen3's 1 kHz Kortex loop
+  should sit below it.
 - An earlier apparent result ("dynamic release lands better than the idealised one")
   turned out to be two opposite biases partially cancelling; after the fix each release
   mode calibrates cleanly to its own physics, which we confirmed in both directions.
@@ -66,8 +67,10 @@ convention.
   framework predicts.
 - The repo now has its first regression test suite (17 tests covering the controller,
   planner, release, and noise-model fitting).
-- Multi-seed re-runs of everything with the fixed pipeline are in progress; the numbers
-  above are what I will finalize across 5 seeds before writing anything into the draft.
+- The numbers in (4) are the finalized 5-seed results with the fixed pipeline
+  (seed-to-seed spread is under 0.1 cm for both release modes). The multi-arm runs
+  (KUKA/Franka/xArm6) still need regeneration with the fixed pipeline before those
+  specific numbers go into the draft.
 
 Next steps: multi-seed confirmation, then the Kortex driver skeleton and the ~10
 calibration throws protocol for the real arm, using the measured release position and
