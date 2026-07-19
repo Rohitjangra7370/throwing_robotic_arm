@@ -1193,3 +1193,14 @@ kinematic-trained under dynamic 4.42 cm; dynamic-trained under kinematic 2.35 cm
 - Superseded checkpoint generations kept for before/after evidence:
   `results_mc_pilot_pb_A_kinova_gen3_uncalibrated/` (0.87-range),
   `results_mc_pilot_pb_A_kinova_gen3_releasebias/` (flight-fix but pre release-fix).
+
+### Final multi-seed results (post release-fix, 5 seeds x 30 fresh targets, real-physics eval)
+
+| config | mean landing error | seed spread | worst throw |
+|---|---|---|---|
+| kinematic-trained -> kinematic release | **0.34 cm** | +-0.07 | 1.00 cm |
+| dynamic-trained -> dynamic release (hardware config) | **1.54 cm** | +-0.09 | 3.23 cm |
+
+All five dynamic seeds land inside the derived 1.4-1.8 cm scatter floor (TrackingErrorNoise
+resid 0.0614 m/s x 0.29 m per m/s slope). Checkpoints: `results_mc_pilot_pb_A_kinova_gen3/`
+and `results_mc_pilot_pb_A_kinova_gen3_dyn/` (both post-fix generations).
