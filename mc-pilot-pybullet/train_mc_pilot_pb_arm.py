@@ -109,6 +109,12 @@ def build_parser():
         help="landing-plane height in metres (elevated basket); 0.0 = ground",
     )
     parser.add_argument(
+        "--device",
+        type=str,
+        default="cpu",
+        help="torch device for GP/policy optimization (cpu or cuda); PyBullet stays CPU",
+    )
+    parser.add_argument(
         "--flight_targets",
         action="store_true",
         help=(
@@ -156,8 +162,9 @@ def main():
     np.random.seed(seed)
 
     dtype = torch.float64
-    device = torch.device("cpu")
-    torch.set_num_threads(1)
+    device = torch.device(args.device)
+    if device.type == "cpu":
+        torch.set_num_threads(1)
 
     STATE_DIM = 8
     INPUT_DIM = 1
