@@ -84,7 +84,7 @@ _PROFILES: Dict[str, RobotProfile] = {
         q_neutral=(-0.01, 0.382, -0.04, 1.46, -0.012, 0.731, 0.0),
         qd_max=(1.3963, 1.3963, 1.3963, 1.3963, 1.2218, 1.2218, 1.2218),
         default_release_pos=(0.55, 0.00, 0.45),
-        speed_bounds=(0.3, 1.0),
+        speed_bounds=(0.3, 0.6),
         timing=(0.40, 0.80, 1.60),
         position_gain=0.6,
         velocity_gain=0.3,
@@ -94,8 +94,12 @@ _PROFILES: Dict[str, RobotProfile] = {
         notes=(
             "Kinova Gen3 7-DoF (lab hardware target). URDF: official ros_kortex "
             "GEN3-7DOF-VISION V12, meshes vendored into pybullet_data/kinova_gen3. "
-            "Joint velocity limits from URDF (1.396/1.222 rad/s) cap EE speed at "
-            "~1.0 m/s along the 35-deg throw direction -> short-range throws only."
+            "Joint velocity limits from URDF (1.396/1.222 rad/s) cap achievable "
+            "EE speed; measured (via plan_throw's qd_max clip_scale) at zero "
+            "clipping across the full +-30-deg azimuth range, the ceiling is "
+            "~0.61 m/s, not the earlier ~1.0 m/s estimate (that number was "
+            "measured on-axis only, at 0-deg azimuth, where the Jacobian is "
+            "more favorable than at the +-30-deg extremes)."
         ),
     ),
     "kinova_gen3_dyn": RobotProfile(
@@ -106,7 +110,7 @@ _PROFILES: Dict[str, RobotProfile] = {
         q_neutral=(-0.01, 0.382, -0.04, 1.46, -0.012, 0.731, 0.0),
         qd_max=(1.3963, 1.3963, 1.3963, 1.3963, 1.2218, 1.2218, 1.2218),
         default_release_pos=(0.55, 0.00, 0.45),
-        speed_bounds=(0.3, 1.0),
+        speed_bounds=(0.3, 0.6),
         timing=(0.40, 0.80, 1.60),
         control_mode="torque",
         use_safe_release=False,
