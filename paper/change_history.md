@@ -1134,14 +1134,25 @@ Spec/plan: `docs/superpowers/specs/2026-07-19-velocity-from-dynamics-design.md`,
    measured on-axis; `plan_throw`'s own qd_max `clip_scale` shows clipping from u=0.625
    and a true zero-clip ceiling of u=0.61 across the +-30 deg wedge. Recalibrated to
    (0.3, 0.6), target range (0.67, 0.74). (commit 276c9bf)
-3. **Unreachable polar target wedge — also a boundary condition of the MC-PILOT paper's
-   own convention**: targets sampled as (distance-from-origin, angle) ignore the release
-   offset (0.55, 0); off-axis cells need up to ~3x more FLIGHT distance than on-axis at
-   the same "distance". At uM=0.6 (max flight 0.199 m) nothing beyond ~15 deg azimuth was
-   reachable at all; the policy pegged u=uM off-axis and ate a constant miss (0.033 cost
-   floor, flat from trial 1, immune to more trials). The paper's Panda escapes this only
-   through speed headroom. Fix: `--flight_targets` samples a flight-distance annulus
-   around the release point. Training cost floor: 0.033 -> 0.0002. (commit 632a7ce)
+3. **Unreachable polar target wedge — CORRECTED FRAMING (2026-07-20, after re-reading
+   the paper directly, see paper/paper_comparison.md section D): this is a gap in OUR
+   fixed-release-point implementation, not a flaw in the paper's method.** The paper's
+   own release point rotates with target azimuth (Eq. 5: p_rel = [l_r cos(g), l_r sin(g),
+   z_rel], same g as the target) -- release and target always share the same ray from the
+   origin, so flight distance is exactly l - l_r at every angle, by construction, no
+   off-axis inflation possible. Our implementation uses a FIXED release_pos that never
+   rotates with target azimuth; off-axis cells then need up to ~3x more FLIGHT distance
+   than on-axis at the same nominal "distance". It only bit us because our l_r (0.55m,
+   fixed) is comparable in scale to our target range (0.67-0.74m) -- the paper's l_r
+   (0.07m, both sim and real setups) is negligible next to their l_m (0.7-2.4m), so the
+   same fixed-release-point simplification would never have surfaced there. At uM=0.6
+   (max flight 0.199 m) nothing beyond ~15 deg azimuth was reachable at all; the policy
+   pegged u=uM off-axis and ate a constant miss (0.033 cost floor, flat from trial 1,
+   immune to more trials). Fix: `--flight_targets` samples a flight-distance annulus
+   around the release point (a workaround for the fixed-release-point simplification, not
+   a re-derivation of the paper's actual azimuth-rotating geometry -- that would be the
+   more faithful fix if ever revisited). Training cost floor: 0.033 -> 0.0002.
+   (commit 632a7ce)
 
 ### The deepest finding: model-belief vs ground truth, and the release-position bias
 
