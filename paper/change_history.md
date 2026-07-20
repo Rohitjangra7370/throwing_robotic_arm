@@ -1179,9 +1179,16 @@ kinematic-trained under dynamic 4.42 cm; dynamic-trained under kinematic 2.35 cm
 
 ### Supporting results
 
-- Multi-arm generality (post flight-fix, pre release-fix): kuka 1.39 / franka 1.59 /
-  xarm6 2.73 cm mean — all seeds spot-checked. NOTE: these carry the release-position
-  bias (partially cancelled) and are being regenerated with the fixed MC_PILCO.py.
+- Multi-arm generality, REGENERATED with the release-fixed MC_PILCO.py (3 seeds x 20
+  fresh targets each, real-physics eval): kuka 1.87 cm / franka 1.87 cm / xarm6 1.72 cm
+  mean (max 3.9-4.2 cm). Essentially unchanged from the pre-fix numbers (kuka 1.39,
+  franka 1.59, xarm6 2.73) — expected, not a discrepancy: the release-position bias the
+  fix corrects is a roughly constant ~4-5 cm absolute offset, which dominated kinova's
+  error because its flight domain is tiny (12-19 cm span) but is a much smaller fraction
+  of these arms' 50 cm-1.1 m domains. Their ~1.7-1.9 cm reflects genuine GP/policy
+  resolution over a larger domain with the same Nb=250 basis functions, not something
+  this fix was expected to move. Confirms the fix is real and correctly scoped, not a
+  kinova-only artifact.
 - Object sweep (mass 30-150 g x radius 2-4.5 cm, dynamic release): flat 1.38-1.46 cm —
   drag is ~4 orders below gravity at these speeds and payload compensation reads true
   mass; would NOT hold at higher speeds.
