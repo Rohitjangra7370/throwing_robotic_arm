@@ -85,19 +85,43 @@ this session, not taken from training logs._
    **Concrete next step**: build the reuse-model / re-optimize-only path as a second,
    more faithful approach and compare data cost directly.
 
-5. **No baseline comparison for our fixed pipeline.** The paper explicitly benchmarks
-   MC-PILOT against (i) an analytical ballistic-equations baseline (Eq. 13) and (ii)
-   model-free neural-network policies, showing MC-PILOT needs far fewer trials to reach
-   equal/better accuracy (their NN needs ~40-60 trials to approach MC-PILOT's near-single-trial
-   performance, Fig. 6a). We have never run either baseline for kinova — every number we
-   report is MC-PILOT-vs-itself (before/after our bug fixes). Running the analytical
-   baseline (Eq. 13's closed-form ballistic release-speed formula, trivial to implement)
-   against our fixed pipeline would substantially strengthen any writeup.
+5. **No baseline comparison for our fixed pipeline — DONE 2026-07-20, `eval_baseline.py`,
+   and the result is genuinely mixed, not a clean MC-PILOT win.** Ran the paper's Eq. 13
+   closed-form no-drag baseline (clipped to `[uMin, uM]`, executed through the true physics
+   pipeline) against MC-PILOT on all 4 platforms:
 
-6. **No data-augmentation (`Na`, rotation-around-vertical-axis) trick.** The paper adds
-   `Na` synthetically-rotated copies of each real trajectory to the GP training set per
-   trial (Table 1: `Na=2` real setup), improving sample efficiency for free. Verified via
-   grep: **this doesn't exist anywhere in our codebase.** Free, cheap win if implemented.
+   | platform | MC-PILOT | baseline | winner |
+   |---|---|---|---|
+   | kinova_gen3 (kinematic) | 0.54cm | 2.71cm | MC-PILOT, ~5x |
+   | kinova_gen3_dyn (real controller) | 1.59cm | 1.32cm | baseline |
+   | kuka_iiwa | 1.97cm | 1.10cm | baseline |
+   | franka_panda | 2.14cm | 1.53cm | baseline |
+   | xarm6 | 1.71cm | 3.54cm | MC-PILOT, ~2x |
+
+   Root cause (not a bug — cross-checked the MC-PILOT numbers against independently
+   verified figures from earlier in this session, they match): real air drag is tiny
+   everywhere in this regime (F_drag/F_gravity <= ~1% even at kuka's 2.5 m/s release
+   speed, computed directly). MC-PILOT's theoretical advantage over the no-drag formula
+   is the drag correction it learns — and that advantage is modest across the board. It
+   only shows through cleanly when the policy's OWN resolution error is small enough not
+   to swamp it: kinova's domain is tiny (7cm span) so the same 250 RBF centers give
+   near-perfect coverage; kuka/franka's domains are 40-50cm, spreading the same 250
+   centers much thinner, so MC-PILOT's own resolution error ends up larger than the
+   modest drag-correction benefit and the simple formula wins. **This is not "MC-PILOT
+   doesn't work" — it's evidence that kuka/franka were never tuned as carefully as
+   kinova was through this session's debugging (Nb, lengthscale, Nexp all left at
+   generic paper defaults). A real, actionable next step, not previously visible without
+   running this comparison.**
+
+6. **Data-augmentation (`Na`) — DONE, 2026-07-20.** Implemented `MC_PILOT._rotate_trajectory`
+   (rotates position/velocity about the vertical axis; z/vz and non-ball columns untouched)
+   and wired an `Na` constructor param + `--Na` CLI flag through both training scripts.
+   4 new tests (rotation-math correctness + wiring, verified via a spy on `add_data` since
+   the downstream SOD sparse approximation deduplicates near-similar points, so the final
+   stored sample count isn't simply `(1+Na)x` the raw call count). Smoke-tested `--Na 2`
+   end-to-end on kinova — trains cleanly. Not yet re-run as a full accuracy comparison
+   (does `Na=2` measurably improve data efficiency for us, matching the paper's claim?)
+   — mechanism is built and tested, the efficiency claim itself is still open to verify.
 
 7. **We're training kinova with the paper's *simulation* hyperparameters (`Nexp=5`), not
    its *real-hardware* ones (`Nexp=10, Na=2`)**, despite kinova being our real-hardware
@@ -127,7 +151,8 @@ this session, not taken from training logs._
 | delay/noise modeling | injected `t_d`, BO-estimated | same | `TrackingErrorNoise` (different failure mode; no delay estimation for kinova) |
 | real-hardware validated | n/a | **yes** | **no** |
 | platforms validated | Panda only | Panda only | kuka, franka(sim), xarm6, kinova (4 platforms) |
-| baseline comparison run | yes (analytical + NN) | yes | **no** |
+| baseline comparison run | yes (analytical + NN) | yes | analytical: yes (mixed result, see B.5); NN: **no** |
+| data augmentation (`Na`) | n/a | yes | **now implemented** (`--Na` flag, 2026-07-20) |
 
 ## D. Corrected framing (from the previous "boundary condition" claim)
 
