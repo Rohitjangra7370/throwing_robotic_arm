@@ -83,6 +83,11 @@ class ArmController:
             self._ik_q_hi[dof_id] = self._q_hi[local_i]
 
         self._qd_max = np.array(self._profile.qd_max, dtype=float)
+        self._windup_delta = (
+            np.array(self._profile.windup_delta, dtype=float)
+            if self._profile.windup_delta is not None
+            else None
+        )
         self._position_gain = float(self._profile.position_gain)
         self._velocity_gain = float(self._profile.velocity_gain)
         self._force_scale = float(self._profile.force_scale)
@@ -235,16 +240,44 @@ class ArmController:
             qd_release = qd_release / clip_scale
         v_achieved = j_lin @ qd_release
 
-        q_windup = self._q_neutral + (q_release - self._q_neutral) * (-0.5)
+        if self._windup_delta is not None:
+            # Explicit cocked-back pose, independent of q_release (needed when
+            # q_release == q_neutral, which makes the formula below degenerate --
+            # see kinova_gen3's profile notes).
+            q_windup = self._q_neutral + self._windup_delta
+        else:
+            q_windup = self._q_neutral + (q_release - self._q_neutral) * (-0.5)
         q_windup = np.clip(q_windup, self._q_lo, self._q_hi)
         q_follow = self._q_neutral.copy()
 
+        dt_windup = t_w
         dt_throw = t_r - t_w
         follow_dur = T - t_r
+        windup_time_scale = 1.0
         time_scale = 1.0
+        windup_coeffs = _cubic_rest_to_rest(self._q_neutral, q_windup, dt_windup)
         throw_coeffs = _cubic_to_velocity(q_windup, q_release, qd_release, dt_throw)
 
         if self._control_mode == "torque":
+            for _ in range(6):
+                ratio, worst_tau = self._throw_peak_torque_ratio(windup_coeffs, dt_windup)
+                if ratio <= 1.0:
+                    break
+                dt_windup *= 1.2
+                windup_time_scale *= 1.2
+                windup_coeffs = _cubic_rest_to_rest(self._q_neutral, q_windup, dt_windup)
+            else:
+                ratio, worst_tau = self._throw_peak_torque_ratio(windup_coeffs, dt_windup)
+                if ratio > 1.0:
+                    report = ", ".join(
+                        f"j{j}: {abs(t):.1f}/{m:.1f} Nm"
+                        for j, (t, m) in enumerate(zip(worst_tau, self._tau_max))
+                    )
+                    raise RuntimeError(
+                        f"Windup infeasible after 6 time-scaling iterations "
+                        f"(peak ratio {ratio:.2f}): {report}"
+                    )
+
             for _ in range(6):
                 ratio, worst_tau = self._throw_peak_torque_ratio(throw_coeffs, dt_throw)
                 if ratio <= 1.0:
@@ -266,14 +299,16 @@ class ArmController:
                         f"(peak ratio {ratio:.2f}): {report}"
                     )
 
-        t_r_actual = t_w + dt_throw
+        t_w_actual = dt_windup
+        t_r_actual = t_w_actual + dt_throw
         T_actual = t_r_actual + follow_dur
 
         coeffs = {
-            "windup": _cubic_rest_to_rest(self._q_neutral, q_windup, t_w),
+            "windup": windup_coeffs,
             "throw": throw_coeffs,
             "follow": _cubic_from_velocity(q_release, qd_release, q_follow, follow_dur),
-            "t_w": t_w,
+            "t_w": t_w_actual,
+            "windup_time_scale": windup_time_scale,
             "t_r": t_r_actual,
             "T": T_actual,
             "clip_scale": clip_scale,
