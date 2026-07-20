@@ -72,6 +72,14 @@ def build_parser():
     parser.add_argument("--results_root", type=str, default=None)
 
     parser.add_argument("--Nexp", type=int, default=10)
+    parser.add_argument(
+        "--Na", type=int, default=0,
+        help=(
+            "data-augmentation trajectories per real trial (paper Table 1: 0 sim, "
+            "2 real) -- rotated copies about the vertical axis, physically valid "
+            "for free-flight ballistics, no new real interaction needed"
+        ),
+    )
     parser.add_argument("--Nopt", type=int, default=1500)
     parser.add_argument("--M", type=int, default=400)
     parser.add_argument("--Nb", type=int, default=300)
@@ -330,6 +338,7 @@ def main():
         device=device,
         arm_noise=None,
         target_height=args.target_height,
+        Na=args.Na,
     )
 
     model_optimization_opt_dict = {}
@@ -385,6 +394,7 @@ def main():
         "release_pos": RELEASE_POS.tolist(),
         "num_trials": num_trials,
         "Nexp": Nexp,
+        "Na": args.Na,
         "Nopt": Nopt,
         "M": M,
         "Nb": Nb,
