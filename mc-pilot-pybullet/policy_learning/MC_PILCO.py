@@ -1121,6 +1121,7 @@ class MC_PILOT(MC_PILCO):
         device=torch.device("cpu"),
         arm_noise=None,
         target_height=0.0,
+        Na=0,
     ):
         # We pass a dummy f_sim to MC_PILCO.__init__; we replace self.system below.
         # Using a trivial lambda avoids importing ode_systems for a model we never use.
@@ -1152,6 +1153,30 @@ class MC_PILOT(MC_PILCO):
         # Landing plane height — particles freeze at z <= target_height during
         # GP rollout, matching the simulator's elevated-basket landing plane.
         self.target_height = float(target_height)
+        # Data augmentation (paper Sec 4, MC-PILOT vs MC-PILCO differences): for
+        # each real trajectory collected, add Na synthetic copies rotated by a
+        # random angle around the vertical (Z) axis. Free-flight ballistic
+        # dynamics for a spherical projectile are rotationally symmetric about
+        # Z (gravity is the only directional force, drag depends only on speed
+        # magnitude), so a rotated real trajectory is itself a physically valid
+        # training example -- no new real interaction needed.
+        self.Na = int(Na)
+
+    @staticmethod
+    def _rotate_trajectory(state_samples, angle):
+        """Rotate position (cols 0:2) and velocity (cols 3:5) of a (T, state_dim)
+        trajectory around the vertical axis by `angle` radians. z/vz (cols 2, 5)
+        and any remaining columns (target, wind, ...) are left untouched -- the
+        GP dynamics model only ever consumes columns [0:6] (see BALL_DIM in the
+        training scripts), so untouched trailing columns don't affect model
+        fitting even though they stay geometrically inconsistent post-rotation.
+        """
+        rotated = state_samples.copy()
+        c, s = np.cos(angle), np.sin(angle)
+        R = np.array([[c, -s], [s, c]])
+        rotated[:, 0:2] = state_samples[:, 0:2] @ R.T
+        rotated[:, 3:5] = state_samples[:, 3:5] @ R.T
+        return rotated
 
     def _make_augmented_s0(self, target=None):
         """Build augmented initial state [release_pos, zeros, target]."""
@@ -1188,6 +1213,10 @@ class MC_PILOT(MC_PILCO):
         self.noiseless_states_history.append(noiseless_samples)
         self.num_data_collection += 1
         self.model_learning.add_data(new_state_samples=state_samples, new_input_samples=input_samples)
+        for _ in range(self.Na):
+            angle = np.random.uniform(0.0, 2.0 * np.pi)
+            rotated = self._rotate_trajectory(state_samples, angle)
+            self.model_learning.add_data(new_state_samples=rotated, new_input_samples=input_samples)
 
     def apply_policy(
         self,
