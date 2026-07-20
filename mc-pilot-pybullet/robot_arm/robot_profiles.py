@@ -38,6 +38,7 @@ class RobotProfile:
     tau_max: tuple[float, ...] | None = None
     kp: tuple[float, ...] | None = None
     kd: tuple[float, ...] | None = None
+    windup_delta: tuple[float, ...] | None = None
     notes: str = ""
 
 
@@ -91,6 +92,16 @@ _PROFILES: Dict[str, RobotProfile] = {
         force_scale=0.5,
         control_mode="kinematic",
         use_safe_release=True,
+        # q_release computed by plan_throw's IK for default_release_pos comes out
+        # EXACTLY equal to q_neutral (default_release_pos was defined as wherever
+        # q_neutral's own forward kinematics already places the EE) -- so the
+        # normal windup formula q_neutral + (q_release-q_neutral)*(-0.5) collapses
+        # to zero for ANY multiplier, and the arm never visibly winds up (verified:
+        # kuka swings 44deg, xarm6 38deg, franka 8.6deg, kinova 0.0deg exactly).
+        # windup_delta gives an explicit, independent "cocked back" pose so a real
+        # swing exists without touching q_neutral or default_release_pos (both are
+        # load-bearing for the speed-ceiling/target-range calibration in this repo).
+        windup_delta=(0.0, -0.20, 0.0, -0.25, 0.0, 0.0, 0.0),
         notes=(
             "Kinova Gen3 7-DoF (lab hardware target). URDF: official ros_kortex "
             "GEN3-7DOF-VISION V12, meshes vendored into pybullet_data/kinova_gen3. "
@@ -117,11 +128,13 @@ _PROFILES: Dict[str, RobotProfile] = {
         tau_max=(39.0, 39.0, 39.0, 39.0, 9.0, 9.0, 9.0),
         kp=(400.0, 400.0, 400.0, 400.0, 400.0, 400.0, 400.0),
         kd=(60.0, 60.0, 60.0, 60.0, 60.0, 60.0, 60.0),
+        windup_delta=(0.0, -0.20, 0.0, -0.25, 0.0, 0.0, 0.0),
         notes=(
             "Kinova Gen3 under computed-torque control (velocity-from-dynamics "
             "study). Same kinematics as kinova_gen3; release velocity comes from "
             "tracked arm motion, not resetBaseVelocity. tau_max: 39 Nm large "
-            "actuators (joints 1-4), 9 Nm wrists (5-7)."
+            "actuators (joints 1-4), 9 Nm wrists (5-7). windup_delta: see "
+            "kinova_gen3's notes -- q_release equals q_neutral here too."
         ),
     ),
     "xarm6": RobotProfile(
@@ -176,6 +189,7 @@ def profile_to_dict(profile: RobotProfile) -> dict:
         "tau_max": list(profile.tau_max) if profile.tau_max is not None else None,
         "kp": list(profile.kp) if profile.kp is not None else None,
         "kd": list(profile.kd) if profile.kd is not None else None,
+        "windup_delta": list(profile.windup_delta) if profile.windup_delta is not None else None,
         "notes": profile.notes,
     }
 
