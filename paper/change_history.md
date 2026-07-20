@@ -1222,3 +1222,55 @@ kinematic-trained under dynamic 4.42 cm; dynamic-trained under kinematic 2.35 cm
 All five dynamic seeds land inside the derived 1.4-1.8 cm scatter floor (TrackingErrorNoise
 resid 0.0614 m/s x 0.29 m per m/s slope). Checkpoints: `results_mc_pilot_pb_A_kinova_gen3/`
 and `results_mc_pilot_pb_A_kinova_gen3_dyn/` (both post-fix generations).
+
+## Exploration 7: Kinova Height-Generalization + Full Paper Reality Check (mc-pilot-pybullet/, paper/, 2026-07-20)
+
+### Height-generalized kinova policy
+
+Extended `train_mc_pilot_pb_heightgen.py` (previously kuka-only, H_MAX=0.45 hardcoded)
+to kinova: added `--flight_targets` (same fix as the flat-target script, applied to the
+height-conditioned sampler), `HEIGHT_BUDGET_BY_ROBOT` (H_MAX and a flight-loss-per-height
+slope, robot-keyed instead of a global constant), and kinova entries in
+`DEFAULT_RANGE_BY_ROBOT`. H_MAX=0.10m chosen from a direct flight-vs-height measurement
+(18.95cm flight at h=0 -> 16.46cm at h=0.15m, slope ~0.17-0.18) to leave >=5cm flight span
+at the top of the height range given kinova's already-tight ~7cm ground-level span.
+
+Trained 3 kinematic seeds + 1 dynamic (torque) seed. Built `eval_heightgen.py` — unlike
+the earlier flawed naive-transfer height sweep in `eval_generalization.py` (which fed a
+height-blind policy a ground-XY target and truncated the arc early), this feeds the true
+9-D (Px, Py, h) target the height-conditioned policy actually consumes, and measures error
+at that target's own height plane. Result, real-physics eval, independently re-verified
+with a fresh unused RNG seed:
+
+| config | mean | max | height-band trend |
+|---|---|---|---|
+| kinematic (3 seeds x 30 fresh targets) | 0.34-0.39cm | 0.65-0.75cm | flat, no degradation |
+| dynamic/torque (1 seed x 30 fresh targets) | 1.83-1.88cm | 2.95-3.02cm | flat, no degradation |
+
+Matches the flat single-height accuracy tier exactly — height-conditioning works, at
+least across this modest (10cm) budget. Checkpoints:
+`results_mc_pilot_pb_A_kinova_gen3_hgen/{1,2,3}`, `results_mc_pilot_pb_A_kinova_gen3_dyn_hgen/1`.
+
+**Caveat (see paper_comparison.md): this used full retraining (Nexp + num_trials real
+trials on a 9-D state), not the paper's demonstrated zero-new-trials height-adaptation
+(reuse the ground-trained model, re-run policy optimization only, Sec 6.3.3). Works, but
+not the paper's most data-efficient path — a more faithful reuse-model implementation is
+future work, not done here.**
+
+### Full paper reality check
+
+Read the original paper PDF directly (`MC_PILOT_ORIGINAL_PAPER.pdf`, all 18 pages) and
+audited every claim made in this change log against it. Full comparison:
+`paper/paper_comparison.md`. One correction to Exploration 6's framing (see that
+section's inline correction): the off-axis-unreachable target bug is NOT a flaw in the
+paper's own polar convention — their release point rotates with target azimuth (Eq. 5),
+avoiding the issue by construction. It's a gap in our fixed-release-point simplification.
+
+Also surfaced, not yet acted on: no gripper-delay estimation exists for kinova
+(`ReleaseTimingJitter` is defined but unused, confirmed by grep); no data-augmentation
+(`Na`, rotation-around-vertical-axis) trick anywhere in the codebase; no baseline
+(analytical ballistics or model-free NN) ever run against our fixed pipeline for kinova;
+`Nexp=5` used for kinova training matches the paper's *simulation* setting, not its
+*real-hardware* setting (`Nexp=10, Na=2`) despite kinova being our real-hardware target;
+our sub-2cm accuracy claims are not comparable to the paper's 10cm real-hardware hit
+radius without the vision/gripper-desync noise sources that dominate their real error.
