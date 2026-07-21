@@ -153,10 +153,10 @@ def search_azimuth(arm, lo, hi, azimuth, t_throw=1.1):
     (idx2) varies as a static setup parameter (breaks the pitch-axis-collapse
     degeneracy), shoulder/elbow/wrist PITCH vary and carry all throw velocity.
     Filtered by real static torque feasibility, not a proxy metric."""
-    grid_roll = np.deg2rad(np.arange(-45, 46, 15))   # shoulder-roll, static only
-    grid2 = np.deg2rad(np.arange(-90, 91, 10))        # shoulder pitch
-    grid4 = np.deg2rad(np.arange(-150, -9, 10))       # elbow pitch
-    grid6 = np.deg2rad(np.arange(-90, 91, 15))        # wrist pitch
+    grid_roll = np.deg2rad(np.arange(-40, 41, 20))    # shoulder-roll, static only
+    grid2 = np.deg2rad(np.arange(-90, 91, 15))        # shoulder pitch
+    grid4 = np.deg2rad(np.arange(-150, -9, 15))       # elbow pitch
+    grid6 = np.deg2rad(np.arange(-90, 91, 20))        # wrist pitch
     elevs = np.deg2rad(np.arange(0, 71, 10))
     best = None
     for j3 in grid_roll:
