@@ -38,12 +38,19 @@ class PyBulletThrowingSystem:
         target_height=0.0,
         opt_posture=None,
         opt_launch_deg=43.0,
+        opt_posture_table=None,
     ):
-        # Optimized-release mode: throw from a fixed high-manipulability posture
-        # (base-rotated per target azimuth) using velocity-limit-optimal joint
-        # scheduling (qd = qd_max*sign(d.J)) scaled to the commanded speed, instead
-        # of IK+pinv. Gives the REAL-dynamics ~1 m throw (see real_dynamics_throw.py).
+        # Optimized-release mode: throw from a hardware-valid frozen-base posture
+        # (base = azimuth only, qd[0]=0; shoulder/elbow sweep the vertical plane),
+        # scaled to the commanded speed, instead of IK+pinv.
+        #   * opt_posture_table: an azimuth->posture TABLE (from find_throw_pose.py).
+        #     _optimized_release looks up the nearest-azimuth posture per target,
+        #     because rotating a single posture's base does NOT aim off-axis on this
+        #     arm (J(base+az) != Rz*J(base)). This is the correct mode.
+        #   * opt_posture: legacy single fixed posture (base-rotated at runtime);
+        #     kept only for the standalone single-shot scripts.
         self._opt_posture = None if opt_posture is None else np.array(opt_posture, dtype=float)
+        self._opt_table = list(opt_posture_table) if opt_posture_table is not None else None
         self._opt_launch = np.deg2rad(opt_launch_deg)
         self.mass = mass
         self.radius = radius
@@ -146,32 +153,49 @@ class PyBulletThrowingSystem:
             ]
         )
 
+    @property
+    def _opt_mode(self):
+        """True when running in optimized-posture release mode (table or legacy)."""
+        return self._opt_table is not None or self._opt_posture is not None
+
+    def _lookup_posture(self, azimuth):
+        """Nearest-azimuth table entry -> (posture q (7,), launch elevation rad)."""
+        azs = np.array([e["azimuth_deg"] for e in self._opt_table])
+        i = int(np.argmin(np.abs(azs - np.degrees(azimuth))))
+        e = self._opt_table[i]
+        return np.array(e["q"], dtype=float), np.deg2rad(float(e["elev_deg"]))
+
     def _optimized_release(self, arm, v_cmd):
         """
-        AIMED-posture release: rotate the base to the target azimuth, then solve for the
-        DIRECTION-CONSTRAINED joint velocities so the EE velocity points EXACTLY along the
-        launch direction d (the ball actually aims at the target), scaled to the commanded
-        speed. This is the corrected throw (base = azimuth only, shoulder/elbow sweep the
-        vertical plane) -- the earlier `qd_max*sign(d.J)` maximised speed but sent the
-        velocity vector off-axis (ball flew sideways) and drove joint-velocity overshoot.
+        AIMED frozen-base release: pick a hardware-valid posture for the target azimuth
+        (nearest table entry; base = azimuth, held still), then solve the DIRECTION-
+        CONSTRAINED joint velocities (qd[0]=0) so the EE velocity points EXACTLY along the
+        launch direction d, scaled to the commanded speed.
         Returns (release_pos, q_release, qd_release, v_dir) for plan_throw overrides.
         """
         speed = float(np.linalg.norm(v_cmd))
-        # base joint rotates about the origin, so aim by azimuth-from-base to the target
         tgt = getattr(self, "_cur_target_xy", None)
         azimuth = float(np.arctan2(tgt[1], tgt[0])) if tgt is not None else 0.0
-        q_release = self._opt_posture.copy()
-        q_release[0] = self._opt_posture[0] + azimuth          # base rotation to face target
+        if self._opt_table is not None:
+            # Nearest-azimuth posture; set base to the EXACT target azimuth (table is
+            # within ~1.5 deg, the frozen LP below re-solves for the exact direction).
+            q_release, elev = self._lookup_posture(azimuth)
+            q_release[0] = azimuth
+        else:
+            # Legacy single-posture mode (base-rotated); NOTE this does not aim
+            # off-axis on this arm -- use the table for training. Kept for scripts.
+            q_release = self._opt_posture.copy()
+            q_release[0] = self._opt_posture[0] + azimuth
+            elev = self._opt_launch
         # Wrap each joint to the value nearest neutral: the Jacobian is identical mod 2pi,
-        # but unwrapped values (e.g. 6.2 rad == -0.06 + 2pi) make the windup->throw cubic
-        # traverse a huge excursion, commanding joint velocities far above qd_max (verified
-        # 4.9 rad/s vs 1.4 limit) -> torque control diverges at the training timestep.
+        # but unwrapped values make the windup->throw cubic traverse a huge excursion,
+        # commanding joint velocities far above qd_max -> torque control diverges.
         q_ref = arm._q_neutral if hasattr(arm, "_q_neutral") else np.zeros_like(q_release)
         q_release = q_release + 2.0 * np.pi * np.round((q_ref - q_release) / (2.0 * np.pi))
         d = np.array([                                          # launch direction
-            np.cos(self._opt_launch) * np.cos(azimuth),
-            np.cos(self._opt_launch) * np.sin(azimuth),
-            np.sin(self._opt_launch),
+            np.cos(elev) * np.cos(azimuth),
+            np.cos(elev) * np.sin(azimuth),
+            np.sin(elev),
         ])
         # Jacobian at q_release
         q_full = arm._ik_q_neutral.copy()
@@ -269,12 +293,13 @@ class PyBulletThrowingSystem:
         t_arm = max(_T_ARM, profile_t_arm, T + self.t_r)
 
         q_ovr = qd_ovr = None
-        if self._opt_posture is not None:
+        if self._opt_mode:
             release_pos, q_ovr, qd_ovr, v_cmd = self._optimized_release(arm, v_cmd)
 
         coeffs, _, _, v_planned = arm.plan_throw(
             v_cmd, release_pos, self.t_w, self.t_r, t_arm,
             q_release_override=q_ovr, qd_release_override=qd_ovr,
+            monotonic_windup=self._opt_mode,
         )
         t_r_actual = coeffs["t_r"]  # torque mode may have stretched the throw
 

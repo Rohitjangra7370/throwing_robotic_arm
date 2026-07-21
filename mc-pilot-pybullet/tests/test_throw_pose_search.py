@@ -24,3 +24,16 @@ def test_windup_within_limits_flags_violation():
     assert windup_within_limits(q_rel, qd_rel, 1.1, tight_lo, tight_hi) is False
     wide_lo, wide_hi = -np.full(7, 10.0), np.full(7, 10.0)
     assert windup_within_limits(q_rel, qd_rel, 1.1, wide_lo, wide_hi) is True
+
+
+def test_search_builds_azimuth_table_with_base_at_azimuth():
+    from find_throw_pose import search
+    table = search(azimuth_deg_grid=[-20.0, 0.0, 20.0])
+    assert len(table) == 3
+    for e in table:
+        # base joint angle equals the entry azimuth; base velocity is zero
+        assert abs(np.degrees(e["q"][0]) - e["azimuth_deg"]) < 1e-6
+        assert abs(e["qd"][0]) < 1e-9
+        # every release joint velocity within qd_max, and a real throw
+        assert np.all(np.abs(e["qd"]) <= QD + 1e-9)
+        assert e["speed"] > 0.3

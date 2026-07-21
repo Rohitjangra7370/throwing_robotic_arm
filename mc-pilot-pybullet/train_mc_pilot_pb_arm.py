@@ -138,6 +138,52 @@ def build_parser():
             "reachable at every azimuth."
         ),
     )
+    parser.add_argument(
+        "--residual_physics",
+        action="store_true",
+        help=(
+            "TossingBot-style residual policy (Zeng et al. 2019): release speed = "
+            "clamp(v_hat(target) + learned_residual). v_hat is the analytical no-drag "
+            "parabolic release speed (paper Eq. 13); the RBF learns only the residual. "
+            "The policy starts AT the analytical baseline and refines it, so it is "
+            ">= baseline by construction. Targets the arms where Eq.13 currently beats "
+            "MC-PILOT (kuka/franka/kinova-dyn)."
+        ),
+    )
+    parser.add_argument(
+        "--delta_max_frac",
+        type=float,
+        default=0.5,
+        help="residual bound as a fraction of uM (residual in +-frac*uM). Only used with --residual_physics.",
+    )
+    parser.add_argument(
+        "--ball_mass", type=float, default=0.0577,
+        help="thrown ball mass (kg). Default 0.0577 = tennis ball. Lower + larger radius => higher drag.",
+    )
+    parser.add_argument(
+        "--ball_radius", type=float, default=0.0327,
+        help="thrown ball radius (m). Default 0.0327 = tennis ball. e.g. 0.004kg/0.06m ~= whiffle (~19%%g drag).",
+    )
+    parser.add_argument(
+        "--opt_pose", type=str, default=None,
+        help=(
+            "path to a throw_pose.npy (from find_throw_pose.py) = an AIMED release pose. "
+            "Enables real-dynamics throwing from that posture with direction-constrained "
+            "joint velocities (base=azimuth, velocity vector aimed at target). Requires a "
+            "torque-mode robot (kinova_gen3_dyn)."
+        ),
+    )
+    parser.add_argument(
+        "--residual_dynamics",
+        action="store_true",
+        help=(
+            "Residual physics at the MODEL level: the GP learns delta_v - gravity "
+            "instead of the full delta_v, so the dynamics model is grounded in known "
+            "gravity and extrapolates correctly into thinly-sampled regions. Attacks "
+            "the model bias at its source (unlike --residual_physics, which only "
+            "re-parameterises the policy and inherits the biased model)."
+        ),
+    )
     return parser
 
 
@@ -182,6 +228,23 @@ def main():
 
     RELEASE_POS = np.array(profile.default_release_pos, dtype=float)
     T_W, T_R, T_ARM = profile.timing
+
+    opt_posture = None
+    opt_posture_table = None
+    opt_launch_deg = 35.0
+    if args.opt_pose is not None:
+        _loaded = np.load(args.opt_pose, allow_pickle=True)
+        if _loaded.ndim == 1:
+            # azimuth->posture TABLE (array of dicts) -- the hardware-valid mode
+            opt_posture_table = list(_loaded)
+            opt_launch_deg = float(opt_posture_table[0]["elev_deg"])
+        else:
+            # legacy single-posture file (dict)
+            _pose = _loaded.item()
+            opt_posture = np.array(_pose["q"], dtype=float)
+            opt_launch_deg = float(_pose["elev_deg"])
+        # a long, gentle windup keeps joint-velocity overshoot in check for the aimed throw
+        T_W, T_R = 0.5, 1.6
     lengthscale_xy = (
         args.lengthscale_xy if args.lengthscale_xy is not None else 0.15 * (lM - lm)
     )
@@ -210,14 +273,17 @@ def main():
             return np.array([dist * np.cos(angle), dist * np.sin(angle)])
 
     throwing_system = PyBulletThrowingSystem(
-        mass=0.0577,
-        radius=0.0327,
-        launch_angle_deg=35.0,
+        mass=args.ball_mass,
+        radius=args.ball_radius,
+        launch_angle_deg=opt_launch_deg if args.opt_pose is not None else 35.0,
         arm_noise=None,
         t_w=T_W,
         t_r=T_R,
         robot_name=profile.name,
         target_height=args.target_height,
+        opt_posture=opt_posture,
+        opt_posture_table=opt_posture_table,
+        opt_launch_deg=opt_launch_deg,
     )
 
     num_gp = 3
@@ -249,6 +315,9 @@ def main():
     model_learning_par["device"] = device
 
     f_model_learning = ML.Ballistic_Model_learning_RBF
+    if args.residual_dynamics:
+        # Residual-physics at the MODEL level: GP learns delta_v - gravity, not full delta_v.
+        f_model_learning = ML.Ballistic_SemiParametric_Model_learning_RBF
 
     rand_exploration_policy_par = {
         "full_state_dim": STATE_DIM,
@@ -291,6 +360,16 @@ def main():
         "device": device,
     }
     f_control_policy = Policy.Throwing_Policy
+
+    if args.residual_physics:
+        # Start at the analytical baseline: near-zero residual weights so the initial
+        # policy output == v_hat, then trials refine only the residual.
+        control_policy_par["weight_init"] = 1e-2 * (np.random.rand(1, Nb) - 0.5)
+        control_policy_par["release_pos"] = RELEASE_POS
+        control_policy_par["launch_angle_deg"] = 35.0
+        control_policy_par["target_height"] = float(args.target_height)
+        control_policy_par["delta_max_frac"] = float(args.delta_max_frac)
+        f_control_policy = Policy.Residual_Throwing_Policy
 
     policy_reinit_dict = {
         "lenghtscales_par": lengthscales_init,
@@ -406,6 +485,13 @@ def main():
         "flight_targets": bool(args.flight_targets),
         "lengthscales_init": list(lengthscales_init),
         "results_root": results_root,
+        "ball_mass": float(args.ball_mass),
+        "ball_radius": float(args.ball_radius),
+        "residual_physics": bool(args.residual_physics),
+        "residual_dynamics": bool(args.residual_dynamics),
+        "launch_angle_deg": 35.0,
+        "delta_max_frac": float(args.delta_max_frac) if args.residual_physics else None,
+        "target_height": float(args.target_height),
     }
     pkl.dump(config_log, open(os.path.join(log_path, "config_log.pkl"), "wb"))
 

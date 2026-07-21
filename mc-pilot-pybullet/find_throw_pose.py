@@ -2,14 +2,17 @@
 Hardware-valid aimed-throw pose search on the kinetic-chain principle.
 
   * Base joint j1 (vertical z-axis) sets AZIMUTH only and is held STILL during
-    the throw: qd[0] = 0. It is NOT a speed source (grounding shows it adds ~0%).
+    the throw: qd[0] = 0. It is NOT a speed source.
   * Shoulder/elbow/wrist sweep the vertical plane; the release velocity VECTOR
     points exactly along the launch direction d (aimable).
   * Release-instant joint velocities are <= qd_max by LP construction; the
     monotonic windup (handled in plan_throw) keeps the whole stroke <= qd_max.
 
-Search extended forward/up postures (base=0; azimuth applied at runtime), score
-by drag ballistic range, and REJECT poses whose windup cock leaves joint limits.
+Rotating the base does NOT cleanly rotate this arm's throw geometry (verified:
+J(base+az) != Rz*J(base)), so a single posture aimed at az=0 collapses off-axis
+(2.14 m/s at 0deg -> 0.10 at 27deg with the base frozen). We therefore search a
+FRESH frozen-base posture PER AZIMUTH over the training wedge and save an
+azimuth->posture TABLE. Poses whose windup cock leaves joint limits are rejected.
 """
 import numpy as np
 import pybullet as p
@@ -65,7 +68,41 @@ def _fkj(arm, q):
     return pos, np.array(jl)
 
 
-def search(t_throw=1.1):
+def search_azimuth(arm, lo, hi, azimuth, t_throw=1.1):
+    """Best frozen-base posture for one azimuth (base = azimuth, adapt s/e/wrist)."""
+    grid2 = np.deg2rad(np.arange(-70, 71, 10))    # shoulder
+    grid4 = np.deg2rad(np.arange(-125, 1, 10))    # elbow
+    grid6 = np.deg2rad(np.arange(-90, 91, 15))    # wrist
+    elevs = np.deg2rad(np.arange(20, 56, 5))
+    best = None
+    for s2 in grid2:
+        for s4 in grid4:
+            for s6 in grid6:
+                q = np.array([azimuth, s2, 0.0, s4, 0.0, s6, 0.0])
+                pos, J = _fkj(arm, q)
+                if pos[2] < 0.15:
+                    continue
+                for elev in elevs:
+                    d = np.array([np.cos(elev) * np.cos(azimuth),
+                                  np.cos(elev) * np.sin(azimuth),
+                                  np.sin(elev)])
+                    s, qd = aimed_speed(J, d, QD, freeze_base=True)
+                    if qd is None:
+                        continue
+                    if not windup_within_limits(q, qd, t_throw, lo, hi):
+                        continue
+                    rng, _ = ballistic_range(pos, s * d)
+                    if best is None or rng > best["range"]:
+                        best = {"range": rng, "q": q.copy(), "qd": qd.copy(),
+                                "elev_deg": float(np.degrees(elev)), "speed": s,
+                                "azimuth_deg": float(np.degrees(azimuth))}
+    return best
+
+
+def search(azimuth_deg_grid=None, t_throw=1.1):
+    """Azimuth->posture table over the training wedge. Returns list of dicts."""
+    if azimuth_deg_grid is None:
+        azimuth_deg_grid = np.arange(-33.0, 33.1, 3.0)
     cid = p.connect(p.DIRECT)
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
     arm = p.loadURDF(pybullet_data.getDataPath() + "/kinova_gen3/gen3.urdf",
@@ -80,40 +117,20 @@ def search(t_throw=1.1):
         hi.append(h)
     lo, hi = np.array(lo), np.array(hi)
 
-    grid = {
-        2: np.deg2rad(np.arange(-70, 71, 8)),    # shoulder
-        4: np.deg2rad(np.arange(-125, 1, 8)),    # elbow
-        6: np.deg2rad(np.arange(-90, 91, 12)),   # wrist
-    }
-    best = None
-    for s2 in grid[2]:
-        for s4 in grid[4]:
-            for s6 in grid[6]:
-                q = np.array([0.0, s2, 0.0, s4, 0.0, s6, 0.0])
-                pos, J = _fkj(arm, q)
-                if pos[2] < 0.15:
-                    continue
-                for elev in np.deg2rad(np.arange(20, 56, 5)):
-                    d = np.array([np.cos(elev), 0.0, np.sin(elev)])
-                    s, qd = aimed_speed(J, d, QD, freeze_base=True)
-                    if qd is None:
-                        continue
-                    if not windup_within_limits(q, qd, t_throw, lo, hi):
-                        continue
-                    rng, _ = ballistic_range(pos, s * d)
-                    if best is None or rng > best["range"]:
-                        best = {"range": rng, "q": q.copy(), "qd": qd.copy(),
-                                "elev_deg": float(np.degrees(elev)), "speed": s}
+    table = []
+    for az_deg in azimuth_deg_grid:
+        b = search_azimuth(arm, lo, hi, np.deg2rad(az_deg), t_throw)
+        if b is not None:
+            table.append(b)
     p.disconnect(cid)
-    return best
+    return table
 
 
 if __name__ == "__main__":
-    b = search()
-    pose = {"q": b["q"], "qd": b["qd"], "elev_deg": b["elev_deg"], "speed": b["speed"]}
-    np.save("throw_pose.npy", pose)
-    print(f"saved throw_pose.npy: speed={b['speed']:.3f} m/s  "
-          f"range={b['range']*100:.1f} cm  elev={b['elev_deg']:.0f}deg")
-    print(f"  q  = {np.round(b['q'], 3)}")
-    print(f"  qd = {np.round(b['qd'], 3)}  |qd|/qd_max = {np.round(np.abs(b['qd'])/QD, 2)}")
-    print(f"  base qd[0] = {b['qd'][0]:.4f}  (must be 0)")
+    table = search()
+    np.save("throw_pose_table.npy", np.array(table, dtype=object))
+    print(f"saved throw_pose_table.npy: {len(table)} azimuth entries")
+    for e in table:
+        print(f"  az={e['azimuth_deg']:+6.1f}  speed={e['speed']:.2f} m/s  "
+              f"range={e['range']*100:5.1f} cm  elev={e['elev_deg']:.0f}  "
+              f"max|qd|/qdmax={np.max(np.abs(e['qd'])/QD):.2f}  base_qd={e['qd'][0]:.3f}")
