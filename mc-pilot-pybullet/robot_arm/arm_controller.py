@@ -253,17 +253,31 @@ class ArmController:
         windup_time_scale = 1.0
         time_scale = 1.0
 
+        # Proximal-to-distal (kinetic-chain) stagger: joint index IS the physical
+        # base->wrist chain order for this URDF, so joint i's throw-phase ramp
+        # starts at stagger_frac[i]*dt_throw and ends at dt_throw (release) for
+        # EVERY joint -- proximal joints (small i) get the whole window and move
+        # gradually; distal joints (large i) stay cocked and ramp late/sharp, the
+        # whip-like sequencing real throws use (Senoo & Ishikawa 2008; proximal-
+        # to-distal / "summation of speed" principle). Each joint's own peak
+        # velocity is still exactly its qd_release_i <= qd_max_i (monotonic single
+        # ramp per joint), so the whole-trajectory qd<=qd_max guarantee is
+        # unaffected by the stagger.
+        stagger_frac = (np.linspace(0.0, 0.5, self._n_dofs) if monotonic_windup
+                        else np.zeros(self._n_dofs))
+
         def _windup_pose_and_time(dt_throw_local, dt_windup_local):
             if monotonic_windup:
-                # Cock back by half the ballistic so the throw is a linear
-                # velocity ramp 0 -> qd_release (peak = qd_release <= qd_max).
-                qw = q_release - qd_release * (dt_throw_local / 2.0)
+                local_dur = dt_throw_local * (1.0 - stagger_frac)
+                # Cock back by half each joint's OWN local window so its throw-
+                # phase ramp is linear 0 -> qd_release (peak = qd_release <= qd_max).
+                qw = q_release - qd_release * (local_dur / 2.0)
                 qw = np.clip(qw, self._q_lo, self._q_hi)
                 # Grow the neutral->windup time so its rest-to-rest cubic peak
                 # (1.5*|dq|/t) stays within qd_max.
                 span = np.max(np.abs(qw - self._q_neutral))
                 min_tw = 1.5 * span / float(np.min(self._qd_max))
-                return qw, max(dt_windup_local, min_tw)
+                return qw, max(dt_windup_local, min_tw), local_dur
             if self._windup_delta is not None:
                 # Explicit cocked-back pose, independent of q_release (needed when
                 # q_release == q_neutral, which makes the formula below degenerate --
@@ -271,12 +285,14 @@ class ArmController:
                 qw = self._q_neutral + self._windup_delta
             else:
                 qw = self._q_neutral + (q_release - self._q_neutral) * (-0.5)
-            return np.clip(qw, self._q_lo, self._q_hi), dt_windup_local
+            return np.clip(qw, self._q_lo, self._q_hi), dt_windup_local, None
 
-        q_windup, dt_windup = _windup_pose_and_time(dt_throw, dt_windup)
+        q_windup, dt_windup, local_dur = _windup_pose_and_time(dt_throw, dt_windup)
         q_follow = self._q_neutral.copy()
         windup_coeffs = _cubic_rest_to_rest(self._q_neutral, q_windup, dt_windup)
-        throw_coeffs = _cubic_to_velocity(q_windup, q_release, qd_release, dt_throw)
+        throw_coeffs = _cubic_to_velocity(
+            q_windup, q_release, qd_release, local_dur if monotonic_windup else dt_throw
+        )
 
         if self._control_mode == "torque":
             for _ in range(6):
@@ -298,24 +314,33 @@ class ArmController:
                         f"(peak ratio {ratio:.2f}): {report}"
                     )
 
+            stagger_start = stagger_frac * dt_throw if monotonic_windup else None
             for _ in range(6):
-                ratio, worst_tau = self._throw_peak_torque_ratio(throw_coeffs, dt_throw)
+                ratio, worst_tau = self._throw_peak_torque_ratio(
+                    throw_coeffs, dt_throw, stagger_start=stagger_start
+                )
                 if ratio <= 1.0:
                     break
                 dt_throw *= 1.2
                 time_scale *= 1.2
+                stagger_start = stagger_frac * dt_throw if monotonic_windup else None
                 if monotonic_windup:
                     # Stretched throw -> larger cock; keep the ramp linear and
                     # rebuild the windup so it still starts from the cocked pose.
-                    q_windup, dt_windup = _windup_pose_and_time(dt_throw, dt_windup)
+                    q_windup, dt_windup, local_dur = _windup_pose_and_time(
+                        dt_throw, dt_windup
+                    )
                     windup_coeffs = _cubic_rest_to_rest(
                         self._q_neutral, q_windup, dt_windup
                     )
                 throw_coeffs = _cubic_to_velocity(
-                    q_windup, q_release, qd_release, dt_throw
+                    q_windup, q_release, qd_release,
+                    local_dur if monotonic_windup else dt_throw,
                 )
             else:
-                ratio, worst_tau = self._throw_peak_torque_ratio(throw_coeffs, dt_throw)
+                ratio, worst_tau = self._throw_peak_torque_ratio(
+                    throw_coeffs, dt_throw, stagger_start=stagger_start
+                )
                 if ratio > 1.0:
                     report = ", ".join(
                         f"j{j}: {abs(t):.1f}/{m:.1f} Nm"
@@ -340,15 +365,18 @@ class ArmController:
             "T": T_actual,
             "clip_scale": clip_scale,
             "time_scale": time_scale,
+            "stagger_frac": stagger_frac if monotonic_windup else None,
         }
         return coeffs, q_release, qd_release, v_achieved
 
-    def _throw_peak_torque_ratio(self, throw_coeffs, dt_throw, n_samples=50):
+    def _throw_peak_torque_ratio(self, throw_coeffs, dt_throw, n_samples=50, stagger_start=None):
         """Max over the throw phase of max_j |tau_j| / tau_max_j."""
         worst = 0.0
         worst_tau = None
         for tau_t in np.linspace(0.0, dt_throw, n_samples):
-            q, qd, qdd = _eval_cubic(throw_coeffs, tau_t, with_accel=True)
+            tau_eval = (tau_t if stagger_start is None
+                       else np.clip(tau_t - stagger_start, 0.0, dt_throw - stagger_start))
+            q, qd, qdd = _eval_cubic(throw_coeffs, tau_eval, with_accel=True)
             torque = np.array(
                 p.calculateInverseDynamics(
                     self._arm_id,
@@ -372,7 +400,14 @@ class ArmController:
         if t <= t_w:
             return _eval_cubic(coeffs["windup"], t, with_accel)
         if t <= t_r:
-            return _eval_cubic(coeffs["throw"], t - t_w, with_accel)
+            dt_throw = t_r - t_w
+            stagger_frac = coeffs.get("stagger_frac")
+            if stagger_frac is not None:
+                start_i = stagger_frac * dt_throw
+                tau = np.clip((t - t_w) - start_i, 0.0, dt_throw - start_i)
+            else:
+                tau = t - t_w
+            return _eval_cubic(coeffs["throw"], tau, with_accel)
         return _eval_cubic(coeffs["follow"], min(t - t_r, T - t_r), with_accel)
 
     def step(self, q_target, qd_target, qdd_target=None):
