@@ -36,7 +36,15 @@ class PyBulletThrowingSystem:
         gui_mode=False,
         robot_name="kuka_iiwa",
         target_height=0.0,
+        opt_posture=None,
+        opt_launch_deg=43.0,
     ):
+        # Optimized-release mode: throw from a fixed high-manipulability posture
+        # (base-rotated per target azimuth) using velocity-limit-optimal joint
+        # scheduling (qd = qd_max*sign(d.J)) scaled to the commanded speed, instead
+        # of IK+pinv. Gives the REAL-dynamics ~1 m throw (see real_dynamics_throw.py).
+        self._opt_posture = None if opt_posture is None else np.array(opt_posture, dtype=float)
+        self._opt_launch = np.deg2rad(opt_launch_deg)
         self.mass = mass
         self.radius = radius
         self.launch_angle = np.deg2rad(launch_angle_deg)   # must match ThrowingSystem API
@@ -86,6 +94,7 @@ class PyBulletThrowingSystem:
         u0 = np.array(policy(s0, 0.0)).flatten()
         speed = float(u0[0])
         v_cmd = self._speed_to_velocity(speed, release_pos, target_xy)
+        self._cur_target_xy = target_xy   # used by optimized-posture azimuth (base rotation)
 
         # (release vel is computed later via arm_noise.pybullet_release_vel)
 
@@ -137,6 +146,75 @@ class PyBulletThrowingSystem:
             ]
         )
 
+    def _optimized_release(self, arm, v_cmd):
+        """
+        AIMED-posture release: rotate the base to the target azimuth, then solve for the
+        DIRECTION-CONSTRAINED joint velocities so the EE velocity points EXACTLY along the
+        launch direction d (the ball actually aims at the target), scaled to the commanded
+        speed. This is the corrected throw (base = azimuth only, shoulder/elbow sweep the
+        vertical plane) -- the earlier `qd_max*sign(d.J)` maximised speed but sent the
+        velocity vector off-axis (ball flew sideways) and drove joint-velocity overshoot.
+        Returns (release_pos, q_release, qd_release, v_dir) for plan_throw overrides.
+        """
+        speed = float(np.linalg.norm(v_cmd))
+        # base joint rotates about the origin, so aim by azimuth-from-base to the target
+        tgt = getattr(self, "_cur_target_xy", None)
+        azimuth = float(np.arctan2(tgt[1], tgt[0])) if tgt is not None else 0.0
+        q_release = self._opt_posture.copy()
+        q_release[0] = self._opt_posture[0] + azimuth          # base rotation to face target
+        # Wrap each joint to the value nearest neutral: the Jacobian is identical mod 2pi,
+        # but unwrapped values (e.g. 6.2 rad == -0.06 + 2pi) make the windup->throw cubic
+        # traverse a huge excursion, commanding joint velocities far above qd_max (verified
+        # 4.9 rad/s vs 1.4 limit) -> torque control diverges at the training timestep.
+        q_ref = arm._q_neutral if hasattr(arm, "_q_neutral") else np.zeros_like(q_release)
+        q_release = q_release + 2.0 * np.pi * np.round((q_ref - q_release) / (2.0 * np.pi))
+        d = np.array([                                          # launch direction
+            np.cos(self._opt_launch) * np.cos(azimuth),
+            np.cos(self._opt_launch) * np.sin(azimuth),
+            np.sin(self._opt_launch),
+        ])
+        # Jacobian at q_release
+        q_full = arm._ik_q_neutral.copy()
+        for li, dof in enumerate(arm._dof_ids):
+            q_full[dof] = q_release[li]
+        jl, _ = p.calculateJacobian(
+            arm._arm_id, arm._ee_link, [0, 0, 0], q_full.tolist(),
+            [0.0] * arm._n_dofs, [0.0] * arm._n_dofs, physicsClientId=arm._cid,
+        )
+        J = np.array(jl)[:, arm._dof_ids]
+        # Direction-constrained aimed q̇: maximize s s.t. J q̇ = s·d, |q̇ᵢ| ≤ qd_max.
+        # Forces the EE velocity to lie EXACTLY along d (aimable), unlike the sign trick.
+        from scipy.optimize import linprog
+        nq = len(arm._qd_max)
+        c = np.zeros(nq + 1); c[-1] = -1.0
+        A_eq = np.hstack([J, -d.reshape(3, 1)])
+        bnds = [(-arm._qd_max[i], arm._qd_max[i]) for i in range(nq)] + [(0, None)]
+        bnds[0] = (0.0, 0.0)   # base joint = azimuth only, held still: qd[0] = 0
+        lp = linprog(c, A_eq=A_eq, b_eq=np.zeros(3), bounds=bnds, method="highs")
+        if lp.success:
+            v_max = float(lp.x[-1]); qd_opt = lp.x[:nq]
+        else:
+            v_max, qd_opt = 0.0, np.zeros(nq)
+        scale = min(1.0, speed / v_max) if v_max > 1e-9 else 0.0
+        qd_release = qd_opt * scale
+        # release position = FK at q_release
+        for j in range(arm._n_dofs):
+            p.resetJointState(arm._arm_id, j, q_full[j], physicsClientId=arm._cid)
+        release_pos = np.array(
+            p.getLinkState(arm._arm_id, arm._ee_link, computeForwardKinematics=True,
+                           physicsClientId=arm._cid)[4]
+        )
+        # Restore the arm to neutral: the FK teleport above is a QUERY, not the
+        # start of the motion. The throw trajectory begins at q_neutral (windup),
+        # so leaving the arm at the contorted release pose gives the torque-PD
+        # controller a ~3 rad startup error at step 0 -> torque saturates ->
+        # joints run away to PyBullet's 100 rad/s clamp (verified). The standalone
+        # aimed-throw scripts reset to neutral here; _simulate_pybullet did not.
+        for local_i, joint_id in enumerate(arm._joint_ids):
+            p.resetJointState(arm._arm_id, joint_id, arm._q_neutral[local_i], 0.0,
+                              physicsClientId=arm._cid)
+        return release_pos, q_release, qd_release, d * speed
+
     def _simulate_pybullet(self, release_pos, v_cmd, T, dt):
         """
         Returns (pos_traj, vel_traj, wind_traj).
@@ -146,7 +224,15 @@ class PyBulletThrowingSystem:
         mode = p.GUI if self._gui_mode else p.DIRECT
         client = p.connect(mode)
         p.setGravity(0, 0, -9.81, physicsClientId=client)
-        p.setTimeStep(dt, physicsClientId=client)
+        # Sub-step the physics for the aimed real-dynamics throw: torque PD control
+        # (kp=400) is unstable at the GP sampling dt (0.02) on the aggressive throw
+        # trajectory, but stable at ~0.005. Step control+physics fine, RECORD at dt so the
+        # GP still sees Ts-spaced samples. nsub=1 (unchanged) for every other mode.
+        nsub = 1   # sub-stepping disabled: it did not resolve the opt_pose control
+                   # divergence and introduced a free-flight blowup. Left as 1 (no-op)
+                   # pending a proper fix of the aimed-throw training integration.
+        dt_phys = dt / nsub
+        p.setTimeStep(dt_phys, physicsClientId=client)
         p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=client)
         p.loadURDF(self._plane_urdf, physicsClientId=client)
 
@@ -181,25 +267,31 @@ class PyBulletThrowingSystem:
         arm.attach_ball(ball_id)
         profile_t_arm = self._profile.timing[2]
         t_arm = max(_T_ARM, profile_t_arm, T + self.t_r)
+
+        q_ovr = qd_ovr = None
+        if self._opt_posture is not None:
+            release_pos, q_ovr, qd_ovr, v_cmd = self._optimized_release(arm, v_cmd)
+
         coeffs, _, _, v_planned = arm.plan_throw(
-            v_cmd, release_pos, self.t_w, self.t_r, t_arm
+            v_cmd, release_pos, self.t_w, self.t_r, t_arm,
+            q_release_override=q_ovr, qd_release_override=qd_ovr,
         )
         t_r_actual = coeffs["t_r"]  # torque mode may have stretched the throw
 
         release_offset = 0
         if self.arm_noise is not None:
             release_offset = self.arm_noise.sample_release_offset()
-        release_step = int(t_r_actual / dt) + release_offset
+        release_step = int(t_r_actual / dt_phys) + release_offset * nsub
         pos_traj = []
         vel_traj = []
         wind_traj = []
         released = False
-        total_steps = int((t_r_actual + T) / dt) + 100
+        total_steps = int((t_r_actual + T) / dt_phys) + 100 * nsub
         speed_norm = np.linalg.norm(v_cmd)
         release_dir = v_cmd / speed_norm if speed_norm > 1e-9 else np.zeros(3)
 
         for step in range(total_steps):
-            t = step * dt
+            t = step * dt_phys
             if not released:
                 q_t, qd_t, qdd_t = arm.get_setpoint(coeffs, t, with_accel=True)
                 arm.step(q_t, qd_t, qdd_t)
@@ -272,7 +364,7 @@ class PyBulletThrowingSystem:
                 a_total = _ball_accel(pos, vel, self.mass, self.radius, w)
                 a_drag  = a_total - np.array([0.0, 0.0, -9.81])
                 f_drag  = self.mass * a_drag
-                p.applyExternalForce(
+                p.applyExternalForce(       # drag applied EVERY fine step (accurate)
                     ball_id,
                     -1,
                     f_drag.tolist(),
@@ -280,6 +372,14 @@ class PyBulletThrowingSystem:
                     p.WORLD_FRAME,
                     physicsClientId=client,
                 )
+
+                # RECORD only at the GP sampling rate (every nsub fine steps)
+                if (step - release_step) % nsub != 0:
+                    p.stepSimulation(physicsClientId=client)
+                    hook = getattr(self, "frame_hook", None)
+                    if hook is not None:
+                        hook(client)
+                    continue
 
                 pos_traj.append(pos.copy())
                 vel_traj.append(vel.copy())
