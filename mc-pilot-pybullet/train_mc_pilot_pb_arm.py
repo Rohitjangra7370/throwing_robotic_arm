@@ -251,6 +251,27 @@ def main():
     lengthscales_init = np.array([lengthscale_xy, lengthscale_xy], dtype=float)
 
     release_xy = np.array(profile.default_release_pos[:2], dtype=float)
+    if opt_posture_table is not None:
+        # profile.default_release_pos is a STATIC config value for the legacy
+        # kinematic-release mode; opt_pose's actual release point comes from
+        # real FK on the table's az~=0 posture and can differ substantially
+        # (verified: 0.55,0.00 configured vs 0.696,-0.054 real -- a 0.15m gap,
+        # huge relative to this throw's ~12cm range). Anchor target sampling
+        # on the REAL release point instead.
+        import pybullet as _p
+        import pybullet_data as _pd
+        _az0_entry = min(opt_posture_table, key=lambda e: abs(e["azimuth_deg"]))
+        _cid = _p.connect(_p.DIRECT)
+        _arm_tmp = _p.loadURDF(_pd.getDataPath() + "/" + profile.urdf_rel_path,
+                               useFixedBase=True, physicsClientId=_cid)
+        for _j in range(7):
+            _p.resetJointState(_arm_tmp, _j, _az0_entry["q"][_j], physicsClientId=_cid)
+        _real_pos = _p.getLinkState(_arm_tmp, profile.ee_link, computeForwardKinematics=True,
+                                    physicsClientId=_cid)[4]
+        _p.disconnect(_cid)
+        release_xy = np.array(_real_pos[:2], dtype=float)
+        print(f"opt_pose table: anchoring target sampling on REAL release_xy={release_xy} "
+             f"(profile default was {profile.default_release_pos[:2]})")
     if args.flight_targets:
         # lm/lM are on-axis landing distances (release y = 0, so on-axis
         # flight = distance - release_x); convert to a flight annulus.
