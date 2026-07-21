@@ -187,11 +187,16 @@ class PyBulletThrowingSystem:
             q_release = self._opt_posture.copy()
             q_release[0] = self._opt_posture[0] + azimuth
             elev = self._opt_launch
-        # Wrap each joint to the value nearest neutral: the Jacobian is identical mod 2pi,
-        # but unwrapped values make the windup->throw cubic traverse a huge excursion,
-        # commanding joint velocities far above qd_max -> torque control diverges.
+        # Wrap ONLY the base joint (idx0) to the value nearest neutral: it's the sole
+        # joint with continuous/infinite rotation range (Kinova spec), so azimuth can
+        # legitimately need +-2pi correction. The other 6 joints have hard mechanical
+        # limits (e.g. elbow +-147deg) and are ALREADY within range by construction
+        # (the pose search respects joint limits) -- wrapping them blindly is wrong
+        # and dangerous: verified it can push a valid -100deg elbow target to +260deg,
+        # far outside the physical limit, silently corrupting the release pose (the
+        # arm can't reach it, release velocity collapses to ~0 regardless of command).
         q_ref = arm._q_neutral if hasattr(arm, "_q_neutral") else np.zeros_like(q_release)
-        q_release = q_release + 2.0 * np.pi * np.round((q_ref - q_release) / (2.0 * np.pi))
+        q_release[0] = q_release[0] + 2.0 * np.pi * np.round((q_ref[0] - q_release[0]) / (2.0 * np.pi))
         d = np.array([                                          # launch direction
             np.cos(elev) * np.cos(azimuth),
             np.cos(elev) * np.sin(azimuth),
@@ -208,12 +213,19 @@ class PyBulletThrowingSystem:
         J = np.array(jl)[:, arm._dof_ids]
         # Direction-constrained aimed q̇: maximize s s.t. J q̇ = s·d, |q̇ᵢ| ≤ qd_max.
         # Forces the EE velocity to lie EXACTLY along d (aimable), unlike the sign trick.
+        # Only PITCH joints (shoulder=1, elbow=3, wrist=5) carry velocity -- their axis
+        # is perpendicular to the swing plane. ROLL/TWIST joints (base=0, shoulder-
+        # roll=2, wrist-roll1=4, wrist-roll2=6) rotate about an axis roughly ALONG the
+        # connecting link; letting the LP spin them produces a corkscrew motion, not a
+        # throw (verified visually). They're frozen at qd=0 -- static setup only, same
+        # as the base's azimuth role -- matching find_throw_pose.py's _ROLL_IDX.
         from scipy.optimize import linprog
         nq = len(arm._qd_max)
         c = np.zeros(nq + 1); c[-1] = -1.0
         A_eq = np.hstack([J, -d.reshape(3, 1)])
         bnds = [(-arm._qd_max[i], arm._qd_max[i]) for i in range(nq)] + [(0, None)]
-        bnds[0] = (0.0, 0.0)   # base joint = azimuth only, held still: qd[0] = 0
+        for i in (0, 2, 4, 6):
+            bnds[i] = (0.0, 0.0)
         lp = linprog(c, A_eq=A_eq, b_eq=np.zeros(3), bounds=bnds, method="highs")
         if lp.success:
             v_max = float(lp.x[-1]); qd_opt = lp.x[:nq]
