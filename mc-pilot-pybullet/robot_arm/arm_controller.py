@@ -183,39 +183,43 @@ class ArmController:
             )
         return self._grip_id
 
-    def plan_throw(self, v_cmd, release_pos, t_w=0.3, t_r=0.6, T=1.0):
+    def plan_throw(self, v_cmd, release_pos, t_w=0.3, t_r=0.6, T=1.0,
+                   q_release_override=None, qd_release_override=None,
+                   monotonic_windup=False):
         """
         Plan a 3-phase piecewise-cubic throw trajectory.
 
+        Overrides (opt-in; default None keeps the original IK+pinv behaviour):
+          q_release_override  : explicit release joint configuration (n,) -- skip IK.
+          qd_release_override : explicit release joint velocity (n,) -- skip pinv, so the
+                                arm can use VELOCITY-LIMIT-OPTIMAL joint scheduling
+                                (qd = qd_max*sign(d.J)) instead of the min-norm pinv.
+
         Returns
         -------
-        coeffs : dict
-            Cubic coefficients for the windup, throw, and follow-through phases.
-        q_release : (n,)
-            Joint configuration at release.
-        qd_release : (n,)
-            Joint velocity at release after clipping against qd_max.
-        v_achieved : (3,)
-            Actual EE velocity achievable after clipping.
+        coeffs, q_release, qd_release (post-clip), v_achieved (post-clip EE velocity)
         """
         v_cmd = np.array(v_cmd, dtype=float)
         release_pos = np.array(release_pos, dtype=float)
 
-        q_release = np.array(
-            p.calculateInverseKinematics(
-                self._arm_id,
-                self._ee_link,
-                targetPosition=release_pos.tolist(),
-                restPoses=self._ik_q_neutral.tolist(),
-                lowerLimits=self._ik_q_lo.tolist(),
-                upperLimits=self._ik_q_hi.tolist(),
-                jointRanges=(self._ik_q_hi - self._ik_q_lo).tolist(),
-                maxNumIterations=200,
-                residualThreshold=1e-4,
-                physicsClientId=self._cid,
+        if q_release_override is not None:
+            q_release = np.array(q_release_override, dtype=float)
+        else:
+            q_release = np.array(
+                p.calculateInverseKinematics(
+                    self._arm_id,
+                    self._ee_link,
+                    targetPosition=release_pos.tolist(),
+                    restPoses=self._ik_q_neutral.tolist(),
+                    lowerLimits=self._ik_q_lo.tolist(),
+                    upperLimits=self._ik_q_hi.tolist(),
+                    jointRanges=(self._ik_q_hi - self._ik_q_lo).tolist(),
+                    maxNumIterations=200,
+                    residualThreshold=1e-4,
+                    physicsClientId=self._cid,
+                )
             )
-        )
-        q_release = q_release[self._dof_ids]
+            q_release = q_release[self._dof_ids]
 
         q_release_full = self._ik_q_neutral.copy()
         for local_i, dof_id in enumerate(self._dof_ids):
@@ -231,7 +235,10 @@ class ArmController:
             physicsClientId=self._cid,
         )
         j_lin = np.array(j_lin_raw)[:, self._dof_ids]
-        qd_release = np.linalg.pinv(j_lin) @ v_cmd
+        if qd_release_override is not None:
+            qd_release = np.array(qd_release_override, dtype=float)
+        else:
+            qd_release = np.linalg.pinv(j_lin) @ v_cmd
 
         ratio = np.abs(qd_release) / self._qd_max
         clip_scale = 1.0
@@ -240,21 +247,34 @@ class ArmController:
             qd_release = qd_release / clip_scale
         v_achieved = j_lin @ qd_release
 
-        if self._windup_delta is not None:
-            # Explicit cocked-back pose, independent of q_release (needed when
-            # q_release == q_neutral, which makes the formula below degenerate --
-            # see kinova_gen3's profile notes).
-            q_windup = self._q_neutral + self._windup_delta
-        else:
-            q_windup = self._q_neutral + (q_release - self._q_neutral) * (-0.5)
-        q_windup = np.clip(q_windup, self._q_lo, self._q_hi)
-        q_follow = self._q_neutral.copy()
-
         dt_windup = t_w
         dt_throw = t_r - t_w
         follow_dur = T - t_r
         windup_time_scale = 1.0
         time_scale = 1.0
+
+        def _windup_pose_and_time(dt_throw_local, dt_windup_local):
+            if monotonic_windup:
+                # Cock back by half the ballistic so the throw is a linear
+                # velocity ramp 0 -> qd_release (peak = qd_release <= qd_max).
+                qw = q_release - qd_release * (dt_throw_local / 2.0)
+                qw = np.clip(qw, self._q_lo, self._q_hi)
+                # Grow the neutral->windup time so its rest-to-rest cubic peak
+                # (1.5*|dq|/t) stays within qd_max.
+                span = np.max(np.abs(qw - self._q_neutral))
+                min_tw = 1.5 * span / float(np.min(self._qd_max))
+                return qw, max(dt_windup_local, min_tw)
+            if self._windup_delta is not None:
+                # Explicit cocked-back pose, independent of q_release (needed when
+                # q_release == q_neutral, which makes the formula below degenerate --
+                # see kinova_gen3's profile notes).
+                qw = self._q_neutral + self._windup_delta
+            else:
+                qw = self._q_neutral + (q_release - self._q_neutral) * (-0.5)
+            return np.clip(qw, self._q_lo, self._q_hi), dt_windup_local
+
+        q_windup, dt_windup = _windup_pose_and_time(dt_throw, dt_windup)
+        q_follow = self._q_neutral.copy()
         windup_coeffs = _cubic_rest_to_rest(self._q_neutral, q_windup, dt_windup)
         throw_coeffs = _cubic_to_velocity(q_windup, q_release, qd_release, dt_throw)
 
@@ -284,6 +304,13 @@ class ArmController:
                     break
                 dt_throw *= 1.2
                 time_scale *= 1.2
+                if monotonic_windup:
+                    # Stretched throw -> larger cock; keep the ramp linear and
+                    # rebuild the windup so it still starts from the cocked pose.
+                    q_windup, dt_windup = _windup_pose_and_time(dt_throw, dt_windup)
+                    windup_coeffs = _cubic_rest_to_rest(
+                        self._q_neutral, q_windup, dt_windup
+                    )
                 throw_coeffs = _cubic_to_velocity(
                     q_windup, q_release, qd_release, dt_throw
                 )
