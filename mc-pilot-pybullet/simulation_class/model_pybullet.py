@@ -176,11 +176,96 @@ class PyBulletThrowingSystem:
         speed = float(np.linalg.norm(v_cmd))
         tgt = getattr(self, "_cur_target_xy", None)
         azimuth = float(np.arctan2(tgt[1], tgt[0])) if tgt is not None else 0.0
+        rotation_built = (self._opt_table is not None
+                          and bool(self._opt_table[0].get("rotation_built", False)))
+        if rotation_built and tgt is not None:
+            # TURRET-AIMING CORRECTION. The ball flies from the RELEASE POINT,
+            # not the origin -- and the release point sits at a fixed polar
+            # offset (radius r_off, azimuth alpha_off relative to the aim
+            # direction) that rotates rigidly with the posture. Aiming the
+            # VELOCITY at the target's origin-azimuth misses whenever
+            # r_off*sin(alpha_off) is non-negligible next to |T| (measured:
+            # the fast posture has alpha_off = -51.7 deg, r_off = 0.54 m ->
+            # ~32 deg aim error at 0.8 m targets = the whole 37 cm accuracy
+            # collapse; the old posture's -4.4 deg offset was silently
+            # absorbed by training). Solve the offset-turret equation for the
+            # aim heading phi such that the horizontal ray from the ACTUAL
+            # release point along phi passes through the target:
+            #   |T| * sin(phi - beta) = -r_off * sin(alpha_off)
+            #   => phi = beta + arcsin(-r_off*sin(alpha_off) / |T|)
+            if not hasattr(self, "_opt_polar"):
+                # (r_off, alpha_off) are rotation-invariant posture constants:
+                # measure once from any entry via FK at its stored q.
+                e0 = self._opt_table[0]
+                q_probe = np.array(e0["q"], dtype=float)
+                qf = arm._ik_q_neutral.copy()
+                for li, dof in enumerate(arm._dof_ids):
+                    qf[dof] = q_probe[li]
+                for j in range(arm._n_dofs):
+                    p.resetJointState(arm._arm_id, j, qf[j], physicsClientId=arm._cid)
+                rp = np.array(p.getLinkState(
+                    arm._arm_id, arm._ee_link, computeForwardKinematics=True,
+                    physicsClientId=arm._cid)[4])
+                for li, joint_id in enumerate(arm._joint_ids):
+                    p.resetJointState(arm._arm_id, joint_id, arm._q_neutral[li],
+                                      0.0, physicsClientId=arm._cid)
+                aim0 = np.deg2rad(float(e0["azimuth_deg"]))
+                self._opt_polar = (float(np.hypot(rp[0], rp[1])),
+                                   float(np.arctan2(rp[1], rp[0]) - aim0))
+            r_off, alpha_off = self._opt_polar
+            t_norm = float(np.hypot(tgt[0], tgt[1]))
+            s_arg = -r_off * np.sin(alpha_off) / max(t_norm, 1e-9)
+            azimuth = azimuth + float(np.arcsin(np.clip(s_arg, -1.0, 1.0)))
         if self._opt_table is not None:
-            # Nearest-azimuth posture; set base to the EXACT target azimuth (table is
-            # within ~1.5 deg, the frozen LP below re-solves for the exact direction).
+            # Nearest-azimuth posture; rotate the base so the posture aims at
+            # the (turret-corrected) heading.
             q_release, elev = self._lookup_posture(azimuth)
-            q_release[0] = azimuth
+            if rotation_built:
+                # Entries store q[0] = q0[0] - az_entry (VERIFIED sign: this
+                # URDF's base joint measures opposite the world-z rotation
+                # sense, |v_rot - Rz v0| ~ 1e-6). Recover q0[0] and rotate to
+                # the exact corrected heading.
+                near = min(self._opt_table,
+                           key=lambda e: abs(np.deg2rad(e["azimuth_deg"]) - azimuth))
+                q0_base = float(near["q"][0]) + np.deg2rad(float(near["azimuth_deg"]))
+                q_release[0] = q0_base - azimuth
+                if "v_dir" in near:
+                    # EXACT-qd path (overhead/sagittal tables): with the roll
+                    # joints pinned the pitch axes are parallel, so the LP's
+                    # exact-direction constraint below is degenerate-
+                    # infeasible (achievable velocities span one PLANE, and a
+                    # generic d is off-plane by the URDF's y-offsets). No LP:
+                    # rotate the stored exact velocity direction along with
+                    # the posture and scale the stored qd linearly -- J qd
+                    # scales exactly, direction preserved (rotation
+                    # invariance verified 1e-6).
+                    q_ref0 = (arm._q_neutral[0] if hasattr(arm, "_q_neutral")
+                              else 0.0)
+                    q_release[0] = q_release[0] + 2.0 * np.pi * np.round(
+                        (q_ref0 - q_release[0]) / (2.0 * np.pi))
+                    dpsi = azimuth - np.deg2rad(float(near["azimuth_deg"]))
+                    ca, sa = np.cos(dpsi), np.sin(dpsi)
+                    Rz = np.array([[ca, -sa, 0.0], [sa, ca, 0.0], [0.0, 0.0, 1.0]])
+                    v_dir = Rz @ np.asarray(near["v_dir"], dtype=float)
+                    s_max = float(near["speed"])
+                    scale = min(1.0, speed / s_max) if s_max > 1e-9 else 0.0
+                    qd_release = np.asarray(near["qd"], dtype=float) * scale
+                    q_full = arm._ik_q_neutral.copy()
+                    for li, dof in enumerate(arm._dof_ids):
+                        q_full[dof] = q_release[li]
+                    for j in range(arm._n_dofs):
+                        p.resetJointState(arm._arm_id, j, q_full[j],
+                                          physicsClientId=arm._cid)
+                    release_pos = np.array(p.getLinkState(
+                        arm._arm_id, arm._ee_link, computeForwardKinematics=True,
+                        physicsClientId=arm._cid)[4])
+                    for li, joint_id in enumerate(arm._joint_ids):
+                        p.resetJointState(arm._arm_id, joint_id,
+                                          arm._q_neutral[li], 0.0,
+                                          physicsClientId=arm._cid)
+                    return release_pos, q_release, qd_release, v_dir * min(speed, s_max)
+            else:
+                q_release[0] = azimuth
         else:
             # Legacy single-posture mode (base-rotated); NOTE this does not aim
             # off-axis on this arm -- use the table for training. Kept for scripts.
@@ -390,6 +475,16 @@ class PyBulletThrowingSystem:
                     w0 = self.wind_model(0.0)
                     wind_traj.append(w0[:2])
             else:
+                # Keep commanding the arm through the planned follow-through.
+                # Without this, torque-mode joints get ZERO command after
+                # release -> gravity free-falls the arm (a real physical
+                # collapse in the simulated world, and what a real arm would
+                # do too if the controller stopped) -- the torque-validated
+                # follow-through in coeffs["follow"] existed but was never
+                # executed. get_setpoint clamps past T, so the arm settles
+                # and holds at q_follow (neutral).
+                q_t, qd_t, qdd_t = arm.get_setpoint(coeffs, t, with_accel=True)
+                arm.step(q_t, qd_t, qdd_t)
                 ball_pos, _ = p.getBasePositionAndOrientation(ball_id, physicsClientId=client)
                 ball_vel, _ = p.getBaseVelocity(ball_id, physicsClientId=client)
                 pos = np.array(ball_pos)
