@@ -270,8 +270,22 @@ def main():
                                     physicsClientId=_cid)[4]
         _p.disconnect(_cid)
         release_xy = np.array(_real_pos[:2], dtype=float)
-        print(f"opt_pose table: anchoring target sampling on REAL release_xy={release_xy} "
-             f"(profile default was {profile.default_release_pos[:2]})")
+        # RELEASE_POS (3D) feeds the GP particle model's belief about where
+        # the ball launches from (release_position= into MC_PILOT, and
+        # initial_state below) -- NOT just release_xy used for target
+        # sampling. Previously only release_xy got the real-FK fix; for the
+        # old ~12cm-range throw the resulting z/x gap (0.55,0,0.45 configured
+        # vs ~0.70,-0.05,0.72 real) was small enough to not matter. For the
+        # overhead throw it's 0.75m in x and 0.55m in z -- the particle
+        # rollout was training against a completely fictional launch point,
+        # so the policy learned to compensate for THAT point and then
+        # systematically undershot every real target (measured: 39.7cm mean
+        # error, near-max speed commanded regardless of target distance).
+        # Both must be anchored on the same real point.
+        RELEASE_POS = np.array(_real_pos, dtype=float)
+        print(f"opt_pose table: anchoring target sampling AND particle release "
+             f"position on REAL release_pos={RELEASE_POS} "
+             f"(profile default was {profile.default_release_pos})")
     if args.flight_targets:
         # lm/lM are on-axis landing distances (release y = 0, so on-axis
         # flight = distance - release_x); convert to a flight annulus.

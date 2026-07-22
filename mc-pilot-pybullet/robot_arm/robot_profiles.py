@@ -77,6 +77,33 @@ _PROFILES: Dict[str, RobotProfile] = {
         use_safe_release=True,
         notes="7-DoF Franka arm; EE link is the hand reached through fixed joints after joint 7.",
     ),
+    "franka_panda_dyn": RobotProfile(
+        name="franka_panda_dyn",
+        urdf_rel_path="franka_panda/panda.urdf",
+        joint_ids=(0, 1, 2, 3, 4, 5, 6),
+        ee_link=8,
+        q_neutral=(0.0, -0.30, 0.0, -2.20, 0.0, 2.00, 0.80),
+        qd_max=(2.175, 2.175, 2.175, 2.175, 2.61, 2.61, 2.61),
+        default_release_pos=(0.45, 0.00, 0.40),
+        speed_bounds=(0.5, 2.2),
+        timing=(0.30, 0.60, 1.20),
+        control_mode="torque",
+        use_safe_release=False,
+        tau_max=(87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0),
+        kp=(400.0, 400.0, 400.0, 400.0, 400.0, 400.0, 400.0),
+        kd=(60.0, 60.0, 60.0, 60.0, 60.0, 60.0, 60.0),
+        notes=(
+            "Franka Panda under computed-torque control, kinetic-chain (opt_pose) "
+            "throw mode -- same measured-dynamic-release mechanism as "
+            "kinova_gen3_dyn. tau_max: published Franka Emika limits, 87 Nm "
+            "joints 1-4, 12 Nm joints 5-7 (franka_ros joint_limits.yaml). "
+            "Joint-axis check (numeric, at q_neutral): joints 2,4,6 (idx1,3,5) "
+            "are exactly perpendicular (90deg) to the base->EE vector -- pitch, "
+            "carry throw velocity; joints 1,3,5,7 (idx0,2,4,6) are 0-69deg -- "
+            "roll/twist, frozen during the throw. Same alternating roll-pitch "
+            "structure as Kinova Gen3."
+        ),
+    ),
     "kinova_gen3": RobotProfile(
         name="kinova_gen3",
         urdf_rel_path="kinova_gen3/gen3.urdf",

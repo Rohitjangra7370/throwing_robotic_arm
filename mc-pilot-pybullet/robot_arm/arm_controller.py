@@ -105,10 +105,20 @@ class ArmController:
                     f"Profile '{self._profile.name}' uses torque mode but lacks "
                     "tau_max/kp/kd."
                 )
-            if self._n_dofs != len(self._joint_ids):
+            # calculateInverseDynamics needs a FULL-length q/qd/qdd vector
+            # (every non-fixed joint, e.g. Panda's 2 gripper-finger prismatic
+            # joints beyond the 7 controlled arm joints), not just the
+            # controlled ones. step()'s torque branch pads with zeros at the
+            # PASSIVE dof positions -- exact only if those positions are a
+            # contiguous trailing block (verified for franka_panda_dyn:
+            # joint_ids map to dof 0..6, fingers land at dof 7,8). Any profile
+            # violating that ordering needs real index-scatter handling, not
+            # this zero-pad shortcut.
+            if self._dof_ids != list(range(len(self._joint_ids))):
                 raise ValueError(
-                    "Torque mode requires every DOF to be actuated "
-                    f"({self._n_dofs} DOFs vs {len(self._joint_ids)} actuated)."
+                    f"Torque mode's zero-pad shortcut requires the controlled "
+                    f"joints to occupy the FIRST {len(self._joint_ids)} dof "
+                    f"positions contiguously; got dof_ids={self._dof_ids}."
                 )
             self._tau_max = np.array(self._profile.tau_max, dtype=float)
             self._kp = np.array(self._profile.kp, dtype=float)
@@ -353,12 +363,55 @@ class ArmController:
 
         t_w_actual = dt_windup
         t_r_actual = t_w_actual + dt_throw
+
+        follow_coeffs = _cubic_from_velocity(q_release, qd_release, q_follow, follow_dur)
+        if self._control_mode == "torque":
+            # windup and throw both stretch their duration until torque-
+            # feasible (or raise); follow (post-release decel back to
+            # neutral) had NEITHER -- follow_dur was fixed at the ORIGINAL
+            # nominal (T - t_r), never grown even when windup/throw needed a
+            # lot of stretching to become feasible. Starting from a high
+            # release velocity and covering a large q_release -> q_neutral
+            # distance in that now-too-short fixed window forced extreme
+            # mid-phase velocities to make up the distance in time (measured:
+            # 556% of qd_max, 3.2x tau_max for an extended overhead release)
+            # -- not a rendering artifact, a trajectory the real arm cannot
+            # execute. Same time-scaling pattern as windup/throw.
+            # NOTE: peak torque ratio vs follow_dur is NOT monotonic here --
+            # measured it bottoming out around dt~2s (ratio~1.17) then RISING
+            # again for longer durations (the accel-driven term keeps
+            # shrinking, but the trajectory then spends more real time
+            # coasting through intermediate high-gravity-torque configs).
+            # Blindly growing dt can walk PAST the true minimum without ever
+            # reaching feasibility. Same growth loop as windup/throw (6
+            # iterations, straightforward and correct when a feasible dt
+            # exists at moderate stretch) -- if it fails, that is honest
+            # signal the candidate's follow-through is not fixable by
+            # duration alone, not a reason to keep growing blindly.
+            for _ in range(6):
+                ratio, worst_tau = self._throw_peak_torque_ratio(follow_coeffs, follow_dur)
+                if ratio <= 1.0:
+                    break
+                follow_dur *= 1.2
+                follow_coeffs = _cubic_from_velocity(q_release, qd_release, q_follow, follow_dur)
+            else:
+                ratio, worst_tau = self._throw_peak_torque_ratio(follow_coeffs, follow_dur)
+                if ratio > 1.0:
+                    report = ", ".join(
+                        f"j{j}: {abs(t):.1f}/{m:.1f} Nm"
+                        for j, (t, m) in enumerate(zip(worst_tau, self._tau_max))
+                    )
+                    raise RuntimeError(
+                        f"Follow-through infeasible after 6 time-scaling iterations "
+                        f"(peak ratio {ratio:.2f}): {report}"
+                    )
+
         T_actual = t_r_actual + follow_dur
 
         coeffs = {
             "windup": windup_coeffs,
             "throw": throw_coeffs,
-            "follow": _cubic_from_velocity(q_release, qd_release, q_follow, follow_dur),
+            "follow": follow_coeffs,
             "t_w": t_w_actual,
             "windup_time_scale": windup_time_scale,
             "t_r": t_r_actual,
@@ -377,15 +430,19 @@ class ArmController:
             tau_eval = (tau_t if stagger_start is None
                        else np.clip(tau_t - stagger_start, 0.0, dt_throw - stagger_start))
             q, qd, qdd = _eval_cubic(throw_coeffs, tau_eval, with_accel=True)
+            n_pad = self._n_dofs - len(self._joint_ids)
+            q_full = np.concatenate([q, np.zeros(n_pad)]) if n_pad else q
+            qd_full = np.concatenate([qd, np.zeros(n_pad)]) if n_pad else qd
+            qdd_full = np.concatenate([qdd, np.zeros(n_pad)]) if n_pad else qdd
             torque = np.array(
                 p.calculateInverseDynamics(
                     self._arm_id,
-                    q.tolist(),
-                    qd.tolist(),
-                    qdd.tolist(),
+                    q_full.tolist(),
+                    qd_full.tolist(),
+                    qdd_full.tolist(),
                     physicsClientId=self._cid,
                 )
-            )
+            )[: len(self._joint_ids)]
             ratio = float(np.max(np.abs(torque) / self._tau_max))
             if ratio > worst:
                 worst = ratio
@@ -434,16 +491,25 @@ class ArmController:
             e = np.asarray(q_target, dtype=float) - q_meas
             ed = np.asarray(qd_target, dtype=float) - qd_meas
             qdd_cmd = np.asarray(qdd_target, dtype=float) + self._kp * e + self._kd * ed
+            # calculateInverseDynamics needs a FULL-length vector (every non-
+            # fixed joint, e.g. Panda's 2 passive gripper-finger joints beyond
+            # our N controlled ones) -- zero-pad the tail; exact because the
+            # constructor already checked our dofs are the leading block.
+            n_pad = self._n_dofs - len(self._joint_ids)
+            q_full = np.concatenate([q_meas, np.zeros(n_pad)]) if n_pad else q_meas
+            qd_full = np.concatenate([qd_meas, np.zeros(n_pad)]) if n_pad else qd_meas
+            qdd_full = np.concatenate([qdd_cmd, np.zeros(n_pad)]) if n_pad else qdd_cmd
             # Inverse dynamics for the arm's own URDF mass only.
             tau = np.array(
                 p.calculateInverseDynamics(
                     self._arm_id,
-                    q_meas.tolist(),
-                    qd_meas.tolist(),
-                    qdd_cmd.tolist(),
+                    q_full.tolist(),
+                    qd_full.tolist(),
+                    qdd_full.tolist(),
                     physicsClientId=self._cid,
                 )
             )
+            tau = tau[: len(self._joint_ids)]  # drop the padded passive-dof entries
             if self._payload_mass is not None:
                 # Rigidly gripped payload (the ball) is a separate PyBullet
                 # body coupled via a runtime constraint, invisible to
