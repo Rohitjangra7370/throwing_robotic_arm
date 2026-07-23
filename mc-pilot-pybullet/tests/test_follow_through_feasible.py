@@ -47,6 +47,40 @@ def test_follow_through_infeasible_release_raises_not_silently_collapses(arm):
         )
 
 
+def test_shipped_table_entry_whole_trajectory_within_velocity_and_torque(arm):
+    """End-to-end guarantee on what actually ships: for the real az=0 entry of
+    throw_pose_table.npy at a real commanded speed, EVERY phase (windup,
+    throw, follow) must stay within BOTH qd_max and tau_max. Velocity is the
+    part that was missed: windup/throw bound it by construction, follow does
+    not, and a torque-only follow check accepted a duration whose peak joint
+    velocity was 1.88x qd_max (torque was fine at 0.95x) -- caught only when
+    the envelope was plotted for a report."""
+    controller, prof, client = arm
+    table_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                              "throw_pose_table.npy")
+    table = list(np.load(table_path, allow_pickle=True))
+    e0 = min(table, key=lambda e: abs(e["azimuth_deg"]))
+    q_release = np.array(e0["q"])
+    qd_release = np.array(e0["qd"]) * (1.49 / float(e0["speed"]))
+    coeffs, _, _, _ = controller.plan_throw(
+        np.array([1.0, 0.0, 0.0]), np.array(prof.default_release_pos), 0.5, 1.6, 2.2,
+        q_release_override=q_release, qd_release_override=qd_release,
+        monotonic_windup=True,
+    )
+    qd_max = np.array(prof.qd_max)
+    tau_max = np.array(prof.tau_max)
+    for t in np.linspace(0.0, coeffs["T"], 300):
+        q, qd, qdd = controller.get_setpoint(coeffs, t, with_accel=True)
+        assert np.all(np.abs(qd) <= qd_max + 1e-6), (
+            f"joint velocity exceeds qd_max at t={t:.3f} "
+            f"({np.max(np.abs(qd) / qd_max):.2f}x)")
+        tau = np.array(p.calculateInverseDynamics(
+            controller._arm_id, list(q), list(qd), list(qdd), physicsClientId=client))
+        assert np.all(np.abs(tau) <= tau_max + 1e-6), (
+            f"joint torque exceeds tau_max at t={t:.3f} "
+            f"({np.max(np.abs(tau) / tau_max):.2f}x)")
+
+
 def test_rollout_keeps_commanding_arm_after_release():
     """_simulate_pybullet's post-release branch handled ONLY the ball -- the
     arm was never stepped again, so in torque mode its joints got zero

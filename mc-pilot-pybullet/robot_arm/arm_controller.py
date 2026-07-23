@@ -377,34 +377,57 @@ class ArmController:
             # 556% of qd_max, 3.2x tau_max for an extended overhead release)
             # -- not a rendering artifact, a trajectory the real arm cannot
             # execute. Same time-scaling pattern as windup/throw.
-            # NOTE: peak torque ratio vs follow_dur is NOT monotonic here --
-            # measured it bottoming out around dt~2s (ratio~1.17) then RISING
-            # again for longer durations (the accel-driven term keeps
-            # shrinking, but the trajectory then spends more real time
-            # coasting through intermediate high-gravity-torque configs).
-            # Blindly growing dt can walk PAST the true minimum without ever
-            # reaching feasibility. Same growth loop as windup/throw (6
-            # iterations, straightforward and correct when a feasible dt
-            # exists at moderate stretch) -- if it fails, that is honest
-            # signal the candidate's follow-through is not fixable by
-            # duration alone, not a reason to keep growing blindly.
-            for _ in range(6):
-                ratio, worst_tau = self._throw_peak_torque_ratio(follow_coeffs, follow_dur)
-                if ratio <= 1.0:
+            # Follow-through must satisfy BOTH velocity and torque, and the
+            # feasible window is NARROW and non-monotonic, so scan candidate
+            # durations instead of growing one guess:
+            #   * peak |qd| falls monotonically with duration (the cubic has
+            #     less distance to cover per second) -- too SHORT violates it
+            #     (measured 5.6x qd_max at the nominal 0.6s).
+            #   * peak |tau| bottoms out mid-range then RISES again (accel
+            #     term shrinks, but the arm then spends longer coasting
+            #     through high-gravity-torque configurations) -- too LONG
+            #     violates it (1.17x at 10s).
+            # For the shipped overhead release only dt ~3.5s satisfies both
+            # (qd 0.96, tau 0.93); a torque-only growth loop stopped at 1.79s
+            # where torque passed (0.95) but velocity was still 1.88x limit.
+            # Unlike windup/throw -- whose monotonic ramps hold qd <= qd_max
+            # by construction -- nothing bounds the follow phase's velocity
+            # a priori, so it must be checked explicitly.
+            # Candidate durations are ABSOLUTE, not multiples of the caller's
+            # nominal follow window: that window is (T - t_r), so a caller
+            # passing a longer horizon produced a coarse grid that stepped
+            # straight over the feasible band (measured: T=2.2 found a
+            # solution, T=2.0 scanned 2.0s upward and reported infeasible for
+            # the same release state). The caller's own value is kept as a
+            # candidate so the nominal timing still wins when it is feasible.
+            # Only ever GROW the caller's window -- shortening it would make
+            # the recovery more aggressive than asked for and silently change
+            # the trajectory's timing contract.
+            base_follow = follow_dur
+            cand_durs = [base_follow] + [d for d in (0.6, 0.9, 1.2, 1.5, 1.8, 2.2,
+                                                    2.6, 3.0, 3.6, 4.4, 5.5, 7.0)
+                                         if d > base_follow]
+            best = None
+            for dur in cand_durs:
+                cand = _cubic_from_velocity(q_release, qd_release, q_follow, dur)
+                tau_ratio, worst_tau = self._throw_peak_torque_ratio(cand, dur)
+                qd_ratio = self._peak_qd_ratio(cand, dur)
+                if best is None or max(tau_ratio, qd_ratio) < best[0]:
+                    best = (max(tau_ratio, qd_ratio), worst_tau, qd_ratio, tau_ratio)
+                if tau_ratio <= 1.0 and qd_ratio <= 1.0:
+                    follow_dur, follow_coeffs = dur, cand
                     break
-                follow_dur *= 1.2
-                follow_coeffs = _cubic_from_velocity(q_release, qd_release, q_follow, follow_dur)
             else:
-                ratio, worst_tau = self._throw_peak_torque_ratio(follow_coeffs, follow_dur)
-                if ratio > 1.0:
-                    report = ", ".join(
-                        f"j{j}: {abs(t):.1f}/{m:.1f} Nm"
-                        for j, (t, m) in enumerate(zip(worst_tau, self._tau_max))
-                    )
-                    raise RuntimeError(
-                        f"Follow-through infeasible after 6 time-scaling iterations "
-                        f"(peak ratio {ratio:.2f}): {report}"
-                    )
+                _, worst_tau, qd_ratio, tau_ratio = best
+                report = ", ".join(
+                    f"j{j}: {abs(t):.1f}/{m:.1f} Nm"
+                    for j, (t, m) in enumerate(zip(worst_tau, self._tau_max))
+                )
+                raise RuntimeError(
+                    f"Follow-through infeasible over the scanned durations "
+                    f"(best: torque {tau_ratio:.2f}x, velocity {qd_ratio:.2f}x "
+                    f"of limit): {report}"
+                )
 
         T_actual = t_r_actual + follow_dur
 
@@ -421,6 +444,17 @@ class ArmController:
             "stagger_frac": stagger_frac if monotonic_windup else None,
         }
         return coeffs, q_release, qd_release, v_achieved
+
+    def _peak_qd_ratio(self, coeffs, dur, n_samples=60):
+        """Max over a phase of max_j |qd_j| / qd_max_j. The windup and throw
+        phases bound this by construction (monotonic ramps peaking at
+        qd_release <= qd_max); the follow phase does NOT, so it needs an
+        explicit check."""
+        worst = 0.0
+        for t in np.linspace(0.0, dur, n_samples):
+            _, qd, _ = _eval_cubic(coeffs, t, with_accel=True)
+            worst = max(worst, float(np.max(np.abs(qd) / self._qd_max)))
+        return worst
 
     def _throw_peak_torque_ratio(self, throw_coeffs, dt_throw, n_samples=50, stagger_start=None):
         """Max over the throw phase of max_j |tau_j| / tau_max_j."""
