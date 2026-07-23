@@ -525,6 +525,8 @@ def main():
         "residual_physics": bool(args.residual_physics),
         "residual_dynamics": bool(args.residual_dynamics),
         "launch_angle_deg": 35.0,
+        "opt_pose": args.opt_pose,
+        "opt_launch_deg": float(opt_launch_deg),
         "delta_max_frac": float(args.delta_max_frac) if args.residual_physics else None,
         "target_height": float(args.target_height),
     }

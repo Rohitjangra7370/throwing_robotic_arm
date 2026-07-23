@@ -124,6 +124,22 @@ def build_parser():
         help="landing-plane height in metres (elevated basket); 0.0 = ground",
     )
     parser.add_argument(
+        "--opt_pose", type=str, default=None,
+        help=("path to an azimuth->posture table from find_throw_pose.py. Throws "
+              "from the searched release state (aimed by base rotation, whole "
+              "trajectory torque/velocity validated) instead of IK+pinv."),
+    )
+    parser.add_argument(
+        "--h_max", type=float, default=None,
+        help="override the robot's basket-height range (m); default per HEIGHT_BUDGET_BY_ROBOT",
+    )
+    parser.add_argument(
+        "--height_slope", type=float, default=None,
+        help=("override flight-distance loss per metre of basket height. Measure it "
+              "for the release state in use -- the overhead throw's is 0.382, vs "
+              "0.18 for the old low-speed kinova release."),
+    )
+    parser.add_argument(
         "--flight_targets",
         action="store_true",
         help=(
@@ -175,15 +191,53 @@ def main():
 
     RELEASE_POS = np.array(profile.default_release_pos, dtype=float)
     T_W, T_R, T_ARM = profile.timing
+
+    # opt_pose (aimed release-state table) support, mirroring
+    # train_mc_pilot_pb_arm.py: the overhead throw releases from a searched
+    # posture, not the profile's static default_release_pos.
+    opt_posture_table = None
+    opt_launch_deg = 35.0
+    if args.opt_pose is not None:
+        _loaded = np.load(args.opt_pose, allow_pickle=True)
+        if _loaded.ndim != 1:
+            raise ValueError("--opt_pose here expects an azimuth->posture TABLE "
+                             "(from find_throw_pose.py), not a single posture")
+        opt_posture_table = list(_loaded)
+        opt_launch_deg = float(opt_posture_table[0]["elev_deg"])
+        T_W, T_R = 0.5, 1.6
+
     lengthscale_xy = (
         args.lengthscale_xy if args.lengthscale_xy is not None else 0.15 * (lM - lm)
     )
 
     H_MAX, height_slope = HEIGHT_BUDGET_BY_ROBOT.get(profile.name, (0.45, None))
+    if args.h_max is not None:
+        H_MAX = args.h_max
+    if args.height_slope is not None:
+        height_slope = args.height_slope
     lengthscale_h = 0.15 * H_MAX   # same 0.15-x-range rule, applied to the h axis
     lengthscales_init = np.array([lengthscale_xy, lengthscale_xy, lengthscale_h], dtype=float)
 
     release_xy = np.array(profile.default_release_pos[:2], dtype=float)
+    if opt_posture_table is not None:
+        # Real-FK release point of the table's az~=0 entry -- both the target
+        # annulus and the particle model's launch point must be anchored here,
+        # not on the profile default (a ~0.5m error for the overhead posture).
+        import pybullet as _p
+        import pybullet_data as _pd
+        _az0 = min(opt_posture_table, key=lambda e: abs(e["azimuth_deg"]))
+        _cid = _p.connect(_p.DIRECT)
+        _tmp = _p.loadURDF(_pd.getDataPath() + "/" + profile.urdf_rel_path,
+                           useFixedBase=True, physicsClientId=_cid)
+        for _j in range(7):
+            _p.resetJointState(_tmp, _j, _az0["q"][_j], physicsClientId=_cid)
+        _real = _p.getLinkState(_tmp, profile.ee_link, computeForwardKinematics=True,
+                                physicsClientId=_cid)[4]
+        _p.disconnect(_cid)
+        release_xy = np.array(_real[:2], dtype=float)
+        RELEASE_POS = np.array(_real, dtype=float)
+        print(f"opt_pose table: release anchored on real FK {np.round(RELEASE_POS,4)} "
+              f"(profile default was {profile.default_release_pos})")
 
     if args.flight_targets:
         f_lo = lm - release_xy[0]
@@ -218,12 +272,14 @@ def main():
     throwing_system = PyBulletThrowingSystem(
         mass=0.0577,
         radius=0.0327,
-        launch_angle_deg=35.0,
+        launch_angle_deg=opt_launch_deg if opt_posture_table is not None else 35.0,
         arm_noise=None,
         t_w=T_W,
         t_r=T_R,
         robot_name=profile.name,
         target_height=args.target_height,
+        opt_posture_table=opt_posture_table,
+        opt_launch_deg=opt_launch_deg,
     )
 
     num_gp = 3
@@ -414,6 +470,9 @@ def main():
         "height_slope": height_slope,
         "lengthscales_init": list(lengthscales_init),
         "results_root": results_root,
+        "opt_pose": args.opt_pose,
+        "opt_launch_deg": float(opt_launch_deg),
+        "release_pos": list(map(float, RELEASE_POS)),
     }
     pkl.dump(config_log, open(os.path.join(log_path, "config_log.pkl"), "wb"))
 

@@ -310,13 +310,20 @@ def follow_through_feasible(arm, q_release, qd_release, tau_max=None,
     qd_release = np.asarray(qd_release, dtype=float)
     for dur in _FOLLOW_DUR_CANDIDATES:
         coeffs = _cubic_from_velocity(q_release, qd_release, q_end, dur)
-        worst = 0.0
+        worst_tau = worst_qd = 0.0
         for t in np.linspace(0.0, dur, 30):
             q, qd, qdd = _eval_cubic(coeffs, t, with_accel=True)
             q_full, qd_full, qdd_full = _pad(q), _pad(qd), _pad(qdd)
             tau = np.array(p.calculateInverseDynamics(arm, q_full, qd_full, qdd_full))[:N]
-            worst = max(worst, float(np.max(np.abs(tau) / tau_max)))
-        if worst <= margin:
+            worst_tau = max(worst_tau, float(np.max(np.abs(tau) / tau_max)))
+            # Velocity too: unlike windup/throw (monotonic ramps bounded by
+            # qd_release <= qd_max by construction) nothing bounds the follow
+            # phase's peak velocity, and torque alone does not imply it --
+            # measured a duration passing torque at 0.95x while velocity sat
+            # at 1.88x qd_max. Peak |qd| falls with duration while peak |tau|
+            # bottoms out then rises, so the feasible window is narrow.
+            worst_qd = max(worst_qd, float(np.max(np.abs(qd) / QD)))
+        if worst_tau <= margin and worst_qd <= 1.0:
             return True
     return False
 
