@@ -456,6 +456,34 @@ class ArmController:
             worst = max(worst, float(np.max(np.abs(qd) / self._qd_max)))
         return worst
 
+    def inverse_dynamics(self, q, qd, qdd):
+        """
+        Joint torques for the CONTROLLED joints at state (q, qd, qdd).
+
+        Public because the hardware precheck (`kinova_hardware.py`) must apply
+        the identical torque test the sim planner does -- a second
+        implementation is how endpoint-only checking got away with shipping a
+        3.2x-over-limit follow-through. Handles the zero-padding needed by URDFs
+        carrying passive DOFs beyond the controlled joints (e.g. Panda's two
+        gripper fingers).
+        """
+        q = np.asarray(q, dtype=float)
+        qd = np.asarray(qd, dtype=float)
+        qdd = np.asarray(qdd, dtype=float)
+        n_pad = self._n_dofs - len(self._joint_ids)
+        q_full = np.concatenate([q, np.zeros(n_pad)]) if n_pad else q
+        qd_full = np.concatenate([qd, np.zeros(n_pad)]) if n_pad else qd
+        qdd_full = np.concatenate([qdd, np.zeros(n_pad)]) if n_pad else qdd
+        return np.array(
+            p.calculateInverseDynamics(
+                self._arm_id,
+                q_full.tolist(),
+                qd_full.tolist(),
+                qdd_full.tolist(),
+                physicsClientId=self._cid,
+            )
+        )[: len(self._joint_ids)]
+
     def _throw_peak_torque_ratio(self, throw_coeffs, dt_throw, n_samples=50, stagger_start=None):
         """Max over the throw phase of max_j |tau_j| / tau_max_j."""
         worst = 0.0
@@ -464,19 +492,7 @@ class ArmController:
             tau_eval = (tau_t if stagger_start is None
                        else np.clip(tau_t - stagger_start, 0.0, dt_throw - stagger_start))
             q, qd, qdd = _eval_cubic(throw_coeffs, tau_eval, with_accel=True)
-            n_pad = self._n_dofs - len(self._joint_ids)
-            q_full = np.concatenate([q, np.zeros(n_pad)]) if n_pad else q
-            qd_full = np.concatenate([qd, np.zeros(n_pad)]) if n_pad else qd
-            qdd_full = np.concatenate([qdd, np.zeros(n_pad)]) if n_pad else qdd
-            torque = np.array(
-                p.calculateInverseDynamics(
-                    self._arm_id,
-                    q_full.tolist(),
-                    qd_full.tolist(),
-                    qdd_full.tolist(),
-                    physicsClientId=self._cid,
-                )
-            )[: len(self._joint_ids)]
+            torque = self.inverse_dynamics(q, qd, qdd)
             ratio = float(np.max(np.abs(torque) / self._tau_max))
             if ratio > worst:
                 worst = ratio
