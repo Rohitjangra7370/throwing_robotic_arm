@@ -30,6 +30,14 @@ def main():
     ap.add_argument("--seed", type=int, default=2024)
     ap.add_argument("--u_cap", type=float, default=SAFE_U_CAP)
     ap.add_argument("--json_out", default=None)
+    ap.add_argument(
+        "--opt_pose", default=None,
+        help=(
+            "pose-table path override. Checkpoints trained before the trainer "
+            "started recording 'opt_pose' in config_log.pkl have no way to "
+            "report their own release geometry; supply it here to evaluate them."
+        ),
+    )
     args = ap.parse_args()
 
     cfg = pkl.load(open(os.path.join(args.log_path, "config_log.pkl"), "rb"))
@@ -44,7 +52,15 @@ def main():
     pol.load_state_dict(st)
     pol.eval()
 
-    table = list(np.load(cfg["opt_pose"], allow_pickle=True))
+    table_path = args.opt_pose or cfg.get("opt_pose")
+    if table_path is None:
+        raise SystemExit(
+            "config_log.pkl has no 'opt_pose' key (checkpoint predates the "
+            "trainer recording it) and --opt_pose was not given. Pass the pose "
+            "table this policy was trained through, e.g. "
+            "--opt_pose throw_pose_table.npy"
+        )
+    table = list(np.load(table_path, allow_pickle=True))
     launch = float(cfg.get("opt_launch_deg", table[0]["elev_deg"]))
     RP = np.array(cfg["release_pos"], dtype=float)
     h = float(cfg["target_height"])
