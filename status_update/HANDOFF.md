@@ -1,5 +1,79 @@
 # Session Handoff — MC-PILOT Throwing Arm
 
+_Last updated: **2026-07-27** (supersedes the 2026-07-23 handoff, kept below the divider).
+This session = **no new sim results, no new claims** — a codebase reliability pass ahead of
+hardware bring-up tomorrow, triggered by Deepak's "let's plan hardware experiments" reply to
+email 5. Audited every layer, found that **the hardware path would have executed a completely
+different throw from the one email 5 describes**, and fixed it plus four more defects. Also
+wrote the hardware cold-start plan (arm + D415). Suite 54 → **65 passing**. Sim results
+verified **bit-for-bit unchanged** by the refactor._
+
+## 0. READ FIRST — REAL vs ASSIGNED vs NOT-WORKING (this session)
+
+| Claim / artifact | Status |
+|---|---|
+| Sim accuracy numbers from email 5 | **UNCHANGED AND RE-VERIFIED.** The release-logic refactor reproduces the 30-throw eval to `0.000e+00` max abs diff on every landing / error / speed field. Nothing about the reported results moved. |
+| `run_hardware_throw.py` before this session | **WAS PLANNING THE WRONG THROW.** It called `plan_throw` with a hardcoded 35° launch angle, no pose table and no overrides → a legacy IK+`pinv` near-horizontal release, i.e. exactly the "places the ball" motion email 5 argues against. It printed `PRECHECK: PASS` while doing so. Nothing in the 54-test suite compared the two planners. |
+| `simulation_class/release_solver.py` (new) | **REAL.** Sim and hardware now call one `OptimizedReleaseSolver`. Verified equal to **1e-12** on 5 targets across the wedge (release pos, q, qd, all three cubic segments). Duplicate body deleted, not left dead. |
+| Hardware precheck | **REAL, hardened.** Fails closed on any active velocity clamp; whole-trajectory inverse dynamics vs `tau_max`. Real plan peaks at **8.1 / 39.0 Nm (21%)**. |
+| 1 kHz control loop | **REAL in dry-run only.** Absolute-deadline pacing holds **1000 Hz over 56,682 ticks, worst tick 0.16 ms late**. Never run against a real Kortex backend. |
+| Everything hardware-side | **STILL UNTESTED ON THE ARM.** `kortex_api` is not installed here; `_KortexBackend` method names remain unverified against any real release. Dry-run only. |
+| `franka_panda_dyn` "cannot train" (2026-07-22 note) | **STALE, CORRECTED.** Constructed and stepped it: 9 DOFs, `dof_ids` 0..6, padding exact. The claim was wrong, not the code. |
+
+## 0b. The five defects, in the order they were found
+
+1. **Hardware planned a different throw** (above). Root fix: extract the release solver so
+   there is one implementation, not two. A copy would have drifted again.
+2. **Phase timings came from `profile.timing` (0.4/0.8) instead of the trained
+   `cfg["T_W"]/["T_R"]` (0.5/1.6)** — a throw phase under half the trained duration, so
+   roughly **2× commanded peak joint velocity**. Would have shown up on the arm as an
+   unexplained infeasibility or a limit violation.
+3. **The hardcoded release box (z ≤ 0.9 m) excluded the overhead release at z ≈ 1.137 m**, so
+   `throw` would have refused every valid plan. Box is now derived from the pose table's own
+   FK release locus — which makes the check meaningful rather than arbitrary. Test confirms it
+   still rejects a release displaced by 0.5 m.
+4. **`max_traj_seconds = 8.0` refused the real trajectory** (8.5 s at 1.0×, ~57 s at the 0.15
+   rehearsal scale). Raised to 180 s; the cap still exists to catch a runaway plan.
+5. **Precheck silently clamped velocity** instead of failing — safe for the arm, wrong for the
+   throw: a clamped joint releases slower than the policy asked and the ball lands short with
+   nothing in the logs.
+
+## 0c. Verified geometry of the shipped table (FK'd this session, not quoted)
+
+All 23 azimuth entries: release at **r = 0.035 m, z = 1.137 m** (essentially straight above the
+base), **1.628 m/s**, **5.0° elevation**, **0.800 m** range, azimuth **−33°…+33°**, elbow
+(−1.396) and wrist (−1.222) both **saturated at their limits**, roll joints exactly 0. The low
+elevation is not a bug — range decreases monotonically 0°→70° at these speeds, so the *height*
+buys the distance. This is the strongest form of email 5's argument.
+
+## 0d. New / changed files
+
+New: `simulation_class/release_solver.py`, `tests/test_hardware_planner.py` (11 tests),
+`docs/superpowers/plans/2026-07-27-hardware-cold-start.md`, `CLAUDE.md`.
+Changed: `simulation_class/model_pybullet.py` (delegates, −174 lines), `robot_arm/
+arm_controller.py` (public `inverse_dynamics()`, reused by `_throw_peak_torque_ratio` so there
+is one torque path), `robot_arm/kinova_hardware.py` (precheck + 1 kHz loop + `last_exec_stats`),
+`run_hardware_throw.py` (planner rewrite, `--opt_pose`, `--u_cap`, derived release box),
+`eval_adapted_height.py` (`--opt_pose`, so pre-`opt_pose` checkpoints stay evaluable).
+
+## 0e. Open items
+
+1. **`kortex_api` not installed** — install the Kinova wheel and verify every method name in
+   `_KortexBackend` against that exact version. First task at the lab.
+2. **Multi-seed (seeds 2, 3) still not run** — every headline number, including the 3.15 cm and
+   all three height-adaptation figures, is **single-seed**. There is no ± to quote. Pure
+   compute, no blockers.
+3. Hardware cold start: `docs/superpowers/plans/2026-07-27-hardware-cold-start.md`, Phases A–H
+   with gates. Phase 0 (code) is done except items 1–2 above.
+4. D415 decision pending: side-oblique mount at (0.75, −1.05, 0.90) in base frame, or overhead
+   at (0.72, 0, 2.20) if the bench frame can carry it.
+5. **Do not trust raw D415 depth for position** — 2% of range = 2–4 cm at 1–2 m, the same size
+   as our landing error. Use ray–plane intersection against known plane heights; depth is a
+   segmentation gate only. The sim `depth_camera.py` back-projects depth because sim depth is
+   exact; that method does not transfer.
+
+---
+
 _Last updated: **2026-07-23** (supersedes the 2026-07-22 handoff, kept below the divider).
 This session = pivoted from the frozen-base "kinetic-chain" throw (2026-07-22's honest but
 tiny ~12cm range, correctly called "trash"/"collapsing" by the user on watching the video)
