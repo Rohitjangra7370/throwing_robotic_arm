@@ -193,6 +193,62 @@ Full narrative: `paper/change_history.md` (Explorations 1–7), `paper/paper_com
 
 ---
 
+## 6a. Overhead throw — MULTI-SEED (2026-07-28). Use these numbers.
+
+Supersedes the single-seed 3.15 cm quoted in email 5 (that was one eval draw on
+seed 1 alone). Nothing regressed — the earlier figure was just one sample.
+
+**3 training seeds × 3 independent eval target sets × 30 throws = 270 throws.**
+`eval_adapted_height.py`, real `PyBulletThrowingSystem.rollout`, never training cost.
+
+| Training seed | mean err (avg over 3 eval sets) |
+|---|---|
+| 1 | 2.83 cm |
+| 2 | 2.75 cm |
+| 3 | 3.09 cm |
+
+- **Headline: 2.89 ± 0.18 cm, 100 % hit < 10 cm (all 270 throws).**
+- All 9 runs: 2.89 ± 0.20 cm, min 2.61, max 3.26. Worst single throw 6.61 cm.
+- Eval-set effect is mild but real (2.75 / 2.89 / 3.04 cm across sets). Seed 3 is
+  weakest on *every* set → genuine seed variation, not target-draw noise.
+- Release speed 1.16–1.54 m/s throughout, scaling with distance (not saturated).
+
+**Why three eval sets:** with one shared set, the ± would be training variance
+seen through a single draw of targets. Two spreads that agree (0.18 vs 0.20) is
+the evidence that the number is stable.
+
+### Height adaptation, multi-seed — paper Sec 6.4, ZERO new robot trials
+
+Each height reuses the trained GP verbatim and re-optimises the policy only.
+**No additional throws at any height.** 3 training seeds × 3 heights × 3 eval
+sets × 30 throws = **810 throws**; 1080 including the ground rows.
+
+| Task | seed 1 | seed 2 | seed 3 | across-seed |
+|---|---|---|---|---|
+| ground | 2.83 | 2.75 | 3.09 | **2.89 ± 0.18** |
+| h = 0.10 m | 3.05 | 3.15 | 3.61 | **3.27 ± 0.30** |
+| h = 0.20 m | 3.43 | 3.46 | 3.90 | **3.60 ± 0.26** |
+| h = 0.30 m | 3.76 | 3.83 | 4.25 | **3.95 ± 0.26** |
+
+- **100 % hit < 10 cm in all 36 runs (1080 throws).** Worst single throw 7.96 cm.
+- All 27 height runs pooled: 3.61 ± 0.37 cm (min 2.95, max 4.29).
+- Error grows monotonically with height (2.89 → 3.27 → 3.60 → 3.95 cm). Honest
+  reading: adaptation degrades gracefully but is **not** free — the flight span
+  shrinks as the plane rises, which is also why H_MAX = 0.30 (0.45 would leave
+  only ~5.3 cm of span).
+- **Seed 3 is worst in every single cell** (ground and all three heights). That
+  is a coherent property of that seed's learned model, not eval noise — report
+  it, don't average it away.
+
+Supersedes the single-seed 2.95 / 3.41 / 3.80 cm in email 5 (those were seed 1
+on eval seed 2024 — reproduced exactly, so nothing regressed; they were just one
+draw). Checkpoints `results_kinetic_chain_gen3_h{10,20,30}/{1,2,3}`.
+
+Checkpoints `results_kinetic_chain_gen3/{1,2,3}` (commit `72161de`). Seeds 2–3
+record `opt_pose` in their config; seed 1 predates that and needs `--opt_pose`.
+
+---
+
 ## 6b. Hardware-readiness pass (2026-07-27) — no new results, 5 defects fixed
 
 Reliability audit ahead of bring-up. **No sim number changed**: the release-logic
