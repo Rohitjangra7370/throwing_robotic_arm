@@ -41,7 +41,11 @@ Each `mc-pilot*/` directory is a **self-contained fork** (own `gpr_lib/`, `simul
 
 ## Environment
 
-Dependencies (torch 2.9, pybullet, numpy, scipy, matplotlib, pytest, ultralytics/opencv for Study 5) are installed in the **system `python3`** (3.11) — there is no venv despite what `README.md` and the per-variant `environment.yaml` files say. Use `python3`.
+Dependencies (torch 2.9, pybullet, numpy, scipy, matplotlib, pytest, ultralytics/opencv for Study 5) are installed in the **system `python3`** (3.10.12, packages under `~/.local/lib/python3.10/`) — there is no venv despite what `README.md` and the per-variant `environment.yaml` files say. Use `python3`.
+
+**Never install with bare `pip` on this machine.** `pip`/`pip3` on PATH resolve to the Blender snap's Python 3.13 (`#!/snap/blender/.../python3.13`), so packages land somewhere `python3` cannot see them and the import still fails. Always use `python3 -m pip`.
+
+`kortex_api` (2.6.0.post3, for the real Gen3) is installed and its nine call sites are verified against the wheel. Two things to know: it pins **protobuf 3.5.1**, which downgrades protobuf system-wide and breaks onnx/tensorboard/wandb (the throw pipeline is unaffected — full suite passes); and protobuf 3.5.1 needs the `collections.MutableMapping` shim in `kinova_hardware.py::_patch_collections_abc()` to import at all on Python 3.10. If those other tools are needed here, put the hardware stack in its own venv.
 
 Run all commands from *inside* the relevant variant directory — imports resolve via `sys.path.append("..")`, so scripts assume CWD = that variant's root.
 

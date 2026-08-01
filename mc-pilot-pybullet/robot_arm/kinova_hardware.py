@@ -45,6 +45,35 @@ from dataclasses import dataclass, field
 import numpy as np
 
 
+def _patch_collections_abc():
+    """
+    Make kortex_api importable on Python 3.10+.
+
+    kortex_api 2.6.0.post3 pins protobuf==3.5.1, whose Python implementation
+    still does `collections.MutableMapping`. Those ABCs moved to
+    collections.abc in 3.3 and were REMOVED from `collections` in 3.10, so a
+    bare `import kortex_api...` dies with
+
+        AttributeError: module 'collections' has no attribute 'MutableMapping'
+
+    on this machine (Python 3.10.12). Re-exporting the ABCs is the standard
+    workaround and is confined to this module, which is the only place Kortex
+    is touched. Verified: with this applied, all nine Kortex symbols this
+    backend calls import and resolve correctly.
+
+    Note the wheel's protobuf 3.5.1 pin also downgrades protobuf system-wide,
+    which breaks onnx/tensorboard/wandb. It does NOT affect the throw pipeline
+    (torch/pybullet/numpy/scipy; full test suite still passes). If those tools
+    are needed on the same machine, put the hardware stack in its own venv.
+    """
+    import collections
+    import collections.abc
+    for _name in ("MutableMapping", "Mapping", "MutableSequence", "Sequence",
+                  "Callable", "Iterable", "MutableSet", "Set"):
+        if not hasattr(collections, _name):
+            setattr(collections, _name, getattr(collections.abc, _name))
+
+
 # --------------------------------------------------------------------------- #
 # Safety limits
 # --------------------------------------------------------------------------- #
@@ -143,6 +172,7 @@ class _KortexBackend:
         self._session = None
 
     def connect(self):
+        _patch_collections_abc()
         # Lazy imports: only needed for real hardware.
         from kortex_api.TCPTransport import TCPTransport
         from kortex_api.RouterClient import RouterClient, RouterClientSendOptions
