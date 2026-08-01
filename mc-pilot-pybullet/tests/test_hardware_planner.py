@@ -233,3 +233,26 @@ def test_release_box_derived_from_table_contains_the_release(cfg, table):
         )
     finally:
         p.disconnect(cid)
+
+
+def test_kortex_api_imports_on_this_python():
+    """
+    kortex_api 2.6.0 pins protobuf 3.5.1, which uses collections.MutableMapping
+    -- removed in Python 3.10. Without the shim in kinova_hardware, connecting
+    to the real arm dies at import time, at the bench, with the arm powered.
+    """
+    pytest.importorskip("kortex_api", reason="kortex_api not installed")
+    from robot_arm.kinova_hardware import _patch_collections_abc
+    _patch_collections_abc()
+    from kortex_api.autogen.messages import Base_pb2, Session_pb2
+    from kortex_api.autogen.client_stubs.BaseClientRpc import BaseClient
+    from kortex_api.autogen.client_stubs.BaseCyclicClientRpc import BaseCyclicClient
+    from kortex_api.SessionManager import SessionManager
+    for obj, name in (
+        (Session_pb2, "CreateSessionInfo"), (Base_pb2, "JointSpeeds"),
+        (Base_pb2, "GripperCommand"), (Base_pb2, "GRIPPER_POSITION"),
+        (BaseClient, "SendJointSpeedsCommand"), (BaseClient, "SendGripperCommand"),
+        (BaseCyclicClient, "RefreshFeedback"),
+        (SessionManager, "CreateSession"), (SessionManager, "CloseSession"),
+    ):
+        assert hasattr(obj, name), f"{name} missing from installed kortex_api"
