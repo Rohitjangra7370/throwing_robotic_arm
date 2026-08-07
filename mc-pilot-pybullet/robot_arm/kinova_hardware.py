@@ -92,6 +92,30 @@ def _patch_collections_abc():
 # a faster loop.
 HIGH_LEVEL_MAX_HZ = 40.0
 
+# Wall-clock delay from "gripper open commanded" to "fingers actually move".
+#
+# MEASURED on the lab arm 2026-08-07 at 1 kHz over the UDP feedback channel,
+# 15 trials, fingers unloaded: 67.9 +- 6.4 ms (range 59.5-80.0). A second run of
+# 5 gave 70.5 +- 6.4, so the mean is stable to a few ms.
+#
+# Uncompensated this is the single largest error in the system: 67.9 ms at the
+# 1.498 m/s release speed is 10.2 cm of undershoot, 3.5x the entire 2.89 cm sim
+# accuracy. It would not look like a timing bug on the first hardware run -- it
+# would look like the policy failing to transfer.
+#
+# It is compensable because it is repeatable. The 6.4 ms of scatter is almost
+# exactly what the 25 ms command quantisation alone predicts for a uniform
+# delay (std = 25/sqrt(12) = 7.2 ms), so the gripper's own mechanics contribute
+# very little jitter -- the spread is the command path, not the hardware.
+# Leading the trigger by this much leaves ~1.0 cm of residual, inside the sim
+# accuracy.
+#
+# CAVEAT, and it is not small: measured STATIC and UNLOADED. During a throw the
+# fingers hold a ball and the arm is decelerating, both of which load the
+# mechanism. Treat this as a calibrated starting point to be validated against
+# real landings, not as a final constant.
+GRIPPER_RELEASE_LATENCY_S = 0.0679
+
 
 # --------------------------------------------------------------------------- #
 # Safety limits
@@ -111,6 +135,10 @@ class SafetyLimits:
     max_traj_seconds: float = 180.0    # hard cap on total execution wall-clock
     tau_max: np.ndarray | None = None  # per-joint torque ceiling (Nm), from profile
     torque_margin: float = 0.90        # refuse plans above this fraction of tau_max
+    # Wall-clock seconds to fire the gripper EARLY so the fingers move at t_r.
+    # See GRIPPER_RELEASE_LATENCY_S. Set to 0.0 to disable compensation (e.g.
+    # to reproduce an uncompensated baseline for the record).
+    gripper_lead_s: float = GRIPPER_RELEASE_LATENCY_S
     release_box_lo: np.ndarray = field(default_factory=lambda: np.array([0.2, -0.5, 0.1]))
     release_box_hi: np.ndarray = field(default_factory=lambda: np.array([0.9, 0.5, 0.9]))
 
@@ -609,6 +637,19 @@ class HardwareThrowExecutor:
                 f"{self.limits.max_traj_seconds}s; refuse."
             )
 
+        # Fire the OPEN command early so the FINGERS move at trajectory time
+        # t_r. The lead is a wall-clock delay, so in trajectory time it scales
+        # with speed_scale: s advances at `scale` per wall-second, hence
+        # s_fire = t_r - lead*scale. Getting this backwards would over-lead the
+        # slow rehearsal by 1/scale and drop the ball before the swing.
+        lead = float(self.limits.gripper_lead_s)
+        s_fire = t_r - lead * scale
+        if s_fire < 0.0:
+            print(f"[exec] WARNING: gripper lead {lead:.3f}s exceeds the pre-release "
+                  f"trajectory at speed_scale={scale}; firing at t=0, so the ball "
+                  f"will release LATE by {-s_fire / scale:.3f}s of wall clock.")
+            s_fire = 0.0
+
         released = False
         s = 0.0
         # Absolute-deadline pacing. `time.sleep(dt)` sleeps dt PLUS however long
@@ -633,12 +674,14 @@ class HardwareThrowExecutor:
                 q, qd, _ = arm.get_setpoint(coeffs, s, with_accel=True)
                 qd_cmd = self.limits.clamp_velocity(np.asarray(qd) * scale)
                 self.backend.send_joint_velocities(qd_cmd)
-                if (not released) and s >= t_r:
+                if (not released) and s >= s_fire:
                     self.set_gripper(closed=False)  # OPEN -> release
                     released = True
                     release_wall = wall
                     if verbose:
-                        print(f"[exec] gripper release commanded at wall={wall:.3f}s")
+                        print(f"[exec] gripper OPEN commanded at wall={wall:.3f}s "
+                              f"(s={s:.3f}); fingers expected to move at "
+                              f"s={t_r:.3f} after {lead:.3f}s lead")
                 tick += 1
                 deadline = t0 + tick * dt
                 late = time.perf_counter() - deadline
