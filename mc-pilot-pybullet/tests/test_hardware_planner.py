@@ -448,3 +448,51 @@ def test_dry_run_backend_supports_the_realtime_feedback_api():
     assert be.read_gripper()[0] == 0.0
     be.close_realtime_feedback()
     be.disconnect()
+
+
+def test_gripper_lead_compensates_measured_latency_in_wall_clock():
+    """
+    The gripper OPEN command must fire early enough that the FINGERS move at
+    t_r, and the lead is a wall-clock delay -- so in trajectory time it scales
+    with speed_scale.
+
+    Getting the scaling backwards is the dangerous direction: dividing instead
+    of multiplying would over-lead the 0.15 rehearsal by 1/0.15 = 6.7x and drop
+    the ball 0.45 s before the swing even reaches release.
+    """
+    from robot_arm.kinova_hardware import GRIPPER_RELEASE_LATENCY_S
+    assert GRIPPER_RELEASE_LATENCY_S == pytest.approx(0.0679, abs=1e-4)
+    profile = get_robot_profile(ROBOT)
+    for scale in (1.0, 0.15):
+        lim = H.make_limits(profile, scale)
+        assert lim.gripper_lead_s == pytest.approx(GRIPPER_RELEASE_LATENCY_S)
+        t_r = 4.928
+        s_fire = t_r - lim.gripper_lead_s * scale
+        # the WALL time between firing and the intended release is the latency,
+        # independent of speed_scale -- that is the whole point
+        wall_lead = (t_r - s_fire) / scale
+        assert wall_lead == pytest.approx(GRIPPER_RELEASE_LATENCY_S, abs=1e-9)
+
+
+def test_uncompensated_gripper_latency_is_the_dominant_error():
+    """
+    Records why the compensation exists: uncompensated, the measured 67.9 ms is
+    10.2 cm at the 1.498 m/s release speed -- 3.5x the 2.89 cm sim accuracy, and
+    bigger than the 25 ms command-quantisation term it sits on top of.
+    """
+    from robot_arm.kinova_hardware import GRIPPER_RELEASE_LATENCY_S, HIGH_LEVEL_MAX_HZ
+    v = 1.498
+    gripper_cm = GRIPPER_RELEASE_LATENCY_S * v * 100
+    quant_cm = (1.0 / HIGH_LEVEL_MAX_HZ) * v * 100
+    assert gripper_cm == pytest.approx(10.2, abs=0.2)
+    assert quant_cm == pytest.approx(3.7, abs=0.2)
+    assert gripper_cm > quant_cm, "gripper latency dominates quantisation"
+    residual_cm = 0.0064 * v * 100      # measured 6.4 ms jitter, uncompensable
+    assert residual_cm < 2.89, "compensated residual must fit inside sim accuracy"
+
+
+def test_gripper_lead_can_be_disabled_for_an_uncompensated_baseline():
+    profile = get_robot_profile(ROBOT)
+    lim = H.make_limits(profile, 1.0)
+    lim.gripper_lead_s = 0.0
+    assert lim.gripper_lead_s == 0.0

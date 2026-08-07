@@ -20,7 +20,7 @@ Everything runs from `mc-pilot-pybullet/` with `python3`. Bench evidence 2026-08
 Run each; do not proceed on a failure. All four passed on 2026-08-05:
 
 ```bash
-python3 -m pytest tests/ -q                       # -> 74 passed in ~20s
+python3 -m pytest tests/ -q                       # -> 87 passed in ~20s
 python3 run_hardware_throw.py plan --robot kinova_gen3_dyn --speed_scale 1.0 \
     --log_path results_kinetic_chain_gen3/2 --target 0.75 0.05 --u_cap 1.60
 #   plan at 1.0, NOT the 0.15 default -- 0.15 shows a 7x-smaller qd and hides the headroom
@@ -120,10 +120,15 @@ real motion bugs three separate times.
   `--opt_pose` and the planner **silently falls back to a legacy IK+pinv throw**: measured
   tonight, |v| drops 1.496 → 0.471 m/s and the release moves outside the safe box, while `plan`
   still prints `PRECHECK: PASS`. Prefer seed 2/3; if using seed 1, pass the table.
-- **R3 — gripper release latency is the dominant real-world error.** The arm decelerates while
-  the fingers open ⇒ systematic undershoot. Measure command→open time at stage 3 and again on
-  video at stages 4–5. **Do not expect the sim policy to hit targets until this is calibrated.**
-  Fix by advancing the release trigger, or feed it to the GP as the paper's `ReleaseTimingJitter`.
+- **R3 — gripper release latency: MEASURED and COMPENSATED (2026-08-07).** 1 kHz UDP feedback,
+  15 trials: **67.9 ± 6.4 ms** command→fingers-move (range 59.5–80.0). Uncompensated that is
+  **10.2 cm** at 1.498 m/s — 3.5× the whole 2.89 cm sim accuracy, and it would have read as the
+  policy failing to transfer, not as a timing bug. The scatter (6.4 ms) is almost exactly what
+  25 ms of command quantisation predicts alone, so the gripper itself is repeatable and the
+  latency is compensable. `rehearse_or_throw` now fires OPEN at `t_r − lead·speed_scale`;
+  expected residual **~1.0 cm**. **Still static and unloaded** — during a throw the fingers hold
+  a ball and the arm decelerates. Validate against real landings before trusting it; re-measure
+  with the ball gripped. `gripper_lead_s = 0.0` reproduces the uncompensated baseline.
 - **R4 — Kortex names verified statically AND against the arm.** All 8 symbol groups
   (`SendJointSpeedsCommand`, `SendGripperCommand`, `RefreshFeedback`, session setup, `JointSpeeds`,
   `GripperCommand`/`GRIPPER_POSITION`) resolve against the installed `kortex_api` 2.6.0.post3.

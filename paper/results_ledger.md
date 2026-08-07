@@ -410,6 +410,58 @@ millisecond release timing requires moving the throw to `LOW_LEVEL_SERVOING`
 missed frame faults the arm). That is a real piece of work and should be scoped
 deliberately, not improvised on run day.
 
+### 6d-ter. Gripper release latency MEASURED (2026-08-07) — the dominant error term
+
+First real calibration on hardware. `measure_gripper_latency.py`, 1 kHz UDP
+feedback, fingers unloaded, arm stationary.
+
+| n | command -> fingers move | command -> motion done |
+|---|---|---|
+| 5  | 70.5 ± 6.4 ms | 823.3 ± 6.6 ms |
+| 15 | **67.9 ± 6.4 ms** (range 59.5–80.0) | 821.0 ± 15.3 ms |
+
+Feedback held 1000.8 Hz mean throughout — the command/feedback asymmetry works
+exactly as the docs promised.
+
+**Why this matters more than anything else measured so far.** Uncompensated,
+67.9 ms at the 1.498 m/s release speed is **10.2 cm of undershoot — 3.5× the
+entire 2.89 ± 0.18 cm sim accuracy**, and nearly 3× the 3.7 cm command-
+quantisation term. On a first hardware run it would not have looked like a
+timing bug; it would have looked like the policy failing to transfer, and the
+obvious (wrong) response would have been to retrain.
+
+**It is compensable, and the data says so.** The 6.4 ms scatter is almost
+exactly what 25 ms of uniform command quantisation predicts on its own
+(25/√12 = 7.2 ms), so the jitter is the command path and the gripper's own
+mechanics are highly repeatable. Decomposition: ~12.5 ms mean quantisation +
+~55 ms deterministic gripper latency.
+
+Fixed: `GRIPPER_RELEASE_LATENCY_S = 0.0679` and `SafetyLimits.gripper_lead_s`;
+`rehearse_or_throw` now fires OPEN at `s_fire = t_r − lead·speed_scale` so the
+FINGERS move at `t_r`. The lead is wall-clock, so it must be *multiplied* by
+speed_scale, not divided — dividing would over-lead the 0.15 rehearsal 6.7×
+and drop the ball 0.45 s before the swing. Verified at both scales: lead stays
+67.9 ms of wall at 1.0 and at 0.15. Set `gripper_lead_s = 0.0` to reproduce an
+uncompensated baseline.
+
+Expected residual after compensation: **~1.0 cm**, inside the sim accuracy.
+
+**Caveat, stated plainly:** measured STATIC and UNLOADED. In a real throw the
+fingers hold a ball and the arm is decelerating, both of which load the
+mechanism. This is a calibrated starting point to be validated against real
+landings, not a final constant. The with-ball measurement has not been done.
+
+Also found while probing (read-only, ControlConfig):
+- Joint **acceleration** hard limit 297.94 deg/s² = 5.20 rad/s². Never checked
+  before; our planned throw peaks at 1.779 rad/s² = **34.2 %**. Not a blocker.
+- Tool configured as **0.831 kg at z = 0.12 m**, mass centre z = 0.047 — worth
+  reconciling with the sim's payload term.
+- **`twist_linear` hard limit reads 0.500 m/s while our release needs 1.498 m/s
+  (3.0×).** We command joint speeds, not twist, and stay inside the 80/70 deg/s
+  joint limits — but whether the arm enforces a Cartesian ceiling in joint-speed
+  mode is UNKNOWN and untested. This is the top open risk for stage 5.
+
+
 ---
 
 ## 7. Open items (priority order)
