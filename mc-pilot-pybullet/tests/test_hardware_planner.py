@@ -425,3 +425,26 @@ def test_precheck_reports_release_quantisation_as_a_landing_error():
         assert "cm of undershoot" in report
     finally:
         p.disconnect(cid)
+
+
+def test_dry_run_backend_supports_the_realtime_feedback_api():
+    """
+    The 1 kHz UDP feedback path must be exercisable with no arm, or the latency
+    tool can only ever be tested on hardware.
+
+    Commands are capped at 40 Hz but FEEDBACK is not -- measured 1122 Hz on the
+    lab arm (p99 gap 1.5 ms). That asymmetry is the only reason gripper release
+    latency, now the dominant error term, is measurable without a high-speed
+    camera.
+    """
+    from robot_arm.kinova_hardware import _DryRunBackend
+    be = _DryRunBackend(7)
+    be.connect()
+    be.open_realtime_feedback()
+    be.send_gripper(1.0)
+    pos, vel = be.read_gripper()
+    assert pos == 100.0 and vel == 0.0, "dry-run gripper readback must be exact"
+    be.send_gripper(0.0)
+    assert be.read_gripper()[0] == 0.0
+    be.close_realtime_feedback()
+    be.disconnect()

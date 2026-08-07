@@ -178,6 +178,18 @@ class _DryRunBackend:
     def send_gripper(self, pos):
         self.gripper_pos = float(pos)
 
+    def open_realtime_feedback(self):
+        print("[DRY-RUN] would open 1 kHz UDP feedback (no network I/O)")
+
+    def close_realtime_feedback(self):
+        pass
+
+    def read_gripper(self):
+        # Instantaneous and exact, which is the point: a dry run can prove the
+        # plumbing but can never measure a latency. Any number this produces is
+        # zero by construction, and the tool says so rather than reporting it.
+        return self.gripper_pos * 100.0, 0.0
+
     def stop(self):
         self.commands.append(("stop", 0.0))
 
@@ -228,8 +240,71 @@ class _KortexBackend:
         self.connected = True
         print(f"[KORTEX] connected to {self.ip}")
 
+    def open_realtime_feedback(self):
+        """
+        Second, UDP session carrying BaseCyclic feedback at 1 kHz.
+
+        COMMANDS are capped at 40 Hz (HIGH_LEVEL_MAX_HZ) -- FEEDBACK is not.
+        Kinova: "UDPTransport can only be used to read the robot's feedback at
+        1kHz with the BaseCyclic service." That asymmetry is what makes the
+        dominant error term measurable: we cannot command the gripper open at a
+        precise instant, but we CAN observe exactly when the fingers started
+        moving, and the difference is the latency we need to calibrate out.
+
+        Separate transport/router/session from the TCP command channel -- they
+        are independent connections to the same arm, not a mode switch, so this
+        changes nothing about how the arm is commanded.
+        """
+        from kortex_api.UDPTransport import UDPTransport
+        from kortex_api.RouterClient import RouterClient
+        from kortex_api.SessionManager import SessionManager
+        from kortex_api.autogen.client_stubs.BaseCyclicClientRpc import BaseCyclicClient
+        from kortex_api.autogen.messages import Session_pb2
+
+        self._rt_transport = UDPTransport()
+        self._rt_transport.connect(self.ip, self.port_rt)
+        self._rt_router = RouterClient(self._rt_transport,
+                                       lambda ex: print("KORTEX RT ERR:", ex))
+        sess = Session_pb2.CreateSessionInfo()
+        sess.username, sess.password = self.username, self.password
+        sess.session_inactivity_timeout = 60000
+        sess.connection_inactivity_timeout = 2000
+        self._rt_session = SessionManager(self._rt_router)
+        self._rt_session.CreateSession(sess)
+        self._rt_cyclic = BaseCyclicClient(self._rt_router)
+        print(f"[KORTEX] real-time feedback open on udp/{self.port_rt}")
+
+    def close_realtime_feedback(self):
+        try:
+            if getattr(self, "_rt_session", None) is not None:
+                self._rt_session.CloseSession()
+            if getattr(self, "_rt_transport", None) is not None:
+                self._rt_transport.disconnect()
+        finally:
+            self._rt_cyclic = None
+            print("[KORTEX] real-time feedback closed")
+
+    def read_gripper(self):
+        """
+        (position_percent, velocity) of the gripper finger motor.
+
+        Uses the 1 kHz UDP channel when open, else the TCP one. Position is the
+        arm's own percent-closed reading; `Base.GetMeasuredGripperMovement`
+        reports the same quantity normalised to [0, 1] (verified on the lab arm:
+        0.873 % vs 0.00873).
+        """
+        cyclic = getattr(self, "_rt_cyclic", None) or self._base_cyclic
+        fb = cyclic.RefreshFeedback()
+        motors = fb.interconnect.gripper_feedback.motor
+        if not len(motors):
+            raise RuntimeError("no gripper motor in interconnect feedback -- "
+                               "is an end effector attached?")
+        return float(motors[0].position), float(motors[0].velocity)
+
     def disconnect(self):
         try:
+            if getattr(self, "_rt_cyclic", None) is not None:
+                self.close_realtime_feedback()
             if self._session is not None:
                 self._session.CloseSession()
             if self._transport is not None:
