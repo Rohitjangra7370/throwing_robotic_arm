@@ -74,6 +74,25 @@ def _patch_collections_abc():
             setattr(collections, _name, getattr(collections.abc, _name))
 
 
+# Ceiling on the HIGH-LEVEL command rate, from Kinova's own driver docs
+# (Kinovarobotics/ros_kortex, kortex_driver/readme.md):
+#
+#   "The robot's high level commands function at a rate of 40Hz."
+#   "The base high level commands are treated every 25 ms inside the robot."
+#   "High level control cannot be achieved at a rate faster than 40 Hz for now."
+#
+# This executor is high-level: it streams Base.SendJointSpeedsCommand while the
+# arm sits in SINGLE_LEVEL_SERVOING (read back from the lab arm, 2026-08-07).
+# Sending faster is not an error and not a hazard -- JointSpeeds with duration=0
+# is held until superseded, so surplus commands are simply coalesced -- but it
+# buys nothing and it makes the achieved-rate log a measurement of our own loop
+# rather than of the arm. The 1 kHz figure in Kinova's docs belongs to
+# LOW_LEVEL_SERVOING (per-actuator BaseCyclic.Refresh), which this file does not
+# use. Reaching 1 ms release timing therefore needs a servoing-mode change, not
+# a faster loop.
+HIGH_LEVEL_MAX_HZ = 40.0
+
+
 # --------------------------------------------------------------------------- #
 # Safety limits
 # --------------------------------------------------------------------------- #
@@ -83,11 +102,12 @@ class SafetyLimits:
     q_soft_lo: np.ndarray              # soft joint lower limits (rad)
     q_soft_hi: np.ndarray              # soft joint upper limits (rad)
     speed_scale: float = 0.15          # global slow-motion factor in (0, 1]
-    # Kinova Gen3 low-level joint control runs at 1 kHz. Streaming at 100 Hz
-    # resampled the trajectory 10x coarser than the arm can accept and put 10 ms
-    # of quantisation on the release instant -- at 1.63 m/s that is 1.6 cm of
-    # landing error handed over for free.
-    control_hz: float = 1000.0         # command streaming rate
+    # Command streaming rate. MUST NOT exceed HIGH_LEVEL_MAX_HZ -- see that
+    # constant. The previous 1000.0 here was justified by "Gen3 joint control
+    # runs at 1 kHz", which is true only of LOW_LEVEL_SERVOING; this executor
+    # runs high-level (SINGLE_LEVEL_SERVOING, confirmed on the arm), where the
+    # base treats commands every 25 ms.
+    control_hz: float = HIGH_LEVEL_MAX_HZ
     max_traj_seconds: float = 180.0    # hard cap on total execution wall-clock
     tau_max: np.ndarray | None = None  # per-joint torque ceiling (Nm), from profile
     torque_margin: float = 0.90        # refuse plans above this fraction of tau_max
@@ -96,6 +116,16 @@ class SafetyLimits:
 
     def __post_init__(self):
         assert 0.0 < self.speed_scale <= 1.0, "speed_scale must be in (0, 1]"
+        if self.control_hz > HIGH_LEVEL_MAX_HZ:
+            # Clamp rather than raise: a slower stream is always the safe
+            # direction, and refusing here would block a bring-up over a config
+            # value that cannot cause harm. But say so loudly -- the old default
+            # made "1000 Hz achieved" look like a hardware result when the arm
+            # was only ever consuming 40 of those commands per second.
+            print(f"[limits] control_hz {self.control_hz:.0f} exceeds the "
+                  f"high-level ceiling {HIGH_LEVEL_MAX_HZ:.0f} Hz (Kinova: base "
+                  f"treats high-level commands every 25 ms); clamping.")
+            self.control_hz = HIGH_LEVEL_MAX_HZ
         self.qd_max = np.asarray(self.qd_max, dtype=float)
         self.q_soft_lo = np.asarray(self.q_soft_lo, dtype=float)
         self.q_soft_hi = np.asarray(self.q_soft_hi, dtype=float)
@@ -160,7 +190,7 @@ class _KortexBackend:
     bring-up. Import is lazy so the module loads without kortex_api installed.
     """
 
-    def __init__(self, n_dofs, ip="192.168.1.10", port=10000, port_rt=10001,
+    def __init__(self, n_dofs, ip="192.168.1.101", port=10000, port_rt=10001,
                  username="admin", password="admin"):
         self.n_dofs = n_dofs
         self.ip, self.port, self.port_rt = ip, port, port_rt
@@ -209,8 +239,25 @@ class _KortexBackend:
             print("[KORTEX] disconnected")
 
     def read_joint_state(self):
+        """
+        Joint state in radians, wrapped to (-pi, pi].
+
+        MEASURED on the lab arm (Gen3 L53K, SN WO545410-1, 2026-08-07): Kortex
+        reports actuator position in degrees on **[0, 360)**, for limited joints
+        as well as continuous ones. A bare deg2rad therefore returns e.g. 6.199
+        rad for a joint physically at -4.8 deg, and 4.318 rad for a LIMITED
+        joint (+-2.57 rad) physically at -112.6 deg -- a value outside that
+        joint's own range, which no downstream check can interpret.
+
+        Wrapping to (-pi, pi] is correct for every joint on this arm: the three
+        limited joints span +-2.24 / +-2.57 / +-2.09 rad, all inside (-pi, pi],
+        so the wrapped value is the physical angle. Continuous joints have no
+        preferred representative and (-pi, pi] is as good as any -- `home()`
+        takes the shortest path for those regardless.
+        """
         fb = self._base_cyclic.RefreshFeedback()
-        q = np.array([np.deg2rad(a.position) for a in fb.actuators[: self.n_dofs]])
+        pos = np.array([np.deg2rad(a.position) for a in fb.actuators[: self.n_dofs]])
+        q = np.arctan2(np.sin(pos), np.cos(pos))          # -> (-pi, pi]
         qd = np.array([np.deg2rad(a.velocity) for a in fb.actuators[: self.n_dofs]])
         return q, qd
 
@@ -254,7 +301,7 @@ class HardwareThrowExecutor:
             ex.rehearse_or_throw(coeffs, arm_controller)
     """
 
-    def __init__(self, limits: SafetyLimits, dry_run=True, ip="192.168.1.10",
+    def __init__(self, limits: SafetyLimits, dry_run=True, ip="192.168.1.101",
                  gripper_open=0.0, gripper_closed=1.0):
         self.limits = limits
         self.dry_run = dry_run
@@ -281,7 +328,7 @@ class HardwareThrowExecutor:
         return False  # do not suppress exceptions
 
     # -- pre-flight checks ------------------------------------------------- #
-    def precheck(self, coeffs, arm, n_samples=400):
+    def precheck(self, coeffs, arm, n_samples=400, release_speed=None):
         """
         Sample the whole trajectory and verify EVERY joint stays inside the soft
         envelope and every commanded velocity (after speed_scale) is within
@@ -319,8 +366,21 @@ class HardwareThrowExecutor:
                 # at the ends.
                 tau = np.abs(np.asarray(arm.inverse_dynamics(q, qd, qdd), dtype=float))
                 peak_tau = np.maximum(peak_tau, tau)
+        # Release-instant quantisation is a LANDING-ERROR term, so it belongs in
+        # the precheck next to torque and velocity, not in a footnote. The base
+        # treats high-level commands every 1/control_hz s, so the gripper-open
+        # command lands up to that late; at release speed v that is v/control_hz
+        # metres of undershoot. On this arm (40 Hz, 1.5 m/s) it is ~3.7 cm --
+        # larger than the whole 2.89 cm sim accuracy, and it is NOT reducible by
+        # looping faster (see HIGH_LEVEL_MAX_HZ).
+        dt_q = 1.0 / self.limits.control_hz
+        quant = f"release quantisation: {dt_q * 1e3:.1f} ms at {self.limits.control_hz:.0f} Hz"
+        if release_speed is not None:
+            quant += (f"  ->  up to {float(release_speed) * dt_q * 100.0:.1f} cm "
+                      f"of undershoot at {float(release_speed):.3f} m/s")
         report = [
             f"trajectory T={T:.3f}s, speed_scale={self.limits.speed_scale}",
+            quant,
             f"peak commanded |qd| (rad/s): "
             + ", ".join(f"{v:.2f}/{m:.2f}" for v, m in zip(peak_qd, self.limits.qd_max)),
         ]
@@ -358,18 +418,89 @@ class HardwareThrowExecutor:
         return bool(inside)
 
     # -- motions ----------------------------------------------------------- #
+    @staticmethod
+    def _homing_error(q_now, q_target, q_lo, q_hi):
+        """
+        Per-joint homing error that respects each joint's ACTUAL range.
+
+        A single pi threshold is wrong here, and the lab arm proves both halves
+        of why (measured 2026-08-07):
+
+          * CONTINUOUS joints (URDF span >= 2pi; indices 0,2,4,6 on Gen3) can
+            turn either way, so the error must be the SHORTEST angular path.
+            Joint 2 sat at -177.4 deg with neutral at -2.3 deg: the direct
+            difference sends it the long way round.
+          * LIMITED joints (1,3,5) cannot wrap at all, so their error is the
+            direct difference and may legitimately exceed pi. Joint 3 (+-2.57
+            rad) sat at -1.966 rad with neutral at +1.460 -- a legal 3.426 rad
+            (196 deg) sweep through zero. Wrapping that would drive it into its
+            own limit, which is the opposite of safe.
+
+        Returns (err, continuous_mask).
+        """
+        q_now = np.asarray(q_now, dtype=float)
+        q_target = np.asarray(q_target, dtype=float)
+        span = np.asarray(q_hi, dtype=float) - np.asarray(q_lo, dtype=float)
+        continuous = span >= 2.0 * np.pi - 1e-6
+        err = q_target - q_now
+        shortest = np.arctan2(np.sin(err), np.cos(err))
+        return np.where(continuous, shortest, err), continuous
+
+    @staticmethod
+    def _assert_readback_sane(q, q_lo, q_hi, margin=0.05):
+        """
+        Fail closed when a joint reads outside its own URDF range.
+
+        This is the unit/wrap detector, and it belongs on the READBACK rather
+        than on the homing error -- a limited joint reporting 4.318 rad when its
+        limit is 2.57 is unambiguously a convention bug, whereas a large error
+        may be a perfectly legal long move. Continuous joints (+-6.28) can't
+        trip this, which is correct: there is no wrong angle for them.
+        """
+        q = np.asarray(q, dtype=float)
+        lo = np.asarray(q_lo, dtype=float) - margin
+        hi = np.asarray(q_hi, dtype=float) + margin
+        bad = np.where((q < lo) | (q > hi))[0]
+        if bad.size:
+            raise RuntimeError(
+                f"joint readback outside URDF range on joints {list(bad)}: "
+                f"q={np.round(q[bad], 3)} vs "
+                f"[{np.round(lo[bad], 3)}, {np.round(hi[bad], 3)}]. This is a "
+                "joint-angle WRAP/UNIT mismatch, not a pose -- Kortex reports "
+                "on [0,360) and the value was not wrapped to (-pi,pi]. Refusing "
+                "to servo on an uninterpretable readback."
+            )
+
     def home(self, arm, q_neutral, duration=4.0):
         """Slow, capped move to the neutral pose using proportional joint-speed
         servoing. Deliberately gentle -- this is the safe way to reach start."""
         q_neutral = np.asarray(q_neutral, dtype=float)
+        q_lo, q_hi = np.asarray(arm._q_lo, float), np.asarray(arm._q_hi, float)
         dt = 1.0 / self.limits.control_hz
         # cap homing speed at a small fraction of qd_max regardless of speed_scale
         home_cap = 0.25 * self.limits.qd_max
+
+        # Size the window against the ACTUAL distance to travel before starting.
+        # Measured on the lab arm: neutral was 3.426 rad away on joint 3, which
+        # needs 9.8 s at home_cap -- the 4.0 s default would have stopped the arm
+        # part-way and left it in an undefined intermediate pose, which then
+        # becomes the starting point of a throw. Extending a velocity-CAPPED move
+        # does not make it faster, only complete.
+        q0, _ = self.backend.read_joint_state() if not self.dry_run else (q_neutral * 0, None)
+        self._assert_readback_sane(q0, q_lo, q_hi)
+        err0, _ = self._homing_error(q0, q_neutral, q_lo, q_hi)
+        t_needed = 1.25 * float(np.max(np.abs(err0) / home_cap))
+        if t_needed > duration:
+            print(f"[home] {np.max(np.abs(err0)):.3f} rad to travel needs ~{t_needed:.1f}s "
+                  f"at the speed cap; extending duration {duration:.1f}s -> {t_needed:.1f}s")
+            duration = t_needed
+
         t0 = time.time()
-        print(f"[home] moving to neutral over ~{duration}s (capped, gentle)")
+        print(f"[home] moving to neutral over ~{duration:.1f}s (capped, gentle)")
         while time.time() - t0 < duration:
             q, _ = self.backend.read_joint_state() if not self.dry_run else (q_neutral * 0, None)
-            err = q_neutral - q
+            self._assert_readback_sane(q, q_lo, q_hi)
+            err, _ = self._homing_error(q, q_neutral, q_lo, q_hi)
             qd = np.clip(2.0 * err, -home_cap, home_cap)  # P-servo, capped
             qd = self.limits.clamp_velocity(qd)
             self.backend.send_joint_velocities(qd)

@@ -256,3 +256,172 @@ def test_kortex_api_imports_on_this_python():
         (SessionManager, "CreateSession"), (SessionManager, "CloseSession"),
     ):
         assert hasattr(obj, name), f"{name} missing from installed kortex_api"
+
+
+# --------------------------------------------------------------------------- #
+# Homing / joint-angle convention.
+#
+# These encode a MEASUREMENT, not a guess: the readback below is the real one
+# from the lab Gen3 (L53K, SN WO545410-1) on 2026-08-07, taken by
+# hw_readonly_check.py with the arm powered and stationary. Kortex reported
+# every joint in [0, 360) -- including LIMITED joints, one of which came back
+# at 247.37 deg (4.318 rad) against a +-2.57 rad limit.
+# --------------------------------------------------------------------------- #
+
+MEASURED_POS_DEG = np.array([355.19, 26.37, 182.60, 247.37, 0.62, 52.21, 89.07])
+# physical angles the arm was actually at, i.e. MEASURED_POS_DEG wrapped
+MEASURED_Q_RAD = np.array([-0.084, 0.460, -3.096, -1.966, 0.011, 0.911, 1.555])
+
+
+class _StubBackend:
+    """Minimal backend replaying a fixed joint readback. Records all commands."""
+
+    def __init__(self, q_read):
+        self.q_read = np.asarray(q_read, dtype=float)
+        self.velocity_commands = []
+
+    def connect(self): pass
+    def disconnect(self): pass
+    def stop(self): self.velocity_commands.append(np.zeros_like(self.q_read))
+    def send_gripper(self, pos): pass
+    def read_joint_state(self): return self.q_read.copy(), np.zeros_like(self.q_read)
+    def send_joint_velocities(self, qd): self.velocity_commands.append(np.asarray(qd, float))
+
+
+class _StubArm:
+    """Carries only the joint ranges `home()` needs (real Gen3 URDF values)."""
+    _q_lo = np.array([-6.28, -2.24, -6.28, -2.57, -6.28, -2.09, -6.28])
+    _q_hi = -_q_lo
+
+
+def _executor_with_readback(q_read):
+    profile = get_robot_profile(ROBOT)
+    ex = HardwareThrowExecutor(H.make_limits(profile, 1.0), dry_run=True)
+    ex.dry_run = False                      # take the real read_joint_state path
+    ex.backend = _StubBackend(q_read)
+    return ex, np.asarray(profile.q_neutral, dtype=float)
+
+
+def test_kortex_degrees_wrap_into_the_urdf_range():
+    """
+    read_joint_state() must wrap [0,360) reporting into (-pi, pi].
+
+    Without this, joint 3 arrives as 4.318 rad against a +-2.57 rad limit -- a
+    value no downstream check can interpret, and one that made the naive P-servo
+    drive the joint the long way for the whole homing window.
+    """
+    q = np.arctan2(np.sin(np.deg2rad(MEASURED_POS_DEG)),
+                   np.cos(np.deg2rad(MEASURED_POS_DEG)))
+    assert np.allclose(q, MEASURED_Q_RAD, atol=1e-3)
+    assert np.all(np.abs(q) <= np.pi + 1e-9)
+    arm = _StubArm()
+    assert np.all(q >= arm._q_lo) and np.all(q <= arm._q_hi), (
+        "wrapped readback must lie inside every joint's URDF range"
+    )
+
+
+def test_home_refuses_an_unwrapped_readback():
+    """The un-wrapped [0,360) reading must be refused, not serviced."""
+    ex, q_neutral = _executor_with_readback(np.deg2rad(MEASURED_POS_DEG))
+    with pytest.raises(RuntimeError, match="WRAP/UNIT"):
+        ex.home(_StubArm(), q_neutral, duration=0.05)
+    assert all(np.allclose(v, 0.0) for v in ex.backend.velocity_commands), (
+        "a refused homing must not have commanded any motion"
+    )
+
+
+def test_homing_error_takes_the_shortest_path_on_continuous_joints():
+    """
+    Joint 2 is continuous and sat at -177.4 deg with neutral at -2.3 deg. The
+    direct difference (+175.1 deg) is already the shortest path here; the guard
+    is that a continuous joint's error can never exceed pi.
+    """
+    err, cont = HardwareThrowExecutor._homing_error(
+        MEASURED_Q_RAD, get_robot_profile(ROBOT).q_neutral,
+        _StubArm._q_lo, _StubArm._q_hi)
+    assert list(np.where(cont)[0]) == [0, 2, 4, 6]
+    assert np.all(np.abs(err[cont]) <= np.pi + 1e-9)
+    assert err[2] == pytest.approx(3.056, abs=1e-3)
+
+
+def test_homing_error_is_direct_on_limited_joints():
+    """
+    Joint 3 is LIMITED (+-2.57) and needs a legal 3.426 rad sweep through zero.
+    Wrapping that to -2.857 would drive it into its own limit -- the exact
+    inverse of the continuous-joint fix, which is why one pi threshold for all
+    joints was wrong.
+    """
+    err, cont = HardwareThrowExecutor._homing_error(
+        MEASURED_Q_RAD, get_robot_profile(ROBOT).q_neutral,
+        _StubArm._q_lo, _StubArm._q_hi)
+    assert not cont[3]
+    assert err[3] == pytest.approx(3.426, abs=1e-3)
+    assert err[3] > np.pi, "regression: limited-joint error was wrapped"
+
+
+def test_home_extends_a_duration_too_short_to_arrive(capsys):
+    """
+    3.426 rad at the 0.349 rad/s cap needs ~9.8 s. The 4.0 s default would stop
+    the arm part-way and leave an undefined pose as the start of a throw.
+    """
+    ex, q_neutral = _executor_with_readback(MEASURED_Q_RAD)
+    ex.limits.control_hz = 200.0            # keep the test quick
+    ex.home(_StubArm(), q_neutral, duration=0.02)
+    out = capsys.readouterr().out
+    assert "extending duration" in out
+    assert ex.backend.velocity_commands, "expected homing to command motion"
+
+
+def test_home_runs_normally_when_already_near_neutral():
+    """The guards must not fire on an ordinary short homing move."""
+    profile = get_robot_profile(ROBOT)
+    ex, q_neutral = _executor_with_readback(np.asarray(profile.q_neutral, float))
+    ex.home(_StubArm(), q_neutral, duration=0.05)
+    assert all(np.allclose(v, 0.0) for v in ex.backend.velocity_commands), (
+        "already at neutral -> no motion needed"
+    )
+
+
+def test_control_rate_is_clamped_to_the_high_level_ceiling():
+    """
+    Kinova's own driver docs: "The base high level commands are treated every
+    25 ms inside the robot. High level control cannot be achieved at a rate
+    faster than 40 Hz for now."
+
+    This executor is high-level (Base.SendJointSpeedsCommand, arm in
+    SINGLE_LEVEL_SERVOING -- read back from the lab arm). The old 1000.0 default
+    was justified by Kinova's 1 kHz figure, which belongs to LOW_LEVEL_SERVOING.
+    The consequence was not a hazard but a false measurement: the executor logged
+    "1000 Hz achieved" while the arm consumed 40 commands a second.
+    """
+    from robot_arm.kinova_hardware import HIGH_LEVEL_MAX_HZ
+    assert HIGH_LEVEL_MAX_HZ == 40.0
+    profile = get_robot_profile(ROBOT)
+    assert H.make_limits(profile, 1.0).control_hz == HIGH_LEVEL_MAX_HZ
+    lim = SafetyLimits(qd_max=np.array(profile.qd_max, float),
+                       q_soft_lo=-6.1 * np.ones(7), q_soft_hi=6.1 * np.ones(7),
+                       control_hz=1000.0)
+    assert lim.control_hz == HIGH_LEVEL_MAX_HZ, "1 kHz must be clamped, not honoured"
+
+
+def test_precheck_reports_release_quantisation_as_a_landing_error():
+    """
+    25 ms of release quantisation at 1.5 m/s is ~3.7 cm of undershoot -- larger
+    than the entire 2.89 cm sim accuracy, and NOT reducible by looping faster.
+    It has to appear in the precheck, not in a footnote.
+    """
+    cfg_path = os.path.join(CKPT, "config_log.pkl")
+    with open(cfg_path, "rb") as f:
+        cfg = pkl.load(f)
+    arm, profile, cid = H.build_arm(ROBOT)
+    try:
+        pol = _FixedPolicy(1.5)
+        coeffs, _, _, v_ach, _, _, _ = H.plan_throw_for_target(
+            arm, profile, cfg, pol, (0.75, 0.05), opt_pose=TABLE)
+        ex = HardwareThrowExecutor(H.make_limits(profile, 1.0), dry_run=True)
+        _, report = ex.precheck(coeffs, arm, release_speed=np.linalg.norm(v_ach))
+        assert "release quantisation" in report
+        assert "25.0 ms" in report
+        assert "cm of undershoot" in report
+    finally:
+        p.disconnect(cid)

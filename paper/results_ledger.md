@@ -277,6 +277,141 @@ gated, incl. D415 placement and frame conventions).
 
 ---
 
+## 6c. Run-day readiness pass (2026-08-05) — no new sim claims, 4 findings
+
+Pre-flight before hardware day. Everything below was executed, not quoted.
+Runbook written: `mc-pilot-pybullet/HARDWARE_RUNBOOK.md` (the run-day page;
+`HARDWARE_SETUP.md` stays the safety model + reference).
+
+**Verified green:**
+- `pytest tests/ -q` → **66 passed** (~9 s); **68** after the homing guard below.
+- `plan`, seed 2, target (0.75, 0.05), `--speed_scale 1.0 --u_cap 1.60`: release speed
+  1.498 m/s, release pos in safe box, **PRECHECK PASS**, T = 8.528 s, peak |qd|
+  **1.30/1.396 (93 %)**, peak |τ| **8.6/39.0 (22 %)**.
+- Full dry `throw`: 1.0 → 8529 ticks, 1000 Hz, worst tick **0.00 ms** late, release at
+  s = 4.928 s. 0.15 → wall 56.85 s, 56 854 ticks, 1000 Hz, worst tick **2.11 ms** late,
+  release at wall 32.85 s.
+- Real-physics eval on a **fresh unused seed (987654)**, 30 throws, `eval_adapted_height.py`:
+  seed 2 → **2.84 cm** (max 5.43), seed 1 → **2.92 cm** (max 5.49), both 100 % hit < 10 cm,
+  speed 1.17–1.55 m/s. Consistent with §6a's 2.89 ± 0.18 cm — nothing has drifted.
+- **Kortex symbols now statically verified** against installed `kortex_api` 2.6.0.post3:
+  all 8 groups resolve (`SendJointSpeedsCommand`, `SendGripperCommand`, `RefreshFeedback`,
+  session setup, `JointSpeeds` fields, `GripperCommand`/`GRIPPER_POSITION`). Names exist;
+  arm acceptance still unproven.
+
+**Four findings, all fixed in the docs:**
+1. **Ball mismatch.** `HARDWARE_SETUP.md` specified a ping-pong/foam ball; the GP was trained
+   at `ball_mass = 0.0577 kg`, `ball_radius = 0.0327 m` — a **tennis ball**. Different drag
+   regime ⇒ the policy would not transfer. Corrected.
+2. **Stale bring-up commands.** The staged commands pointed at
+   `results_mc_pilot_pb_A_kinova_gen3/1` with `--robot kinova_gen3` — a *kinematic*-mode
+   profile (`tau_max=None`, so precheck **skips the torque check**) and a `uM = 0.6`
+   legacy checkpoint, not the trained overhead throw. Corrected to
+   `results_kinetic_chain_gen3/2` + `kinova_gen3_dyn` + `--u_cap 1.60`.
+3. **Readback angle convention is an untested first-motion risk.** `read_joint_state()` does a
+   bare `deg2rad`; Gen3 continuous joints report in [0, 360) and `q_neutral` contains small
+   negative angles (−0.6°, −2.3°, −0.7°) that would read back near 359°. `home()`'s P-servo
+   would then see a −6.28 rad error and drive the long way for the full 4 s. Dry-run cannot
+   catch it (it fakes the readback). **Fixed in code**: `home()` now fails closed on any joint
+   error > π rad with a `WRAP/UNIT mismatch` message instead of servoing (suite 66 → **68**,
+   both new tests in `tests/test_hardware_planner.py`). Refusing to move is the only safe
+   response — the intended direction cannot be inferred from a wrapped reading.
+4. **`plan` reports PASS on a bad release position.** Measured: seed 1 without `--opt_pose`
+   falls back to the legacy IK+pinv throw (|v| 1.496 → **0.471 m/s**, release outside the safe
+   box) and still prints `PRECHECK: PASS` — the box check is a separate line. `throw` does fail
+   closed on it. Runbook says read both lines.
+
+---
+
+## 6d. First contact with the real arm (2026-08-07) — READ-ONLY, no command sent
+
+New tool: `mc-pilot-pybullet/hw_readonly_check.py`. Opens a Kortex session, reads,
+closes. Zero writes (`connect` by contrast writes one thing — the teardown
+`stop()`). Final run: **38 checks, 0 FAIL**.
+
+**The arm, measured:** Gen3 **L53K**, SN **WO545410-1**, 7 actuators, fw 872547072,
+at **192.168.1.101**. `RUN_MODE` / `SINGLE_LEVEL_SERVOING`, stationary, motors
+32–39 °C, 23.1–23.3 V, no faults. tcp/10000 + tcp/80 open (10001 is UDP; a closed
+TCP probe there is expected).
+
+**Our limits are confirmed by the arm itself** — velocity 80.002/80.002/80.002/
+80.002/70.004/70.004/70.004 deg/s = `qd_max` 1.3963/1.2218 rad/s, torque
+39/39/39/39/9/9/9 Nm = `tau_max`, both to float32 precision. Every feasibility
+check in the repo rests on these; they are real.
+
+**Four findings, all fixed:**
+1. **The default IP was this control PC.** `enp108s0` is configured `192.168.1.10/24`
+   — the exact address `run_hardware_throw.py` defaulted to, so a `connect` would
+   have targeted ourselves and the "ping succeeded" proved nothing. Arm found by
+   subnet sweep at `.101`; default corrected in code and both docs.
+2. **R1 CONFIRMED, and the 2026-08-05 guard was wrong.** Kortex reports **every**
+   joint on [0, 360) — including LIMITED ones: joint 3 read 247.37° (4.318 rad)
+   against its own ±2.57 rad limit. But the blanket "error > π ⇒ refuse" guard was
+   *also* wrong: joint 3 legitimately needed a 4.040 rad (231°) sweep through zero,
+   which a π threshold would have blocked. Correct rule is per joint type —
+   `read_joint_state()` wraps to (−π, π]; `home()` takes the **shortest path for
+   continuous joints (0,2,4,6)** and the **direct difference for limited ones
+   (1,3,5)**; `_assert_readback_sane` fails closed on a readback outside the URDF
+   range. 4 regression tests built on the real readback. Suite 68 → **72**.
+3. **Homing was sized wrong.** 4.040 rad at the 0.25·qd_max cap needs ~14.5 s; the
+   `duration=4.0` default would have stopped part-way, leaving an undefined pose as
+   the *starting point of a throw*. `home()` now sizes its window from the measured
+   distance and prints the extension.
+4. **Two-master hazard, observed live.** Between two runs the arm went
+   `ARMSTATE_SERVOING_READY` → `ARMSTATE_SERVOING_MANUALLY_CONTROLLED` (web UI /
+   joystick in use). Streaming joint speeds into that is unsafe; the checker now
+   FAILs unless the arm reads `SERVOING_READY`.
+
+Also: `GetControlMode` and both `*SoftLimitation` calls answer UNSUPPORTED_METHOD on
+this firmware — neither is used by the throw. **No write path has run yet**; stage 2
+(`home`) remains the first.
+
+### 6d-bis. Cross-check against Kinova's published docs — one more defect, the costly one
+
+Checking the arm's own reports against Kinova's documentation rather than trusting
+either alone.
+
+**Confirmed by the docs:** the [0, 360) joint convention is official
+("the valid range of joint angle for the Kinova Gen3 is 0 to 360 degrees"), so the
+R1 fix is right, not a workaround. Model **L53K = Gen3 7-DOF spherical + vision**,
+902 mm reach — matches the `GEN3-7DOF-VISION` URDF the profile loads.
+
+**Not confirmed, and it matters — `control_hz` was wrong by 25×.** From Kinova's own
+driver readme (`Kinovarobotics/ros_kortex`, `kortex_driver/readme.md`):
+
+> "The robot's high level commands function at a rate of 40Hz."
+> "The base high level commands are treated every 25 ms inside the robot."
+> "High level control cannot be achieved at a rate faster than 40 Hz for now."
+
+Our executor streams `Base.SendJointSpeedsCommand` with the arm in
+`SINGLE_LEVEL_SERVOING` (read back from the arm) — **high-level**, ceiling 40 Hz. The
+`control_hz = 1000.0` default was justified in-code by Kinova's 1 kHz figure, which
+belongs to **`LOW_LEVEL_SERVOING`** (per-actuator `BaseCyclic.Refresh`), a path this
+code does not use. So the 2026-07-27 "100 Hz → 1 kHz" change was chasing a rate the
+API cannot accept, and 100 Hz was *already* 2.5× above it.
+
+Not a hazard (`JointSpeeds` with `duration=0` holds until superseded, so surplus
+commands are coalesced), but two real consequences:
+1. **The 1 kHz result was not a hardware measurement.** "1000 Hz achieved over 56,682
+   ticks, worst tick 0.16 ms late" measured our own loop; the arm was consuming 40
+   commands/s throughout. Retract that framing from the record.
+2. **Release quantisation is now a first-order error term.** 25 ms at the measured
+   1.498 m/s release speed is **up to 3.7 cm of undershoot — larger than the entire
+   2.89 ± 0.18 cm sim accuracy.** It is *not* reducible by looping faster.
+
+Fixed: `HIGH_LEVEL_MAX_HZ = 40.0` with the citation, `SafetyLimits` clamps and warns,
+`precheck` prints the quantisation as a landing-error term. Suite 72 → **74**. Dry throw
+now 342 ticks @ 40 Hz (was "8529 @ 1000 Hz"); 0.15 rehearsal 2275 ticks @ 40 Hz.
+
+**Open decision for the paper:** the high-level path has a ~3.7 cm release-timing floor
+before gripper latency is counted, so sim-vs-real will be dominated by it. Buying back
+millisecond release timing requires moving the throw to `LOW_LEVEL_SERVOING`
+(`BaseCyclic.Refresh` at 1 kHz, per-actuator commands, no kinematic library, and a
+missed frame faults the arm). That is a real piece of work and should be scoped
+deliberately, not improvised on run day.
+
+---
+
 ## 7. Open items (priority order)
 
 1. **Hardware bring-up** (stages 0→5 in `HARDWARE_SETUP.md`). Stage 0 dry-run passes today. ← ICRA lever.
