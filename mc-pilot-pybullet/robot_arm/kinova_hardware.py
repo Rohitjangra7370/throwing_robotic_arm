@@ -552,26 +552,53 @@ class HardwareThrowExecutor:
     @staticmethod
     def _assert_readback_sane(q, q_lo, q_hi, margin=0.05):
         """
-        Fail closed when a joint reads outside its own URDF range.
+        Fail closed on a readback we cannot interpret -- distinguishing the TWO
+        distinct causes, which need different fixes.
 
-        This is the unit/wrap detector, and it belongs on the READBACK rather
-        than on the homing error -- a limited joint reporting 4.318 rad when its
-        limit is 2.57 is unambiguously a convention bug, whereas a large error
-        may be a perfectly legal long move. Continuous joints (+-6.28) can't
-        trip this, which is correct: there is no wrong angle for them.
+        (a) |q| > pi. Every joint on this arm is either continuous (where any
+            representative in (-pi, pi] is valid) or limited to a range that
+            fits inside (-pi, pi]. So a value past half a turn cannot be a pose;
+            it is Kortex's [0, 360) reporting reaching us unwrapped. Fix in
+            code, in read_joint_state.
+
+        (b) |q| <= pi but outside this joint's URDF range. That IS a pose -- the
+            arm is genuinely somewhere our kinematic model says it cannot be.
+            Observed for real on 2026-08-07: joint 3 read -2.656 rad while being
+            hand-guided, against a URDF limit of -2.570, i.e. the hardware's
+            range is wider than the model's. Fix in the world (jog it back) or
+            in the URDF -- not by unwrapping, which would corrupt a valid angle.
+
+        Conflating these is not cosmetic: the first version of this guard
+        reported (b) as a units bug, which would have sent someone editing
+        working conversion code to chase a pose problem.
         """
         q = np.asarray(q, dtype=float)
-        lo = np.asarray(q_lo, dtype=float) - margin
-        hi = np.asarray(q_hi, dtype=float) + margin
+        q_lo = np.asarray(q_lo, dtype=float)
+        q_hi = np.asarray(q_hi, dtype=float)
+
+        unwrapped = np.where(np.abs(q) > np.pi + 1e-9)[0]
+        if unwrapped.size:
+            raise RuntimeError(
+                f"joint readback past pi on joints {list(unwrapped)}: "
+                f"q={np.round(q[unwrapped], 3)} rad. This is a joint-angle "
+                "WRAP/UNIT mismatch -- Kortex reports on [0,360) and the value "
+                "reached us unwrapped. Fix read_joint_state, do not jog the arm."
+            )
+
+        lo, hi = q_lo - margin, q_hi + margin
         bad = np.where((q < lo) | (q > hi))[0]
         if bad.size:
+            over = np.maximum(lo[bad] - q[bad], q[bad] - hi[bad])
             raise RuntimeError(
-                f"joint readback outside URDF range on joints {list(bad)}: "
-                f"q={np.round(q[bad], 3)} vs "
-                f"[{np.round(lo[bad], 3)}, {np.round(hi[bad], 3)}]. This is a "
-                "joint-angle WRAP/UNIT mismatch, not a pose -- Kortex reports "
-                "on [0,360) and the value was not wrapped to (-pi,pi]. Refusing "
-                "to servo on an uninterpretable readback."
+                f"joint readback OUTSIDE THE KINEMATIC MODEL on joints "
+                f"{list(bad)}: q={np.round(q[bad], 3)} rad, outside URDF "
+                f"[{np.round(q_lo[bad], 3)}, {np.round(q_hi[bad], 3)}] by "
+                f"{np.round(over, 3)} rad (margin {margin}). The angles are "
+                "well-formed, so this is NOT a units bug -- the arm is in a pose "
+                "the model says is unreachable. Either jog it back inside range, "
+                "or reconcile the URDF limits with the hardware's real ones "
+                "(measured 2026-08-07: joint 3 reached -2.656 vs URDF -2.570). "
+                "Refusing to plan from a pose the model cannot represent."
             )
 
     def home(self, arm, q_neutral, duration=4.0):

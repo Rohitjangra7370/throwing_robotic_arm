@@ -192,17 +192,36 @@ def release_box_from_table(arm, table, margin=0.10):
 
 
 def make_limits(profile, speed_scale, release_box=None,
-                control_hz=HIGH_LEVEL_MAX_HZ):
+                control_hz=HIGH_LEVEL_MAX_HZ, arm=None, q_margin=0.10):
+    """
+    Safety envelope for one run. Pass `arm` whenever one exists.
+
+    The soft joint envelope used to be a flat +-6.10 on every joint, which is
+    right for the four CONTINUOUS joints (+-6.28) and badly wrong for the three
+    LIMITED ones: joint 5's real range is +-2.09, so the guard was 2.9x too
+    loose and would have passed a trajectory driving it nearly three times past
+    its stop. The shipped throw happens to peak at 57% of the real ranges, so
+    this was a latent hole rather than an active bug -- but it is exactly the
+    check that is supposed to catch a bad new plan.
+
+    With `arm`, the envelope comes from the URDF per joint, inset by `q_margin`.
+    Without one (connect / gripper, where no trajectory is checked) it falls
+    back to the flat value.
+    """
     qd_max = np.array(profile.qd_max, float)
-    # soft joint envelope: Gen3 revolute joints are +-6.28; keep a margin.
-    q_soft = 6.10 * np.ones(len(qd_max))
+    if arm is not None:
+        q_soft_lo = np.asarray(arm._q_lo, float) + q_margin
+        q_soft_hi = np.asarray(arm._q_hi, float) - q_margin
+    else:
+        q_soft_lo = -6.10 * np.ones(len(qd_max))
+        q_soft_hi = 6.10 * np.ones(len(qd_max))
     kw = {}
     if release_box is not None:
         kw["release_box_lo"], kw["release_box_hi"] = release_box
     if profile.tau_max is not None:
         kw["tau_max"] = np.array(profile.tau_max, float)
     return SafetyLimits(
-        qd_max=qd_max, q_soft_lo=-q_soft, q_soft_hi=q_soft,
+        qd_max=qd_max, q_soft_lo=q_soft_lo, q_soft_hi=q_soft_hi,
         speed_scale=speed_scale, control_hz=control_hz,
         # The trained overhead trajectory is already torque-stretched to ~8.5 s
         # at speed_scale=1.0, and a 0.15 rehearsal stretches it to ~57 s. The old
@@ -224,7 +243,7 @@ def cmd_plan(args):
         opt_pose=args.opt_pose, u_cap=args.u_cap)
     table = load_pose_table(cfg, args.opt_pose)
     box = release_box_from_table(arm, table) if table else None
-    limits = make_limits(profile, args.speed_scale, release_box=box)
+    limits = make_limits(profile, args.speed_scale, release_box=box, arm=arm)
     ex = HardwareThrowExecutor(limits, dry_run=True)
     print(f"\n=== PLAN (dry-run) robot={args.robot} target={args.target} ===")
     print(f"policy release speed: {speed:.3f} m/s   v_cmd EE: {np.round(v_cmd,3)}")
@@ -252,7 +271,7 @@ def cmd_connect(args):
 
 def cmd_home(args):
     arm, profile, cid = build_arm(args.robot)
-    limits = make_limits(profile, args.speed_scale)
+    limits = make_limits(profile, args.speed_scale, arm=arm)
     with HardwareThrowExecutor(limits, dry_run=not args.arm, ip=args.ip) as ex:
         ex.home(arm, np.array(profile.q_neutral, float), duration=args.duration)
     p.disconnect(cid)
@@ -280,7 +299,7 @@ def cmd_throw(args):
         opt_pose=args.opt_pose, u_cap=args.u_cap)
     table = load_pose_table(cfg, args.opt_pose)
     box = release_box_from_table(arm, table) if table else None
-    limits = make_limits(profile, args.speed_scale, release_box=box)
+    limits = make_limits(profile, args.speed_scale, release_box=box, arm=arm)
     with HardwareThrowExecutor(limits, dry_run=not args.arm, ip=args.ip) as ex:
         if not ex.check_release_pos(rel):
             raise RuntimeError(f"release pos {rel} outside safe box; abort.")
