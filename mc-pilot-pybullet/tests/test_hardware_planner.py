@@ -166,7 +166,30 @@ def _limits(profile, **over):
     return SafetyLimits(**kw)
 
 
-def test_precheck_passes_on_the_real_plan(cfg):
+def test_precheck_now_refuses_the_shipped_plan_on_torque(cfg):
+    """
+    KNOWN BLOCKER, and the test asserts it deliberately.
+
+    This test used to assert PASS. It passed because build_arm() never enabled
+    gravity, so the torque check saw inertial terms only and reported 22% of
+    limit. With gravity on -- the correct physics -- the same trajectory needs
+    36.7 Nm on joint 1, 94.2% of its 39 Nm limit, which exceeds the 0.90
+    torque_margin. Refusing is the right answer, so the test now pins the
+    refusal rather than the stale pass.
+
+    The 94.2% figure is itself CONSERVATIVE by a known amount: the shipped
+    gen3.urdf declares camera_link / camera_depth_frame / camera_color_frame as
+    empty self-closing tags with no inertial block, so PyBullet defaults each to
+    1 kg and bakes 3 kg of phantom mass into the wrist at load. Zeroing them
+    puts the same trajectory at 41.4% and brings the model within 17-27% of the
+    arm's own measured gravity torque (vs 2.1-2.4x off with them). Crucially the
+    planned MOTION is bit-identical either way -- T, t_r, |v|, q_release and
+    qd_release all agree to 0.000e+00 -- because plan_throw stretches time on
+    velocity feasibility, not torque.
+
+    So: fixing the URDF is motion-neutral and unblocks this. Until that decision
+    is made, the plan stays refused. UPDATE THIS TEST when the mass is fixed.
+    """
     arm, profile, cid = H.build_arm(ROBOT)
     try:
         coeffs, _, _, _, _, _, rel = H.plan_throw_for_target(
@@ -174,8 +197,11 @@ def test_precheck_passes_on_the_real_plan(cfg):
         )
         ex = HardwareThrowExecutor(_limits(profile), dry_run=True)
         ok, report = ex.precheck(coeffs, arm)
-        assert ok, report
         assert "peak |tau|" in report, "torque must actually be reported"
+        assert not ok, (
+            "precheck PASSED the shipped plan -- if the phantom camera mass was "
+            "fixed, update this test to assert PASS again:\n" + report)
+        assert "TORQUE over" in report
     finally:
         p.disconnect(cid)
 
@@ -557,6 +583,59 @@ def test_shipped_throw_still_passes_the_tightened_envelope():
             arm, profile, cfg, _FixedPolicy(1.5), (0.75, 0.05), opt_pose=TABLE)
         ex = HardwareThrowExecutor(H.make_limits(profile, 1.0, arm=arm), dry_run=True)
         ok, report = ex.precheck(coeffs, arm, release_speed=np.linalg.norm(v_ach))
-        assert ok, f"tightened envelope rejected the shipped throw:\n{report}"
+        # POSITION is what this test is about. Torque is separately blocked by
+        # the phantom-mass issue (see test_precheck_now_refuses_the_shipped_plan
+        # _on_torque), so assert no POSITION violation rather than overall pass.
+        assert "outside" not in report, (
+            f"tightened envelope rejected the throw on JOINT POSITION:\n{report}")
     finally:
         p.disconnect(cid)
+
+
+def test_hardware_client_has_gravity_enabled():
+    """
+    The bug this prevents was silent and shipped: build_arm() never called
+    setGravity, so PyBullet's client defaulted to zero gravity and
+    calculateInverseDynamics returned INERTIAL torque only -- no error, just
+    plausible-looking numbers gating motion on a real arm.
+
+    Measured cost on the shipped throw: precheck reported 8.6 Nm (22% of limit)
+    where the same trajectory with gravity needs 36.7 Nm (94.2%). A 4.3x
+    under-report on the worst joint, and the difference between "PASS" and
+    "refuse to move".
+
+    Asserted behaviourally rather than by inspecting the call: a stationary arm
+    in a non-singular pose MUST need non-zero torque to hold itself up.
+    """
+    arm, profile, cid = H.build_arm(ROBOT)
+    try:
+        grav = p.getPhysicsEngineParameters(physicsClientId=cid)["gravityAccelerationZ"]
+        assert grav == pytest.approx(-9.81), f"hardware client gravity is {grav}"
+        # shoulder out horizontally -> large, unambiguous holding torque
+        q = np.zeros(7); q[1] = 1.2; q[3] = 1.2
+        tau = np.asarray(arm.inverse_dynamics(q, np.zeros(7), np.zeros(7)), float)
+        assert np.max(np.abs(tau)) > 5.0, (
+            f"static holding torque {np.round(tau,2)} is implausibly small -- "
+            "gravity is almost certainly off")
+    finally:
+        p.disconnect(cid)
+
+
+def test_sim_and_hardware_clients_agree_on_gravity():
+    """
+    Sim and hardware must score the SAME trajectory identically. They already
+    share the release solver and the planner; a physics-parameter difference
+    between the two clients reintroduces the divergence by the back door.
+    """
+    arm, profile, cid = H.build_arm(ROBOT)
+    try:
+        hw = p.getPhysicsEngineParameters(physicsClientId=cid)["gravityAccelerationZ"]
+    finally:
+        p.disconnect(cid)
+    sim_cid = p.connect(p.DIRECT)
+    try:
+        p.setGravity(0, 0, -9.81, physicsClientId=sim_cid)   # as model_pybullet.py:192
+        sim = p.getPhysicsEngineParameters(physicsClientId=sim_cid)["gravityAccelerationZ"]
+    finally:
+        p.disconnect(sim_cid)
+    assert hw == pytest.approx(sim), f"hardware {hw} vs sim {sim}"
