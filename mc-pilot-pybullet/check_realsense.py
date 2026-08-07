@@ -190,9 +190,13 @@ def main():
         else:
             wall = np.array(wall)
             gaps = np.diff(np.array(ts))
-            rate = len(wall) / wall[-1]
+            # Rate from DEVICE timestamps, first frame to last. Wall-clock over
+            # the whole window charges pipeline warm-up (~0.4 s) to the stream
+            # and reported a healthy 30 fps feed as 27 fps -- a false alarm on
+            # exactly the check meant to catch a starved link.
+            rate = 1000.0 * (len(ts) - 1) / (ts[-1] - ts[0])
             _record(OK, f"achieved {rate:.1f} fps over {len(ts)} frames "
-                        f"(requested {want[4]})")
+                        f"(requested {want[4]}; warm-up excluded)")
             _record(OK, f"frame-interval (device ts): mean {gaps.mean():.2f} ms  "
                         f"p99 {np.percentile(gaps, 99):.2f}  max {gaps.max():.2f}")
             if rate < 0.9 * want[4]:

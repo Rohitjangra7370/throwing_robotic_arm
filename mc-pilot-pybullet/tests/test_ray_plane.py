@@ -112,3 +112,31 @@ def test_distortion_inversion_round_trips_when_coeffs_are_nonzero():
     yd = yn * radial + p1 * (r2 + 2 * yn * yn) + 2 * p2 * xn * yn
     o, d = pixel_ray(xd * intr.fx + intr.ppx, yd * intr.fy + intr.ppy, intr)
     assert np.allclose(d[:2] / d[2], [xn, yn], atol=1e-6)
+
+
+def test_1080p_intrinsics_agree_with_720p_on_field_of_view():
+    """
+    Intrinsics are per-resolution, so both are read from the device rather than
+    scaled by hand -- but they describe one sensor, so the FOV must match. A
+    mismatch means one of them was mistyped, which would silently bias every
+    landing measured at that resolution.
+    """
+    from perception.ray_plane import D435I_COLOR_1920x1080 as HD
+    assert HD.hfov_deg() == pytest.approx(INTR.hfov_deg(), abs=0.15)
+    assert HD.vfov_deg() == pytest.approx(INTR.vfov_deg(), abs=0.15)
+    # principal point should sit near centre for both
+    for i in (INTR, HD):
+        assert abs(i.ppx - i.width / 2) < 0.05 * i.width
+        assert abs(i.ppy - i.height / 2) < 0.05 * i.height
+
+
+def test_1080p_round_trips_a_known_landing():
+    from perception.ray_plane import D435I_COLOR_1920x1080 as HD
+    R, t = _overhead(2.0)
+    true_xy = np.array([0.66, 0.21])
+    centre = np.array([true_xy[0], true_xy[1], BALL_R])
+    p_c = R.T @ (centre - t)
+    u = HD.fx * p_c[0] / p_c[2] + HD.ppx
+    v = HD.fy * p_c[1] / p_c[2] + HD.ppy
+    got = ball_center_on_plane(u, v, HD, R, t, z_plane=0.0, ball_radius=BALL_R)
+    assert np.allclose(got, true_xy, atol=1e-9)

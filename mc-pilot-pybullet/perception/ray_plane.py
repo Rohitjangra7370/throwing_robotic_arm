@@ -37,7 +37,7 @@ from __future__ import annotations
 import numpy as np
 
 __all__ = ["Intrinsics", "pixel_ray", "intersect_plane", "ball_center_on_plane",
-           "D435I_COLOR_1280x720"]
+           "D435I_COLOR_1280x720", "D435I_COLOR_1920x1080"]
 
 
 class Intrinsics:
@@ -68,6 +68,14 @@ class Intrinsics:
 # stream resolution changes.
 D435I_COLOR_1280x720 = Intrinsics(fx=910.79, fy=910.15, ppx=654.06, ppy=370.69,
                                   width=1280, height=720, coeffs=(0., 0., 0., 0., 0.))
+
+# 1080p is the unit's best colour mode on the USB3 link and the one to use for
+# landing position: ~1.46 mm/px from a 2.0 m overhead mount. Intrinsics are
+# per-resolution -- fx and ppx scale with width, which is why this cannot be
+# derived from the 720p entry by eye. FOV is identical (70.2 x 43.2 deg), as it
+# must be for the same sensor.
+D435I_COLOR_1920x1080 = Intrinsics(fx=1366.19, fy=1365.22, ppx=981.10, ppy=556.04,
+                                   width=1920, height=1080, coeffs=(0., 0., 0., 0., 0.))
 
 
 def _undistort(x, y, coeffs, iters=5):
