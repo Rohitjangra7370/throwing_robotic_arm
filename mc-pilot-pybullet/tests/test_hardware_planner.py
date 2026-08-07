@@ -496,3 +496,67 @@ def test_gripper_lead_can_be_disabled_for_an_uncompensated_baseline():
     lim = H.make_limits(profile, 1.0)
     lim.gripper_lead_s = 0.0
     assert lim.gripper_lead_s == 0.0
+
+
+def test_readback_guard_separates_wrap_errors_from_out_of_model_poses():
+    """
+    The two failure causes need different fixes, so they must not share a
+    message. The first version of this guard called BOTH a "WRAP/UNIT mismatch",
+    which would have sent someone editing correct conversion code to chase a
+    pose problem.
+    """
+    guard = HardwareThrowExecutor._assert_readback_sane
+    lo, hi = _StubArm._q_lo, _StubArm._q_hi
+
+    # (a) past pi -> can only be unwrapped [0,360) reporting
+    q = np.zeros(7); q[3] = 4.318          # the real 2026-08-07 reading, unwrapped
+    with pytest.raises(RuntimeError, match="WRAP/UNIT"):
+        guard(q, lo, hi)
+
+    # (b) well-formed angle, outside the model -> NOT a units bug
+    q = np.zeros(7); q[3] = -2.656         # the real reading, correctly wrapped
+    assert abs(q[3]) <= np.pi, "fixture must be a well-formed angle"
+    with pytest.raises(RuntimeError, match="OUTSIDE THE KINEMATIC MODEL") as e:
+        guard(q, lo, hi)
+    assert "WRAP/UNIT" not in str(e.value), "must not blame the unit conversion"
+    assert "jog it back" in str(e.value)
+
+    # a normal pose passes
+    guard(np.array([-0.084, 0.460, -3.096, -1.966, 0.011, 0.911, 1.555]), lo, hi)
+
+
+def test_soft_envelope_uses_real_per_joint_limits_not_a_flat_value():
+    """
+    The flat +-6.10 envelope was 2.9x too loose on joint 5 (real range +-2.09),
+    so the precheck could have passed a trajectory driving a limited joint far
+    past its stop. The shipped throw peaks at 57% of the real ranges, so this
+    was latent -- but this check exists to catch a BAD plan, not the good one.
+    """
+    arm, profile, cid = H.build_arm(ROBOT)
+    try:
+        lim = H.make_limits(profile, 1.0, arm=arm)
+        for j in (1, 3, 5):                       # the limited joints
+            assert lim.q_soft_hi[j] < 2.6, f"joint {j} envelope still too loose"
+            assert lim.q_soft_hi[j] < arm._q_hi[j], "envelope must inset the URDF limit"
+            assert lim.q_soft_lo[j] > arm._q_lo[j]
+        for j in (0, 2, 4, 6):                    # continuous joints stay wide
+            assert lim.q_soft_hi[j] > 6.0
+        # without an arm the flat fallback is kept (no trajectory is checked there)
+        assert H.make_limits(profile, 1.0).q_soft_hi[5] == pytest.approx(6.10)
+    finally:
+        p.disconnect(cid)
+
+
+def test_shipped_throw_still_passes_the_tightened_envelope():
+    """The tightened envelope must not reject the plan we intend to run."""
+    with open(os.path.join(CKPT, "config_log.pkl"), "rb") as f:
+        cfg = pkl.load(f)
+    arm, profile, cid = H.build_arm(ROBOT)
+    try:
+        coeffs, _, _, v_ach, _, _, _ = H.plan_throw_for_target(
+            arm, profile, cfg, _FixedPolicy(1.5), (0.75, 0.05), opt_pose=TABLE)
+        ex = HardwareThrowExecutor(H.make_limits(profile, 1.0, arm=arm), dry_run=True)
+        ok, report = ex.precheck(coeffs, arm, release_speed=np.linalg.norm(v_ach))
+        assert ok, f"tightened envelope rejected the shipped throw:\n{report}"
+    finally:
+        p.disconnect(cid)
