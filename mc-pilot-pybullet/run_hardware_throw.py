@@ -9,17 +9,17 @@ Escalate one stage at a time. Do NOT skip to `throw`.
                                      --robot kinova_gen3 --target 0.75 0.05
 
   # 1. Connect + read joint state (no motion):
-  python run_hardware_throw.py connect --arm --ip 192.168.1.10
+  python run_hardware_throw.py connect --arm --ip 192.168.1.101
 
   # 2. Gentle homing move to neutral (slow, capped):
-  python run_hardware_throw.py home --arm --ip 192.168.1.10 --robot kinova_gen3
+  python run_hardware_throw.py home --arm --ip 192.168.1.101 --robot kinova_gen3
 
   # 3. Gripper open/close test (no arm motion):
-  python run_hardware_throw.py gripper --arm --ip 192.168.1.10 --open
-  python run_hardware_throw.py gripper --arm --ip 192.168.1.10 --close
+  python run_hardware_throw.py gripper --arm --ip 192.168.1.101 --open
+  python run_hardware_throw.py gripper --arm --ip 192.168.1.101 --close
 
   # 4. SLOW rehearsal throw at 15% speed (ball dribbles; validates motion+release):
-  python run_hardware_throw.py throw --arm --ip 192.168.1.10 --robot kinova_gen3 \
+  python run_hardware_throw.py throw --arm --ip 192.168.1.101 --robot kinova_gen3 \
         --log_path results_mc_pilot_pb_A_kinova_gen3/1 --target 0.75 0.05 \
         --speed_scale 0.15 --confirm
 
@@ -46,7 +46,8 @@ import pybullet_data
 import policy_learning.Policy as Policy
 from robot_arm.arm_controller import ArmController
 from robot_arm.robot_profiles import get_robot_profile
-from robot_arm.kinova_hardware import HardwareThrowExecutor, SafetyLimits
+from robot_arm.kinova_hardware import (HIGH_LEVEL_MAX_HZ, HardwareThrowExecutor,
+                                       SafetyLimits)
 from simulation_class.release_solver import OptimizedReleaseSolver
 
 
@@ -190,7 +191,8 @@ def release_box_from_table(arm, table, margin=0.10):
     return pts.min(axis=0) - margin, pts.max(axis=0) + margin
 
 
-def make_limits(profile, speed_scale, release_box=None, control_hz=1000.0):
+def make_limits(profile, speed_scale, release_box=None,
+                control_hz=HIGH_LEVEL_MAX_HZ):
     qd_max = np.array(profile.qd_max, float)
     # soft joint envelope: Gen3 revolute joints are +-6.28; keep a margin.
     q_soft = 6.10 * np.ones(len(qd_max))
@@ -230,7 +232,7 @@ def cmd_plan(args):
     print(f"q_release (rad): {np.round(q_rel,3)}")
     print(f"qd_release (rad/s): {np.round(qd_rel,3)}   qd_max: {np.round(profile.qd_max,3)}")
     print(f"release pos in safe box: {ex.check_release_pos(rel)}")
-    ok, report = ex.precheck(coeffs, arm)
+    ok, report = ex.precheck(coeffs, arm, release_speed=np.linalg.norm(v_ach))
     print("--- trajectory precheck ---")
     print(report)
     print(f"PRECHECK: {'PASS' if ok else 'FAIL -- do NOT run on hardware'}")
@@ -282,7 +284,7 @@ def cmd_throw(args):
     with HardwareThrowExecutor(limits, dry_run=not args.arm, ip=args.ip) as ex:
         if not ex.check_release_pos(rel):
             raise RuntimeError(f"release pos {rel} outside safe box; abort.")
-        ok, report = ex.precheck(coeffs, arm)
+        ok, report = ex.precheck(coeffs, arm, release_speed=np.linalg.norm(v_ach))
         print(report)
         if not ok:
             raise RuntimeError("precheck FAILED; refuse to move.")
@@ -303,7 +305,7 @@ def build_parser():
     def common(sp):
         sp.add_argument("--robot", default="kinova_gen3")
         sp.add_argument("--arm", action="store_true", help="talk to the REAL arm (default: dry-run)")
-        sp.add_argument("--ip", default="192.168.1.10")
+        sp.add_argument("--ip", default="192.168.1.101")
         sp.add_argument("--speed_scale", type=float, default=0.15)
 
     def throw_planning(sp):
