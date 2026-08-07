@@ -57,6 +57,20 @@ from simulation_class.release_solver import OptimizedReleaseSolver
 def build_arm(robot):
     profile = get_robot_profile(robot)
     cid = p.connect(p.DIRECT)
+    # GRAVITY IS NOT OPTIONAL HERE, AND ITS ABSENCE IS SILENT.
+    #
+    # PyBullet defaults a fresh client to zero gravity, and
+    # `calculateInverseDynamics` then returns INERTIAL TORQUE ONLY -- no error,
+    # no warning, just numbers that look plausible. Every other client in this
+    # repo sets it (model_pybullet.py:192, find_throw_pose.py, the tests); this
+    # one did not, and it is the only one whose numbers gate motion on a real
+    # arm.
+    #
+    # Measured cost of the omission on the shipped throw: the precheck reported
+    # peak 8.6 Nm (22% of limit) when the same trajectory with gravity needs
+    # 36.7 Nm (94.2%) -- a 4.3x under-report on the worst joint, and the
+    # difference between "PASS" and "refuse to move".
+    p.setGravity(0.0, 0.0, -9.81, physicsClientId=cid)
     p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=cid)
     urdf = pybullet_data.getDataPath() + "/" + profile.urdf_rel_path
     arm = ArmController(cid, urdf, robot_name=robot)
