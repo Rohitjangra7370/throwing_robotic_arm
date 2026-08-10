@@ -462,6 +462,69 @@ Also found while probing (read-only, ControlConfig):
   mode is UNKNOWN and untested. This is the top open risk for stage 5.
 
 
+### 6e. Literature cross-check on the low-level / release-timing question (2026-08-07)
+
+Searched the official Kortex docs, Kinova's issue tracker, working third-party
+drivers, and the throwing literature before committing to a low-level rewrite.
+Conclusion: **do not go low-level. Reproduce the paper's delay model instead.**
+
+**The paper we are reproducing already solves our exact problem, and it is one
+of its headline contributions.** MC-PILOT Sec. 3.2 + Sec. 5 + Algorithm 1:
+
+  t_r = t_rcmd + t_d ,  t_d ~ U(a, a+b)
+
+- "the opening command should be forwarded at time t_rcmd, before the nominal
+  release time t_r, to compensate for the delay; namely, t_rcmd < t_r" — exactly
+  the lead we implemented, independently arrived at.
+- But they do NOT stop at a mean. Algorithm 1 estimates (a, b) after model
+  learning, then samples `t_d^(m) ~ U(a, a+b)` per particle during policy
+  optimization, so the policy is optimised to be robust to the spread.
+  "Properly selecting the t_d distribution is crucial to the algorithm's
+  success."
+- Their numbers (Franka + elastic prosthetic tooltips): compensation **240 ms**,
+  found by sweeping t_r − t_rcmd over 0–0.30 s at 1.2 / 2.0 / 2.8 m/s and
+  picking the value whose landing distance best matched the ballistic nominal.
+  Fig. 10 puts a ≈ 0.24 s, b ≈ 0.018 s.
+
+**Where we are ahead of the paper.** They write: "In most commercial systems,
+available measurements are not adequate to directly estimate this distribution
+in a data-driven fashion since the gripper and the arm are not synchronized" —
+which is why Sec. 5 exists at all. On our setup that premise does not hold: the
+Kortex UDP feedback channel is NOT subject to the 40 Hz command ceiling, and the
+interconnect reports gripper finger position, so we measured t_d **directly** at
+1 kHz: 67.9 ± 6.4 ms. That is a methodological improvement over the paper's
+indirect estimate and is worth reporting as one.
+
+External validation: arXiv 2506.16986 (2025) cites gripper detach latency as
+"between 50–100 ms" and not determinable a priori. Our 67.9 ms sits mid-band.
+
+**Gap we have not closed.** We compensate the MEAN only. The paper's stochastic
+treatment is not implemented — `noise_models.ReleaseTimingJitter` exists in this
+repo but has never been applied to kinova. Reproducing Sec. 5 (or substituting
+our direct measurement for it) and sampling t_d in policy optimisation is the
+single highest-value remaining piece of the reproduction.
+
+**Why NOT low-level servoing** (the alternative we were considering):
+- Kinova, official: "This servoing mode is not meant to be run under Python.
+  C++ is a much more suitable language for low-level control" — Python is
+  "sensitive to jitter and will not guarantee a 1 kHz refresh rate". Our entire
+  stack is Python.
+- Low-level is not "the same commands, faster": working drivers
+  (empriselab/kortex_hardware, ros2_kortex) use high-level 40 Hz for
+  position/velocity and low-level 1 kHz for **effort/torque only**, with the
+  client owning gravity compensation (Pinocchio). We would inherit the whole
+  control law — and our sim gains are already known stiffness-limited.
+- Low-level *velocity* control has an open, unresolved Kinova issue (#42): the
+  arm drifts down under gravity while commanding velocity. Closed as not planned.
+- It buys ~25 ms of command quantisation (~7 ms std). Our gripper's own
+  irreducible jitter is 6.4 ms. So the ceiling on the gain is small, and the
+  paper's answer to residual jitter is to model it, not to engineer it away.
+
+Also noted for bring-up: switching to position mode for the first time makes the
+arm move to the candlestick pose (kortex_hardware README) — do not be surprised
+by it, and do not have anything in the way.
+
+
 ---
 
 ## 7. Open items (priority order)
