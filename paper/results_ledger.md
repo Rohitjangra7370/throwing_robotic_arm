@@ -587,6 +587,54 @@ the soft limit, drift at release is ≤0.7°, worth ≤0.68 cm of landing error
 against a 2.89 cm target. The design is fine; the limit is the problem.
 
 
+### 6g. RESOLVED — per-phase timing + soft limits raised (2026-08-07)
+
+Two fixes, measured on the arm. Drift at release, `speed_scale = 1.0`:
+**0.5008 rad (28.7°) → 0.0171 rad (0.98°), a 29× reduction.**
+
+| scale | before | after |
+|---|---|---|
+| 0.15 | 0.0044 | 0.0056 |
+| 0.30 | 0.0056 | 0.0111 |
+| 0.60 | 0.0119 | 0.0236 |
+| **1.00** | **0.5008** | **0.0171** |
+
+**1. `speed_scale` now applies to the THROW phase only.** The insight is the
+user's: only the three axis-perpendicular joints (1, 3, 5) carry throw velocity.
+J0 sweeps its entire +178.7° azimuth during windup, is frozen
+(`qd_release[0] = 0`) through the throw, and sweeps back during follow-through —
+it contributes nothing to release speed, and the duration of those phases is
+irrelevant. Uniform scaling was driving it to 74.4 °/s for no reason. Windup and
+follow now run at `positioning_scale` (default 1.0, already sized against
+`qd_max` by `_windup_pose_and_time`); only the throw dilates. Side benefit: the
+0.15 rehearsal went 56.85 s → 14.76 s, and escalation now isolates the throw
+instead of re-testing positioning every time.
+
+**2. Soft limits raised to the arm's own hard limits.** 50.0 → 80/70 °/s,
+57.3 → 297.9/573 °/s², for `ANGULAR_JOYSTICK` specifically. New
+`SoftLimitManager` + `run_hardware_throw.py limits` subcommand: clamps every
+request element-wise to the hard limits (never touched, still enforced
+underneath), reads back and fails closed on mismatch, and backs the originals up
+to `results_soft_limits_backup.json` because the API has no restore-defaults.
+`--restore --confirm` puts them back. **The lab arm must not be left raised.**
+
+**3. The readiness check now tests the enforced limit.** `hw_readonly_check.py`
+compared only against HARD limits and said "ours is within the arm's on all
+joints" — true and useless. It now reads `GetKinematicSoftLimits` for the ACTIVE
+control mode and FAILs when our `qd_max` exceeds it. 42/42 OK after the raise;
+it would have failed before, which is the point.
+
+Interpretation note: **max** drift is no longer the figure to read. With
+positioning at full speed it reaches ~0.09 rad during windup/follow, which is
+irrelevant — those phases carry no ball. **Drift at release** is the number:
+0.0171 rad ≈ 1.0 cm of landing error, against a 2.89 cm sim accuracy.
+
+Also observed: J3 repeatedly parks at −2.66 rad, outside the URDF's ±2.57, and
+the readback guard correctly refuses to plan from there (it fired mid-session and
+blocked a run until J3 was jogged back). The hardware's real range is wider than
+the model's; reconciling them is an open item.
+
+
 ---
 
 ## 7. Open items (priority order)

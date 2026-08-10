@@ -37,6 +37,7 @@ Kortex call is centralised in _KortexBackend so fixes live in one place.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -139,11 +140,18 @@ class SafetyLimits:
     # See GRIPPER_RELEASE_LATENCY_S. Set to 0.0 to disable compensation (e.g.
     # to reproduce an uncompensated baseline for the record).
     gripper_lead_s: float = GRIPPER_RELEASE_LATENCY_S
+    # Time scale for the NON-THROW phases (windup and follow-through).
+    # `speed_scale` applies to the throw phase alone -- see rehearse_or_throw.
+    # 1.0 is safe by construction: ArmController._windup_pose_and_time already
+    # grows the windup until its rest-to-rest cubic peak fits inside qd_max.
+    positioning_scale: float = 1.0
     release_box_lo: np.ndarray = field(default_factory=lambda: np.array([0.2, -0.5, 0.1]))
     release_box_hi: np.ndarray = field(default_factory=lambda: np.array([0.9, 0.5, 0.9]))
 
     def __post_init__(self):
         assert 0.0 < self.speed_scale <= 1.0, "speed_scale must be in (0, 1]"
+        assert 0.0 < self.positioning_scale <= 1.0, \
+            "positioning_scale must be in (0, 1]"
         if self.control_hz > HIGH_LEVEL_MAX_HZ:
             # Clamp rather than raise: a slower stream is always the safe
             # direction, and refusing here would block a bring-up over a config
@@ -396,6 +404,124 @@ class _KortexBackend:
     def stop(self):
         """Command zero joint velocity immediately."""
         self.send_joint_velocities(np.zeros(self.n_dofs))
+
+
+# --------------------------------------------------------------------------- #
+# Soft limits
+# --------------------------------------------------------------------------- #
+# The control mode Base.SendJointSpeedsCommand actually runs in. Soft limits are
+# PER MODE, so reading or setting the wrong mode's limits tells you nothing about
+# the commands you are sending.
+JOINT_SPEED_CONTROL_MODE = "ANGULAR_JOYSTICK"
+
+
+class SoftLimitManager:
+    """
+    Read / raise / restore the arm's SOFT kinematic limits.
+
+    WHY THIS EXISTS. We planned the throw against the arm's HARD limits
+    (80/70 deg/s, 297.9 deg/s^2) while the arm enforces the SOFT limits of the
+    active control mode -- on this unit 50.0 deg/s and 57.3 deg/s^2 in
+    ANGULAR_JOYSTICK. Commanding 74.4 deg/s on J0 against a 50 deg/s soft limit
+    produced 0.5008 rad (28.7 deg) of position error at release. The threshold is
+    exact: every speed_scale whose peak command stayed under 50 deg/s drifted
+    ~0 rad; the one that crossed drifted 28 deg.
+
+    Note `Base.GetAllJointsSpeedSoftLimitation` answers UNSUPPORTED_METHOD on
+    this firmware, which is easy to misread as "soft limits unavailable". They
+    live on ControlConfig and require the control mode as an argument.
+
+    SAFETY. Raising a soft limit is deliberately not something this code does on
+    its own:
+      * requests are CLAMPED element-wise to the hard limits, which stay enforced
+        by the arm underneath and are never touched;
+      * every set is READ BACK and verified, failing closed on mismatch;
+      * the previous values are written to a backup file, because the API has no
+        notion of "restore defaults" -- if we do not record them, they are gone.
+    Restore them when you are done. The next person to use the arm will not know
+    it was left fast.
+    """
+
+    def __init__(self, backend, mode_name=JOINT_SPEED_CONTROL_MODE):
+        _patch_collections_abc()
+        from kortex_api.autogen.client_stubs.ControlConfigClientRpc import ControlConfigClient
+        from kortex_api.autogen.messages import ControlConfig_pb2 as CC
+        self._CC = CC
+        self._cc = ControlConfigClient(backend._router)
+        self._base = backend._base
+        self.mode_name = mode_name
+        self.mode = getattr(CC, mode_name)
+
+    # -- reads ------------------------------------------------------------- #
+    def active_mode(self):
+        return str(self._cc.GetControlMode()).split(":")[-1].strip()
+
+    def read_soft(self, mode_name=None):
+        info = self._CC.ControlModeInformation()
+        info.control_mode = getattr(self._CC, mode_name or self.mode_name)
+        r = self._cc.GetKinematicSoftLimits(info)
+        return {"speed": np.array(list(r.joint_speed_limits), float),
+                "accel": np.array(list(r.joint_acceleration_limits), float),
+                "twist_linear": float(r.twist_linear)}
+
+    def read_hard(self):
+        r = self._cc.GetKinematicHardLimits()
+        return {"speed": np.array(list(r.joint_speed_limits), float),
+                "accel": np.array(list(r.joint_acceleration_limits), float),
+                "twist_linear": float(r.twist_linear)}
+
+    # -- writes ------------------------------------------------------------ #
+    def _set(self, speed_deg_s, accel_deg_s2):
+        sp = self._CC.JointSpeedSoftLimits()
+        sp.control_mode = self.mode
+        for v in speed_deg_s:
+            sp.joint_speed_soft_limits.append(float(v))
+        self._cc.SetJointSpeedSoftLimits(sp)
+
+        ac = self._CC.JointAccelerationSoftLimits()
+        ac.control_mode = self.mode
+        for v in accel_deg_s2:
+            ac.joint_acceleration_soft_limits.append(float(v))
+        self._cc.SetJointAccelerationSoftLimits(ac)
+
+    def apply(self, speed_deg_s, accel_deg_s2, tol=1e-2):
+        """Clamp to hard, set, read back, verify. Returns the achieved values."""
+        hard = self.read_hard()
+        speed = np.minimum(np.asarray(speed_deg_s, float), hard["speed"])
+        accel = np.minimum(np.asarray(accel_deg_s2, float), hard["accel"])
+        if np.any(np.asarray(speed_deg_s, float) > hard["speed"] + tol):
+            print(f"[limits] request exceeded HARD speed limit; clamped to "
+                  f"{np.round(hard['speed'], 2)}")
+        if np.any(np.asarray(accel_deg_s2, float) > hard["accel"] + tol):
+            print(f"[limits] request exceeded HARD accel limit; clamped to "
+                  f"{np.round(hard['accel'], 1)}")
+        self._set(speed, accel)
+        got = self.read_soft()
+        if (not np.allclose(got["speed"], speed, atol=1e-1)
+                or not np.allclose(got["accel"], accel, atol=1.0)):
+            raise RuntimeError(
+                "soft-limit read-back does not match what was set.\n"
+                f"  wanted speed {np.round(speed, 2)} accel {np.round(accel, 1)}\n"
+                f"  got    speed {np.round(got['speed'], 2)} accel "
+                f"{np.round(got['accel'], 1)}\n"
+                "Refusing to continue on limits we cannot confirm.")
+        return got
+
+    def backup(self, path):
+        cur = self.read_soft()
+        rec = {"mode": self.mode_name,
+               "speed_deg_s": cur["speed"].tolist(),
+               "accel_deg_s2": cur["accel"].tolist()}
+        with open(path, "w") as f:
+            json.dump(rec, f, indent=2)
+        return rec
+
+    def restore(self, path):
+        with open(path) as f:
+            rec = json.load(f)
+        if rec["mode"] != self.mode_name:
+            raise RuntimeError(f"backup is for mode {rec['mode']}, not {self.mode_name}")
+        return self.apply(rec["speed_deg_s"], rec["accel_deg_s2"])
 
 
 # --------------------------------------------------------------------------- #
@@ -653,19 +779,51 @@ class HardwareThrowExecutor:
     def rehearse_or_throw(self, coeffs, arm, verbose=True, track=None,
                           track_every=1):
         """
-        Stream the throw. Trajectory-time s advances at speed_scale of wall-clock,
-        so commanded velocity qd(s)*speed_scale is chain-rule-consistent with the
-        stretched playback: positions follow real geometry, velocities scale down.
-        Gripper opens when s crosses t_r. Guaranteed stop on any exit.
+        Stream the throw with PER-PHASE time scaling.
 
-        speed_scale < 1.0 -> safe slow rehearsal (ball dribbles).
-        speed_scale = 1.0 -> the real throw.
+        `speed_scale` applies to the THROW phase only; windup and follow-through
+        run at `positioning_scale`. Scaling them together was a design flaw with
+        a measured cost: J0 sweeps the full +178.7 deg azimuth during windup, is
+        frozen (qd_release[0] = 0) through the throw, and sweeps back during
+        follow-through -- it contributes NOTHING to release speed, yet uniform
+        scaling drove it to 74.4 deg/s and produced 0.5008 rad (28.7 deg) of
+        position error at release. Only the three axis-perpendicular joints
+        (1, 3, 5) carry throw velocity; everything else is positioning, and
+        positioning duration is irrelevant to the throw.
+
+        Trajectory time s advances at a per-phase rate, and the commanded
+        velocity is qd(s) * ds/dwall -- the same chain rule as before, applied
+        piecewise:
+
+            windup [0, t_w]   ds/dwall = positioning_scale
+            throw  [t_w, t_r] ds/dwall = speed_scale
+            follow [t_r, T]   ds/dwall = positioning_scale
+
+        Escalating speed_scale now tests the throw alone and never re-tests
+        positioning. Guaranteed stop on any exit.
         """
-        t_r = coeffs["t_r"]
-        T = coeffs["T"]
+        t_w = float(coeffs["t_w"])
+        t_r = float(coeffs["t_r"])
+        T = float(coeffs["T"])
         scale = self.limits.speed_scale
+        pos = self.limits.positioning_scale
         dt = 1.0 / self.limits.control_hz
-        wall_T = T / scale
+
+        # Wall-clock duration of each phase, and the wall time at which each ends.
+        w_windup = t_w / pos
+        w_throw = (t_r - t_w) / scale
+        w_follow = (T - t_r) / pos
+        wall_T = w_windup + w_throw + w_follow
+        wall_release = w_windup + w_throw
+
+        def s_of_wall(wall):
+            """Trajectory time and ds/dwall at a given wall time."""
+            if wall < w_windup:
+                return wall * pos, pos
+            if wall < wall_release:
+                return t_w + (wall - w_windup) * scale, scale
+            return t_r + (wall - wall_release) * pos, pos
+
         if wall_T > self.limits.max_traj_seconds:
             raise RuntimeError(
                 f"execution would take {wall_T:.1f}s > max_traj_seconds "
@@ -677,13 +835,16 @@ class HardwareThrowExecutor:
         # with speed_scale: s advances at `scale` per wall-second, hence
         # s_fire = t_r - lead*scale. Getting this backwards would over-lead the
         # slow rehearsal by 1/scale and drop the ball before the swing.
+        # Release sits at the END of the throw phase, so the lead converts at the
+        # THROW phase's rate, not the positioning rate.
         lead = float(self.limits.gripper_lead_s)
         s_fire = t_r - lead * scale
-        if s_fire < 0.0:
-            print(f"[exec] WARNING: gripper lead {lead:.3f}s exceeds the pre-release "
-                  f"trajectory at speed_scale={scale}; firing at t=0, so the ball "
-                  f"will release LATE by {-s_fire / scale:.3f}s of wall clock.")
-            s_fire = 0.0
+        if s_fire < t_w:
+            # lead reaches back past the start of the throw phase
+            print(f"[exec] WARNING: gripper lead {lead:.3f}s exceeds the throw "
+                  f"phase at speed_scale={scale}; firing at the start of the "
+                  f"throw, release will be LATE.")
+            s_fire = t_w
 
         released = False
         s = 0.0
@@ -698,16 +859,18 @@ class HardwareThrowExecutor:
         worst_late = 0.0
         release_wall = None
         if verbose:
-            print(f"[exec] speed_scale={scale} wall_T={wall_T:.2f}s "
-                  f"release at s={t_r:.3f}s rate={self.limits.control_hz:.0f}Hz")
+            print(f"[exec] throw_scale={scale} pos_scale={pos} wall_T={wall_T:.2f}s "
+                  f"(windup {w_windup:.2f} + throw {w_throw:.2f} + follow "
+                  f"{w_follow:.2f}) release at s={t_r:.3f}s (wall {wall_release:.2f}s) "
+                  f"rate={self.limits.control_hz:.0f}Hz")
         try:
             while True:
                 wall = time.perf_counter() - t0
-                s = wall * scale
-                if s > T:
+                s, ds_dwall = s_of_wall(wall)
+                if s > T or wall > wall_T:
                     break
                 q, qd, _ = arm.get_setpoint(coeffs, s, with_accel=True)
-                qd_cmd = self.limits.clamp_velocity(np.asarray(qd) * scale)
+                qd_cmd = self.limits.clamp_velocity(np.asarray(qd) * ds_dwall)
                 self.backend.send_joint_velocities(qd_cmd)
                 # The throw is streamed OPEN-LOOP in velocity: q is computed and
                 # then discarded. Any velocity-tracking error therefore

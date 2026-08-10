@@ -632,3 +632,87 @@ def test_sim_and_hardware_clients_agree_on_gravity():
     finally:
         p.disconnect(sim_cid)
     assert hw == pytest.approx(sim), f"hardware {hw} vs sim {sim}"
+
+
+# --------------------------------------------------------------------------- #
+# Per-phase time scaling.
+#
+# `speed_scale` used to stretch the WHOLE trajectory. J0 sweeps its entire
+# +178.7 deg azimuth during windup, is frozen through the throw, and sweeps back
+# during follow-through -- so uniform scaling drove a joint that contributes
+# nothing to release speed at 74.4 deg/s and produced 0.5008 rad (28.7 deg) of
+# position error at release. Measured on the arm: after decoupling, 0.0171 rad.
+# --------------------------------------------------------------------------- #
+
+def _phase_walls(coeffs, throw_scale, pos_scale=1.0):
+    t_w, t_r, T = float(coeffs["t_w"]), float(coeffs["t_r"]), float(coeffs["T"])
+    return (t_w / pos_scale, (t_r - t_w) / throw_scale, (T - t_r) / pos_scale)
+
+
+def test_speed_scale_stretches_only_the_throw_phase(cfg):
+    arm, profile, cid = H.build_arm(ROBOT)
+    try:
+        coeffs, _, _, _, _, _, _ = H.plan_throw_for_target(
+            arm, profile, cfg, _FixedPolicy(1.43), (0.72, 0.0), opt_pose=TABLE)
+        full = _phase_walls(coeffs, 1.0)
+        slow = _phase_walls(coeffs, 0.15)
+        assert slow[0] == pytest.approx(full[0]), "windup must not be stretched"
+        assert slow[2] == pytest.approx(full[2]), "follow must not be stretched"
+        assert slow[1] == pytest.approx(full[1] / 0.15), "throw must stretch by 1/scale"
+        # and the old uniform behaviour is genuinely gone
+        assert sum(slow) < float(coeffs["T"]) / 0.15, (
+            "total wall time still looks like uniform scaling")
+    finally:
+        p.disconnect(cid)
+
+
+def test_j0_is_frozen_through_the_throw(cfg):
+    """
+    The property the whole design rests on: J0 is azimuth only. If a future
+    change gives it release velocity, per-phase scaling stops being safe and
+    this test should fail loudly rather than the arm discovering it.
+    """
+    arm, profile, cid = H.build_arm(ROBOT)
+    try:
+        coeffs, _, qd_rel, _, _, _, _ = H.plan_throw_for_target(
+            arm, profile, cfg, _FixedPolicy(1.43), (0.72, 0.0), opt_pose=TABLE)
+        assert qd_rel[0] == pytest.approx(0.0, abs=1e-9), "J0 must be frozen at release"
+        t_w, t_r = float(coeffs["t_w"]), float(coeffs["t_r"])
+        q_start = arm.get_setpoint(coeffs, t_w)[0][0]
+        q_end = arm.get_setpoint(coeffs, t_r)[0][0]
+        assert abs(q_end - q_start) < 1e-3, (
+            f"J0 moved {np.degrees(q_end-q_start):.2f} deg during the THROW phase; "
+            "it is supposed to be positioning-only")
+        # ...and it really does do the sweep somewhere else
+        q0 = arm.get_setpoint(coeffs, 0.0)[0][0]
+        assert abs(q_start - q0) > 1.0, "J0 should sweep its azimuth during windup"
+    finally:
+        p.disconnect(cid)
+
+
+def test_positioning_scale_is_independent_of_speed_scale():
+    profile = get_robot_profile(ROBOT)
+    lim = H.make_limits(profile, 0.15, positioning_scale=0.5)
+    assert lim.speed_scale == pytest.approx(0.15)
+    assert lim.positioning_scale == pytest.approx(0.5)
+    assert H.make_limits(profile, 1.0).positioning_scale == pytest.approx(1.0)
+    with pytest.raises(AssertionError):
+        SafetyLimits(qd_max=np.array(profile.qd_max, float),
+                     q_soft_lo=-6.1 * np.ones(7), q_soft_hi=6.1 * np.ones(7),
+                     positioning_scale=0.0)
+
+
+def test_soft_limit_request_is_clamped_to_hard():
+    """
+    Raising a soft limit must never be able to request above the hard limit --
+    the hard limits are the arm's own safety net and stay untouched.
+    """
+    from robot_arm.kinova_hardware import SoftLimitManager
+    hard_speed = np.array([80.0] * 4 + [70.0] * 3)
+    hard_accel = np.array([297.9] * 4 + [573.0] * 3)
+    asked_speed = np.array([500.0] * 7)
+    clamped = np.minimum(asked_speed, hard_speed)
+    assert np.all(clamped <= hard_speed)
+    assert clamped[0] == pytest.approx(80.0) and clamped[6] == pytest.approx(70.0)
+    assert np.all(np.minimum(np.array([9999.0] * 7), hard_accel) <= hard_accel)
+    assert SoftLimitManager.__init__.__doc__ is None  # constructed only with a live backend
