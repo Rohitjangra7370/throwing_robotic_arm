@@ -340,6 +340,14 @@ def cmd_throw(args):
         finally:
             if args.arm:
                 ex.backend.close_realtime_feedback()
+        if track:
+            import numpy as _np
+            _np.savez("/tmp/drift_trace.npz",
+                      s=_np.array([t[0] for t in track]),
+                      planned=_np.array([t[1] for t in track]),
+                      actual=_np.array([t[2] for t in track]),
+                      t_r=coeffs["t_r"], T=coeffs["T"], scale=args.speed_scale)
+            print("[exec] drift trace -> /tmp/drift_trace.npz")
     p.disconnect(cid)
     return 0
 
