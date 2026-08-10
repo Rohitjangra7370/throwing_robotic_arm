@@ -325,7 +325,21 @@ def cmd_throw(args):
               f"({'REAL THROW' if args.speed_scale >= 0.99 else 'SLOW REHEARSAL'})")
         ex.set_gripper(closed=True)          # grasp
         ex.home(arm, np.array(profile.q_neutral, float), duration=args.duration)
-        ex.rehearse_or_throw(coeffs, arm, track=([] if args.arm else None))
+        # Drift tracking reads joint state every tick. Over the TCP command
+        # channel a read costs ~25 ms, which at a 25 ms control period halves
+        # the achieved rate -- measured: 20 Hz against a 40 Hz target. The UDP
+        # feedback channel serves the same read in ~0.9 ms (measured 1122 Hz),
+        # so instrumentation costs ~3.6% of the period instead of 100%.
+        # Never instrument a control loop through its command channel.
+        track = None
+        if args.arm:
+            ex.backend.open_realtime_feedback()
+            track = []
+        try:
+            ex.rehearse_or_throw(coeffs, arm, track=track)
+        finally:
+            if args.arm:
+                ex.backend.close_realtime_feedback()
     p.disconnect(cid)
     return 0
 
