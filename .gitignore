@@ -18,3 +18,4 @@ graphify-out/
 # Python cache
 __pycache__/
 *.pyc
+mc-pilot-pybullet/robot_arm/_urdf_cache/

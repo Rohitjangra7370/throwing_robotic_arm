@@ -17,6 +17,7 @@ import numpy as np
 import pybullet as p
 
 from robot_arm.robot_profiles import get_robot_profile
+from robot_arm.urdf_fixup import repair_massless_links
 
 _GRAVITY = np.array([0.0, 0.0, -9.81])  # matches p.setGravity(...) used throughout
 
@@ -46,6 +47,12 @@ class ArmController:
         """
         self._profile = get_robot_profile(robot_name)
         self._cid = client_id
+        # Repair links declared with no inertial block before loading. PyBullet
+        # silently substitutes mass=1 kg for those, which on the shipped Gen3
+        # URDF hangs 3 kg of phantom mass off the wrist and inflates every
+        # torque this class computes by ~2.3x. See robot_arm/urdf_fixup.py.
+        # Motion is unaffected (bit-identical plans); only torque changes.
+        urdf_path = repair_massless_links(urdf_path)
         self._arm_id = p.loadURDF(
             urdf_path,
             basePosition=base_position,

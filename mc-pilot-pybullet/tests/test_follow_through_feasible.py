@@ -23,29 +23,60 @@ def arm():
 def test_follow_through_infeasible_release_raises_not_silently_collapses(arm):
     """windup and throw both have real time-scaling+feasibility loops that
     stretch duration (and raise if still infeasible after 6 tries) -- follow
-    (the post-release decel back to neutral) had NEITHER: follow_dur was
-    fixed at the ORIGINAL nominal (T - t_r), never adjusted even when windup/
-    throw get stretched a lot. For this extended overhead release (far from
-    q_neutral, released at near-qd_max), the follow phase peaked at 556% of
-    qd_max and 3.2x tau_max at the original duration -- a trajectory the real
-    arm cannot execute (looks like a violent "collapse" in sim; would fault
-    or be clamped on real hardware). Measured directly: even the BEST
-    duration (searched dt=0.6..6.0s) only gets this candidate down to ~1.17x
-    tau_max -- peak ratio vs duration is NOT monotonic here (bottoms out
-    then rises again), so this is a structural infeasibility of this
-    specific release state's straight-line recovery path, not a
-    time-scaling problem. Correct behavior: raise loudly, not produce an
-    infeasible trajectory silently."""
+    (the post-release decel back to neutral) had NEITHER: follow_dur was fixed
+    at the ORIGINAL nominal (T - t_r), never adjusted even when windup/throw got
+    stretched. That silently shipped a follow-through at 556% of qd_max and 3.2x
+    tau_max -- a trajectory the real arm cannot execute.
+
+    This test used to pin one specific release state as the counterexample. That
+    state is no longer infeasible: it was infeasible only on TORQUE, and
+    repairing the URDF's 3 kg of phantom camera mass (robot_arm/urdf_fixup.py)
+    cut modelled torque ~2.3x, so the stretch loop now finds a valid duration
+    for it. Scaling qd_release up cannot restore the failure either, because
+    plan_throw clamps the override to qd_max before checking.
+
+    So the test now exercises the GUARD rather than a fixture that a model fix
+    can invalidate: squeeze tau_max until the follow-through provably cannot be
+    satisfied at any duration, and assert it raises loudly instead of returning
+    an infeasible trajectory. That is the behaviour the regression is about, and
+    it survives future changes to the dynamics model.
+    """
+    import dataclasses
+    import pybullet as _p
+    import pybullet_data as _pd
+    from robot_arm import robot_profiles as _RP
+    from robot_arm.arm_controller import ArmController as _AC
+
     controller, prof, client = arm
     q_release = np.array([-3.14159169, -0.52359878, 0.0, 0.66322512, 0.0, 0.41887902, 0.0])
     qd_release = np.array([0.0, -1.3963, 0.0, -1.3963, 0.0, -1.03565721, 0.0]) * (1.85 / 1.929)
-    with pytest.raises(RuntimeError, match="Follow-through infeasible"):
-        controller.plan_throw(
-            np.array([1.0, 0.0, 0.0]), np.array(prof.default_release_pos), 0.5, 1.6, 2.2,
-            q_release_override=q_release, qd_release_override=qd_release,
-            monotonic_windup=True,
-        )
 
+    # sanity: with the CORRECT model this state is now feasible, which is why
+    # the old fixture stopped failing. Pin that, so the reason stays visible.
+    controller.plan_throw(
+        np.array([1.0, 0.0, 0.0]), np.array(prof.default_release_pos), 0.5, 1.6, 2.2,
+        q_release_override=q_release, qd_release_override=qd_release,
+        monotonic_windup=True)
+
+    # now make the follow-through genuinely impossible and require a loud raise
+    tiny = dataclasses.replace(prof, name="_tiny_tau",
+                               tau_max=tuple(t * 0.02 for t in prof.tau_max))
+    _RP._PROFILES["_tiny_tau"] = tiny
+    cid = _p.connect(_p.DIRECT)
+    try:
+        _p.setGravity(0, 0, -9.81, physicsClientId=cid)
+        _p.setAdditionalSearchPath(_pd.getDataPath(), physicsClientId=cid)
+        weak = _AC(cid, _pd.getDataPath() + "/kinova_gen3/gen3.urdf",
+                   robot_name="_tiny_tau")
+        with pytest.raises(RuntimeError, match="infeasible"):
+            weak.plan_throw(
+                np.array([1.0, 0.0, 0.0]), np.array(prof.default_release_pos),
+                0.5, 1.6, 2.2,
+                q_release_override=q_release, qd_release_override=qd_release,
+                monotonic_windup=True)
+    finally:
+        _p.disconnect(cid)
+        _RP._PROFILES.pop("_tiny_tau", None)
 
 def test_shipped_table_entry_whole_trajectory_within_velocity_and_torque(arm):
     """End-to-end guarantee on what actually ships: for the real az=0 entry of
