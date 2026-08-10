@@ -643,7 +643,8 @@ class HardwareThrowExecutor:
     def set_gripper(self, closed: bool):
         self.backend.send_gripper(self.gripper_closed if closed else self.gripper_open)
 
-    def rehearse_or_throw(self, coeffs, arm, verbose=True):
+    def rehearse_or_throw(self, coeffs, arm, verbose=True, track=None,
+                          track_every=1):
         """
         Stream the throw. Trajectory-time s advances at speed_scale of wall-clock,
         so commanded velocity qd(s)*speed_scale is chain-rule-consistent with the
@@ -701,6 +702,21 @@ class HardwareThrowExecutor:
                 q, qd, _ = arm.get_setpoint(coeffs, s, with_accel=True)
                 qd_cmd = self.limits.clamp_velocity(np.asarray(qd) * scale)
                 self.backend.send_joint_velocities(qd_cmd)
+                # The throw is streamed OPEN-LOOP in velocity: q is computed and
+                # then discarded. Any velocity-tracking error therefore
+                # INTEGRATES into position error over the 8.5 s trajectory, and
+                # at release that moves both the release point and the release
+                # direction (v = J(q)*qd). Nothing corrects it and, until this
+                # log existed, nothing measured it either. Recording planned vs
+                # actual costs one feedback read per tick and turns an unknown
+                # into a number.
+                if track is not None and (tick % track_every) == 0:
+                    try:
+                        q_meas, _ = self.backend.read_joint_state()
+                        track.append((s, np.asarray(q, float).copy(),
+                                      np.asarray(q_meas, float).copy()))
+                    except Exception:
+                        pass
                 if (not released) and s >= s_fire:
                     self.set_gripper(closed=False)  # OPEN -> release
                     released = True
@@ -730,6 +746,23 @@ class HardwareThrowExecutor:
             "worst_late_ms": worst_late * 1e3,
             "release_wall_s": release_wall,
         }
+        if track:
+            arr_s = np.array([t[0] for t in track])
+            err = np.array([t[2][:self.n_dofs] - t[1][:self.n_dofs] for t in track])
+            # wrap: continuous joints can cross +-pi mid-trajectory
+            err = np.arctan2(np.sin(err), np.cos(err))
+            i_rel = int(np.argmin(np.abs(arr_s - t_r)))
+            self.last_exec_stats.update({
+                "drift_max_rad": float(np.max(np.abs(err))),
+                "drift_at_release_rad": float(np.max(np.abs(err[i_rel]))),
+                "drift_final_rad": float(np.max(np.abs(err[-1]))),
+                "drift_samples": len(track),
+            })
+            if verbose:
+                print(f"[exec] OPEN-LOOP DRIFT (planned vs actual): "
+                      f"max {np.max(np.abs(err)):.4f} rad, "
+                      f"at release {np.max(np.abs(err[i_rel])):.4f} rad, "
+                      f"end {np.max(np.abs(err[-1])):.4f} rad")
         if verbose:
             print(f"[exec] trajectory complete, arm stopped "
                   f"({tick} ticks, {achieved_hz:.0f}Hz achieved vs "
