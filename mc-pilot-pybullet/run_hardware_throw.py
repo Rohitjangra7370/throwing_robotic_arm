@@ -325,7 +325,7 @@ def cmd_throw(args):
               f"({'REAL THROW' if args.speed_scale >= 0.99 else 'SLOW REHEARSAL'})")
         ex.set_gripper(closed=True)          # grasp
         ex.home(arm, np.array(profile.q_neutral, float), duration=args.duration)
-        ex.rehearse_or_throw(coeffs, arm)
+        ex.rehearse_or_throw(coeffs, arm, track=([] if args.arm else None))
     p.disconnect(cid)
     return 0
 
