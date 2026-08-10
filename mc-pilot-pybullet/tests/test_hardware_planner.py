@@ -166,29 +166,21 @@ def _limits(profile, **over):
     return SafetyLimits(**kw)
 
 
-def test_precheck_now_refuses_the_shipped_plan_on_torque(cfg):
+def test_precheck_passes_on_the_real_plan(cfg):
     """
-    KNOWN BLOCKER, and the test asserts it deliberately.
+    Guards TWO bugs that between them made this check meaningless, both found by
+    cross-checking the model against the connected arm (2026-08-07):
 
-    This test used to assert PASS. It passed because build_arm() never enabled
-    gravity, so the torque check saw inertial terms only and reported 22% of
-    limit. With gravity on -- the correct physics -- the same trajectory needs
-    36.7 Nm on joint 1, 94.2% of its 39 Nm limit, which exceeds the 0.90
-    torque_margin. Refusing is the right answer, so the test now pins the
-    refusal rather than the stale pass.
+    1. build_arm() never enabled gravity, so the torque check saw inertial terms
+       only and reported 22% of limit where the truth was 94.2%.
+    2. The shipped gen3.urdf declares its three camera frames as empty
+       self-closing tags, so PyBullet gave each 1 kg and baked 3 kg of phantom
+       mass into the wrist -- inflating torque ~2.3x the other way.
 
-    The 94.2% figure is itself CONSERVATIVE by a known amount: the shipped
-    gen3.urdf declares camera_link / camera_depth_frame / camera_color_frame as
-    empty self-closing tags with no inertial block, so PyBullet defaults each to
-    1 kg and bakes 3 kg of phantom mass into the wrist at load. Zeroing them
-    puts the same trajectory at 41.4% and brings the model within 17-27% of the
-    arm's own measured gravity torque (vs 2.1-2.4x off with them). Crucially the
-    planned MOTION is bit-identical either way -- T, t_r, |v|, q_release and
-    qd_release all agree to 0.000e+00 -- because plan_throw stretches time on
-    velocity feasibility, not torque.
-
-    So: fixing the URDF is motion-neutral and unblocks this. Until that decision
-    is made, the plan stays refused. UPDATE THIS TEST when the mass is fixed.
+    The two errors pointed in opposite directions and partially cancelled, which
+    is why nothing looked wrong. With both fixed the plan sits at 41.4%, and the
+    model agrees with the arm's own torque sensors to within 17-27% instead of
+    being 2.1-2.4x off.
     """
     arm, profile, cid = H.build_arm(ROBOT)
     try:
@@ -197,14 +189,15 @@ def test_precheck_now_refuses_the_shipped_plan_on_torque(cfg):
         )
         ex = HardwareThrowExecutor(_limits(profile), dry_run=True)
         ok, report = ex.precheck(coeffs, arm)
+        assert ok, report
         assert "peak |tau|" in report, "torque must actually be reported"
-        assert not ok, (
-            "precheck PASSED the shipped plan -- if the phantom camera mass was "
-            "fixed, update this test to assert PASS again:\n" + report)
-        assert "TORQUE over" in report
+        # and the torque must be REAL -- gravity on, phantom mass off
+        tau = np.asarray(arm.inverse_dynamics(
+            np.array(profile.q_neutral, float) + np.array([0, 1.2, 0, 1.2, 0, 0, 0]),
+            np.zeros(7), np.zeros(7)), float)
+        assert np.max(np.abs(tau)) > 5.0, "gravity appears to be off again"
     finally:
         p.disconnect(cid)
-
 
 def test_precheck_fails_when_velocity_would_be_clamped(cfg):
     """
