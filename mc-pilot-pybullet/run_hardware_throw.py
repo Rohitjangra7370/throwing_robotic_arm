@@ -47,7 +47,7 @@ import policy_learning.Policy as Policy
 from robot_arm.arm_controller import ArmController
 from robot_arm.robot_profiles import get_robot_profile
 from robot_arm.kinova_hardware import (HIGH_LEVEL_MAX_HZ, HardwareThrowExecutor,
-                                       SafetyLimits)
+                                       SafetyLimits, SoftLimitManager)
 from simulation_class.release_solver import OptimizedReleaseSolver
 
 
@@ -206,7 +206,8 @@ def release_box_from_table(arm, table, margin=0.10):
 
 
 def make_limits(profile, speed_scale, release_box=None,
-                control_hz=HIGH_LEVEL_MAX_HZ, arm=None, q_margin=0.10):
+                control_hz=HIGH_LEVEL_MAX_HZ, arm=None, q_margin=0.10,
+                positioning_scale=1.0):
     """
     Safety envelope for one run. Pass `arm` whenever one exists.
 
@@ -237,6 +238,7 @@ def make_limits(profile, speed_scale, release_box=None,
     return SafetyLimits(
         qd_max=qd_max, q_soft_lo=q_soft_lo, q_soft_hi=q_soft_hi,
         speed_scale=speed_scale, control_hz=control_hz,
+        positioning_scale=positioning_scale,
         # The trained overhead trajectory is already torque-stretched to ~8.5 s
         # at speed_scale=1.0, and a 0.15 rehearsal stretches it to ~57 s. The old
         # 8 s cap refused BOTH. The cap still exists to catch a runaway plan, but
@@ -257,7 +259,8 @@ def cmd_plan(args):
         opt_pose=args.opt_pose, u_cap=args.u_cap)
     table = load_pose_table(cfg, args.opt_pose)
     box = release_box_from_table(arm, table) if table else None
-    limits = make_limits(profile, args.speed_scale, release_box=box, arm=arm)
+    limits = make_limits(profile, args.speed_scale, release_box=box, arm=arm,
+                         positioning_scale=args.positioning_scale)
     ex = HardwareThrowExecutor(limits, dry_run=True)
     print(f"\n=== PLAN (dry-run) robot={args.robot} target={args.target} ===")
     print(f"policy release speed: {speed:.3f} m/s   v_cmd EE: {np.round(v_cmd,3)}")
@@ -273,9 +276,76 @@ def cmd_plan(args):
     return 0 if ok else 2
 
 
+
+BACKUP_PATH = "results_soft_limits_backup.json"
+
+
+def cmd_limits(args):
+    """
+    Inspect / raise / restore the arm's SOFT kinematic limits.
+
+    Separate subcommand on purpose: raising a safety setting on the lab's arm is
+    a deliberate, logged act, never a side effect of running a throw. The HARD
+    limits are never touched and remain enforced underneath.
+    """
+    profile = get_robot_profile(args.robot)
+    limits = make_limits(profile, 1.0)
+    with HardwareThrowExecutor(limits, dry_run=not args.arm, ip=args.ip) as ex:
+        if not args.arm:
+            print("DRY-RUN: soft limits can only be read from a real arm.")
+            return 0
+        slm = SoftLimitManager(ex.backend)
+        hard = slm.read_hard()
+        soft = slm.read_soft()
+        print(f"\nactive control mode : {slm.active_mode()}")
+        print(f"limits reported for : {slm.mode_name} "
+              f"(the mode SendJointSpeedsCommand runs in)")
+        print(f"  HARD speed (deg/s): {np.round(hard['speed'], 2)}")
+        print(f"  SOFT speed (deg/s): {np.round(soft['speed'], 2)}")
+        print(f"  HARD accel (d/s^2): {np.round(hard['accel'], 1)}")
+        print(f"  SOFT accel (d/s^2): {np.round(soft['accel'], 1)}")
+        print(f"  our qd_max (deg/s): {np.round(np.rad2deg(profile.qd_max), 2)}")
+        short = np.rad2deg(profile.qd_max) > soft["speed"] + 1e-2
+        if np.any(short):
+            print(f"  -> we plan ABOVE the soft limit on joints "
+                  f"{[int(i) for i in np.where(short)[0]]}; the arm will clip and "
+                  f"the throw will lag.")
+
+        if args.show:
+            return 0
+
+        if args.restore:
+            if not os.path.exists(BACKUP_PATH):
+                print(f"REFUSED: no backup at {BACKUP_PATH}; nothing to restore to.")
+                return 2
+            got = slm.restore(BACKUP_PATH)
+            print(f"\nRESTORED soft limits -> speed {np.round(got['speed'], 2)} "
+                  f"accel {np.round(got['accel'], 1)}")
+            return 0
+
+        if args.raise_to_hard:
+            if not args.confirm:
+                print("REFUSED: raising a safety limit needs --confirm.")
+                return 2
+            if not os.path.exists(BACKUP_PATH):
+                rec = slm.backup(BACKUP_PATH)
+                print(f"\nbacked up current soft limits -> {BACKUP_PATH}")
+            else:
+                print(f"\nbackup already exists at {BACKUP_PATH}; keeping the "
+                      f"ORIGINAL values (not overwriting with current).")
+            got = slm.apply(hard["speed"], hard["accel"])
+            print(f"RAISED soft limits -> speed {np.round(got['speed'], 2)} deg/s, "
+                  f"accel {np.round(got['accel'], 1)} deg/s^2 (verified by read-back)")
+            print("REMEMBER: `limits --arm --restore --confirm` when you are done. "
+                  "The next person to use this arm will not know it was left fast.")
+            return 0
+    return 0
+
+
 def cmd_connect(args):
     profile = get_robot_profile(args.robot)
-    limits = make_limits(profile, args.speed_scale)
+    limits = make_limits(profile, args.speed_scale,
+                         positioning_scale=args.positioning_scale)
     with HardwareThrowExecutor(limits, dry_run=not args.arm, ip=args.ip) as ex:
         q, qd = ex.backend.read_joint_state()
         print("joint positions (rad):", np.round(q, 4))
@@ -285,7 +355,8 @@ def cmd_connect(args):
 
 def cmd_home(args):
     arm, profile, cid = build_arm(args.robot)
-    limits = make_limits(profile, args.speed_scale, arm=arm)
+    limits = make_limits(profile, args.speed_scale, arm=arm,
+                         positioning_scale=args.positioning_scale)
     with HardwareThrowExecutor(limits, dry_run=not args.arm, ip=args.ip) as ex:
         ex.home(arm, np.array(profile.q_neutral, float), duration=args.duration)
     p.disconnect(cid)
@@ -294,7 +365,8 @@ def cmd_home(args):
 
 def cmd_gripper(args):
     profile = get_robot_profile(args.robot)
-    limits = make_limits(profile, args.speed_scale)
+    limits = make_limits(profile, args.speed_scale,
+                         positioning_scale=args.positioning_scale)
     with HardwareThrowExecutor(limits, dry_run=not args.arm, ip=args.ip) as ex:
         ex.set_gripper(closed=args.close)
         print(f"gripper -> {'CLOSE' if args.close else 'OPEN'} commanded")
@@ -313,7 +385,8 @@ def cmd_throw(args):
         opt_pose=args.opt_pose, u_cap=args.u_cap)
     table = load_pose_table(cfg, args.opt_pose)
     box = release_box_from_table(arm, table) if table else None
-    limits = make_limits(profile, args.speed_scale, release_box=box, arm=arm)
+    limits = make_limits(profile, args.speed_scale, release_box=box, arm=arm,
+                         positioning_scale=args.positioning_scale)
     with HardwareThrowExecutor(limits, dry_run=not args.arm, ip=args.ip) as ex:
         if not ex.check_release_pos(rel):
             raise RuntimeError(f"release pos {rel} outside safe box; abort.")
@@ -361,7 +434,13 @@ def build_parser():
         sp.add_argument("--robot", default="kinova_gen3")
         sp.add_argument("--arm", action="store_true", help="talk to the REAL arm (default: dry-run)")
         sp.add_argument("--ip", default="192.168.1.101")
-        sp.add_argument("--speed_scale", type=float, default=0.15)
+        sp.add_argument("--speed_scale", type=float, default=0.15,
+                        help="time scale for the THROW phase only")
+        sp.add_argument("--positioning_scale", type=float, default=1.0,
+                        help="time scale for windup and follow-through, which "
+                             "carry no throw velocity (J0's whole azimuth sweep "
+                             "lives here). Slow these for bring-up without "
+                             "slowing the throw.")
 
     def throw_planning(sp):
         sp.add_argument("--log_path", required=True)
@@ -384,6 +463,17 @@ def build_parser():
     sp.set_defaults(func=cmd_plan)
 
     sp = sub.add_parser("connect"); common(sp); sp.set_defaults(func=cmd_connect)
+
+    sp = sub.add_parser("limits", help="inspect/raise/restore the arm's SOFT limits")
+    common(sp)
+    g = sp.add_mutually_exclusive_group(required=True)
+    g.add_argument("--show", action="store_true", help="print limits, change nothing")
+    g.add_argument("--raise-to-hard", dest="raise_to_hard", action="store_true",
+                   help="raise soft limits to the arm's own hard limits")
+    g.add_argument("--restore", action="store_true",
+                   help="restore the backed-up original soft limits")
+    sp.add_argument("--confirm", action="store_true")
+    sp.set_defaults(func=cmd_limits)
 
     sp = sub.add_parser("home"); common(sp)
     sp.add_argument("--duration", type=float, default=4.0); sp.set_defaults(func=cmd_home)

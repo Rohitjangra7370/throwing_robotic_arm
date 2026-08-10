@@ -165,8 +165,42 @@ def main():
                 return None
             return [float(x.value) for x in jl]
 
-        # SOFT limits answer UNSUPPORTED_METHOD on this firmware (measured); the
-        # HARD ones are the safety-relevant pair anyway.
+        # SOFT LIMITS ARE THE ONES THE ARM ACTUALLY ENFORCES.
+        #
+        # This section used to compare only against the HARD limits and reported
+        # "ours is within the arm's on all joints" -- true, and useless: the arm
+        # enforces the SOFT limits of the ACTIVE CONTROL MODE. On this unit that
+        # was 50.0 deg/s against our planned 80.0, and it cost 0.5008 rad
+        # (28.7 deg) of position error at release before it was found.
+        #
+        # Base.GetAllJointsSpeedSoftLimitation answers UNSUPPORTED_METHOD here,
+        # which reads like "soft limits unavailable". They are not -- they live
+        # on ControlConfig and take the control mode as an argument.
+        try:
+            from robot_arm.kinova_hardware import SoftLimitManager
+            slm = SoftLimitManager(be)
+            soft = slm.read_soft()
+            _record(OK, f"active control mode: {slm.active_mode()}; soft limits "
+                        f"read for {slm.mode_name}")
+            _record(OK, f"SOFT speed (deg/s): {np.round(soft['speed'], 2)}")
+            _record(OK, f"SOFT accel (d/s^2): {np.round(soft['accel'], 1)}")
+            ours_v = np.rad2deg(np.asarray(profile.qd_max, float))
+            over = np.where(ours_v > soft["speed"] + 1e-2)[0]
+            if over.size:
+                _record(FAIL,
+                        f"our qd_max EXCEEDS the ENFORCED soft limit on joints "
+                        f"{list(over)}: {np.round(ours_v[over], 1)} vs "
+                        f"{np.round(soft['speed'][over], 1)} deg/s. The arm will "
+                        f"clip and the throw will lag. Either raise the soft "
+                        f"limits (run_hardware_throw.py limits --arm "
+                        f"--raise-to-hard --confirm) or re-plan against them.")
+            else:
+                _record(OK, "our qd_max is within the ENFORCED soft limits")
+        except Exception as e:
+            _record(WARN, f"soft limits unreadable ({type(e).__name__}: {e}) -- "
+                          "cannot confirm what the arm will actually enforce")
+
+        # HARD limits: the outer net the soft ones can never exceed.
         for label, fn, ours, unit, conv in (
             ("speed HARD", lambda: base.GetAllJointsSpeedHardLimitation(),
              np.rad2deg(profile.qd_max), "deg/s", 1.0),
