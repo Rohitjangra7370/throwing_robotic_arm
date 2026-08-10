@@ -525,6 +525,68 @@ arm move to the candlestick pose (kortex_hardware README) — do not be surprise
 by it, and do not have anything in the way.
 
 
+### 6f. BLOCKER — we planned against HARD limits; the arm enforces SOFT limits (2026-08-07)
+
+Found by escalating the dry rehearsal 0.15 → 0.30 → 0.60 → 1.00 with planned-vs-
+actual joint position logged at 1 kHz. Everything was clean to 0.60 and broke at
+1.00.
+
+| speed_scale | peak J0 cmd | drift at release |
+|---|---|---|
+| 0.15 | 11.2 °/s | 0.0044 rad (0.25°) |
+| 0.30 | 22.3 °/s | 0.0056 rad |
+| 0.60 | 44.7 °/s | 0.0119 rad (0.7°) |
+| **1.00** | **74.4 °/s** | **0.5008 rad = 28.7°** |
+
+A 42x jump, entirely on **J0** (base rotation, which sweeps ~178° during the
+throw); every other joint stayed under 2°. Not lag — an 80 ms lag fit leaves
+28.1° residual. It is a sustained velocity shortfall that accumulates 0.5→2.5 s
+and then holds.
+
+**Cause.** The arm runs `SendJointSpeedsCommand` in control mode
+`ANGULAR_JOYSTICK`, and that mode's SOFT limits are well below the hard limits
+this repo plans against:
+
+|  | our `robot_profiles.py` (hard) | arm SOFT, ANGULAR_JOYSTICK |
+|---|---|---|
+| joint speed | 80.00 °/s (1.3963 rad/s) | **50.00 °/s (0.8727 rad/s)** |
+| joint accel | 297.94 °/s² | **57.3 °/s²** (J1–4), 573 (J5–7) |
+
+We plan **1.60x over the speed soft limit** and **1.78x over the acceleration
+soft limit**. The threshold behaviour is exact: every scale whose peak J0 command
+stays under 50 °/s shows ~zero drift; the one that crosses it shows 28°.
+
+**Why it was missed.** `hw_readonly_check.py` compared our limits against
+`GetAllJointsSpeedHardLimitation` and correctly reported "ours is within the
+arm's on all joints" — true, but of the wrong limit.
+`Base.GetAllJointsSpeedSoftLimitation` answers UNSUPPORTED_METHOD on this
+firmware, and I treated that as "soft limits unavailable" instead of looking
+further. They live on `ControlConfig.GetKinematicSoftLimits(control_mode)` and
+require the mode as an argument. Read the limits of the mode you actually
+command in.
+
+**Consequences.** The trained throw cannot execute on this arm as configured.
+Everything upstream — the release LP, `find_throw_pose`, the shipped pose table,
+and training — used `qd_max = 1.3963 rad/s`. At the soft limit the kinematic
+release-speed ceiling drops from 1.628 to ~1.018 m/s, and the reachable landing
+band from 0.60–0.80 m to roughly 0.37–0.49 m. Running at `speed_scale ≤ 0.67`
+respects the limit but does NOT give the trained throw — it time-stretches to a
+slower release and the ball lands short.
+
+**Two routes, unresolved, user decision:**
+1. Raise the soft limits toward the hard ones —
+   `ControlConfig.SetJointSpeedSoftLimits` / `SetJointAccelerationSoftLimits`
+   exist. Legitimate (the hard limits are the arm's real capability and remain
+   underneath) but it is deliberately raising a safety setting on the lab's
+   hardware. **Not done; not to be done without an explicit decision.**
+2. Re-plan against 50 °/s — re-run `find_throw_pose`, rebuild the pose table,
+   retrain, and accept the shorter range.
+
+Also measured en route: open-loop velocity streaming is otherwise sound. Below
+the soft limit, drift at release is ≤0.7°, worth ≤0.68 cm of landing error
+against a 2.89 cm target. The design is fine; the limit is the problem.
+
+
 ---
 
 ## 7. Open items (priority order)
