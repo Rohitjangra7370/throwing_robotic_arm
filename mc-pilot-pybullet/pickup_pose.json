@@ -1,0 +1,6 @@
+{
+  "note": "Repeatable ball-pickup pose, recorded from the real Gen3 after a throw's follow-through settled here. Not q_neutral -- this is q_follow's resting point for results_kinetic_chain_gen3/2 at target [0.75, 0.05]. Use with `run_hardware_throw.py` by driving the arm here (e.g. via HardwareThrowExecutor.home(arm, q_pickup, ...)) before placing a ball in the gripper.",
+  "robot": "kinova_gen3_dyn",
+  "recorded": "2026-08-22",
+  "q_pickup_rad": [-0.4400, 0.6049, 3.1132, -1.9377, 0.0543, -0.5280, 1.0636]
+}

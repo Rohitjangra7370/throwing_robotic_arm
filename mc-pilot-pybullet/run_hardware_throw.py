@@ -121,7 +121,7 @@ def load_pose_table(cfg, override=None):
 
 
 def plan_throw_for_target(arm, profile, cfg, pol, target_xy, opt_pose=None,
-                          u_cap=None):
+                          u_cap=None, wrist_roll_offset=0.0):
     """
     policy(target) -> release speed -> release state -> joint trajectory.
 
@@ -164,6 +164,21 @@ def plan_throw_for_target(arm, profile, cfg, pol, target_xy, opt_pose=None,
     q_ovr = qd_ovr = None
     if solver.active:
         rel, q_ovr, qd_ovr, v_cmd = solver.solve(arm, v_cmd, target_xy=tgt)
+
+    if wrist_roll_offset:
+        # Joint 6 (wrist-roll2, the last DOF, directly attached to
+        # end_effector_link) is frozen at qd=0 throughout the throw (it's a
+        # roll/twist joint -- see find_throw_pose.py's module docstring) --
+        # its STATIC angle is a free search parameter, and because it's the
+        # LAST joint in the chain, changing it cannot move joints 1/3/5 (which
+        # carry all the release velocity) or their world-frame axes: it only
+        # re-orients the gripper about its own roll axis at a fixed release
+        # position/velocity. Purely a hand-orientation change, not a throw
+        # change -- still goes through the normal windup/follow feasibility
+        # check below since it changes how far joint 6 must travel to get there.
+        if q_ovr is not None:
+            q_ovr = np.array(q_ovr, dtype=float)
+            q_ovr[-1] += wrist_roll_offset
 
     # Same timing source and t_arm formula as the sim rollout.
     t_w = float(cfg["T_W"])
@@ -256,7 +271,8 @@ def cmd_plan(args):
     pol, cfg = load_policy(args.log_path, None)
     coeffs, q_rel, qd_rel, v_ach, speed, v_cmd, rel = plan_throw_for_target(
         arm, profile, cfg, pol, args.target,
-        opt_pose=args.opt_pose, u_cap=args.u_cap)
+        opt_pose=args.opt_pose, u_cap=args.u_cap,
+        wrist_roll_offset=np.deg2rad(args.wrist_roll_offset_deg))
     table = load_pose_table(cfg, args.opt_pose)
     box = release_box_from_table(arm, table) if table else None
     limits = make_limits(profile, args.speed_scale, release_box=box, arm=arm,
@@ -369,7 +385,7 @@ def cmd_gripper(args):
                          positioning_scale=args.positioning_scale)
     with HardwareThrowExecutor(limits, dry_run=not args.arm, ip=args.ip) as ex:
         ex.set_gripper(closed=args.close)
-        print(f"gripper -> {'CLOSE' if args.close else 'OPEN'} commanded")
+        print(f"gripper -> {'CLOSE' if args.close else 'OPEN'} confirmed by feedback")
     return 0
 
 
@@ -382,7 +398,8 @@ def cmd_throw(args):
     pol, cfg = load_policy(args.log_path, None)
     coeffs, q_rel, qd_rel, v_ach, speed, v_cmd, rel = plan_throw_for_target(
         arm, profile, cfg, pol, args.target,
-        opt_pose=args.opt_pose, u_cap=args.u_cap)
+        opt_pose=args.opt_pose, u_cap=args.u_cap,
+        wrist_roll_offset=np.deg2rad(args.wrist_roll_offset_deg))
     table = load_pose_table(cfg, args.opt_pose)
     box = release_box_from_table(arm, table) if table else None
     limits = make_limits(profile, args.speed_scale, release_box=box, arm=arm,
@@ -457,6 +474,16 @@ def build_parser():
             help="hard ceiling on commanded release speed (m/s). The shipped "
                  "Gen3 table's kinematic max 1.628 is NOT follow-through "
                  "recoverable; 1.60 is the measured safe cap.",
+        )
+        sp.add_argument(
+            "--wrist_roll_offset_deg", type=float, default=0.0,
+            help="add this many degrees to joint 6 (wrist-roll2, last DOF) at "
+                 "release. Frozen at qd=0 throughout the throw and last in the "
+                 "chain, so this only re-orients the gripper about its own "
+                 "roll axis -- release position/velocity are unaffected -- "
+                 "but still goes through the normal windup/follow-through "
+                 "feasibility check, since joint 6 must travel further to get "
+                 "there.",
         )
 
     sp = sub.add_parser("plan"); common(sp); throw_planning(sp)
