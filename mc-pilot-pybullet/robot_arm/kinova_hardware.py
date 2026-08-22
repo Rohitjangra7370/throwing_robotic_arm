@@ -111,10 +111,12 @@ HIGH_LEVEL_MAX_HZ = 40.0
 # Leading the trigger by this much leaves ~1.0 cm of residual, inside the sim
 # accuracy.
 #
-# CAVEAT, and it is not small: measured STATIC and UNLOADED. During a throw the
-# fingers hold a ball and the arm is decelerating, both of which load the
-# mechanism. Treat this as a calibrated starting point to be validated against
-# real landings, not as a final constant.
+# RE-MEASURED WITH A REAL BALL LOADED (2026-08-22, 15 trials, same 1 kHz UDP
+# method): onset 73.2 +- 10.3 ms, statistically indistinguishable from the
+# original static/unloaded 67.9 +- 6.4 ms (higher spread, not a shifted mean).
+# The value below is unchanged; treat the "static and unloaded" caveat as
+# closed for ONSET specifically. Still not validated against an actual real
+# landing measurement -- that's the one thing this can't substitute for.
 GRIPPER_RELEASE_LATENCY_S = 0.0679
 
 
@@ -773,8 +775,88 @@ class HardwareThrowExecutor:
         self.backend.stop()
         print("[home] done")
 
-    def set_gripper(self, closed: bool):
-        self.backend.send_gripper(self.gripper_closed if closed else self.gripper_open)
+    def set_gripper(self, closed: bool, confirm=True, timeout_s=3.0, tol_pct=3.0,
+                    stall_window_s=0.3, min_progress_pct=10.0):
+        """
+        Command the gripper. With `confirm=True` (default), BLOCK until
+        feedback shows it actually got there -- OR, if it's closing against
+        a held object, until it stalls after genuine progress. Reaching the
+        literal target percentage only happens when nothing is between the
+        fingers; gripping a real object (measured 2026-08-22, tennis ball:
+        stopped at 58.08%, position AND velocity both dead stable) means the
+        motor stalls against the object well short of the "fully closed"
+        value, by design -- treating that as a failure would refuse to ever
+        throw a real ball. Success is therefore either (a) reaching within
+        `tol_pct` of the target, or (b) having moved at least
+        `min_progress_pct` from the starting position and then held still
+        for `stall_window_s` -- (a) alone would still correctly reject the
+        original bug below (zero motion, no progress, never satisfies (b)).
+
+        `SendGripperCommand` is fire-and-forget: the arm's embedded controller
+        keeps driving the motor after the call returns, asynchronously. The
+        standalone `gripper` CLI command used to send this and immediately
+        tear down the session in the same breath (`HardwareThrowExecutor.
+        __exit__` -> disconnect) -- on the real arm that raced the motor and
+        the command was observed to produce NO motion at all: 0.5-1.0 s later,
+        with the session kept open, the same command converges cleanly
+        (0.061 -> 0.86 at 0.5s -> 0.991 at 1.0s, measured 2026-08-22). The
+        pre-throw grasp call in `rehearse_or_throw` (before `home()`) was
+        accidentally safe against this -- `home()`'s ~10s gives the motor time
+        regardless -- but that was luck, not a guarantee, and every other
+        caller had none at all. `confirm=True` fails LOUDLY (raises) rather
+        than reporting success on a gripper that never actually closed -- a
+        throw with an unconfirmed grip either drops the ball early or never
+        grips it at all, and both are silent failures if this just prints
+        "commanded" and moves on.
+
+        `confirm=False` is REQUIRED for the in-flight release call inside the
+        40 Hz streaming loop (`rehearse_or_throw`, at s_fire). Confirming
+        there polls `read_gripper()` in a loop on the SAME thread that must
+        keep sending joint-speed commands every 25 ms -- measured directly
+        (2026-08-22): confirming at release produced a single 693.55 ms late
+        tick and 0.38 rad of open-loop drift right after release, because the
+        arm coasted on its last commanded velocity, un-decelerated, for the
+        entire stall instead of running the planned follow-through. The
+        release-time call must stay fire-and-forget; only the pre-throw grasp
+        and the standalone CLI command get to block.
+        """
+        target = self.gripper_closed if closed else self.gripper_open
+        opposite_pct = (self.gripper_open if closed else self.gripper_closed) * 100.0
+        start_pct, start_vel = self.backend.read_gripper()
+        # Already sitting closed-on-an-object from a PRIOR call (e.g. re-confirming
+        # a grasp before a throw) -- there is no "progress" left to make this call,
+        # so the progress-based stall check below would never fire. If we're already
+        # stable and nowhere near the opposite (un-commanded) extreme, there's
+        # nothing to do.
+        already_holding = (closed and abs(start_pct - opposite_pct) > 15.0
+                          and abs(start_vel) < 1e-3)
+        self.backend.send_gripper(target)
+        if already_holding:
+            return
+        if not confirm:
+            return
+        target_pct = target * 100.0
+        t0 = time.time()
+        last_pct = start_pct
+        last_move_t = t0
+        pos_pct = start_pct
+        while time.time() - t0 < timeout_s:
+            pos_pct, _ = self.backend.read_gripper()
+            if abs(pos_pct - target_pct) <= tol_pct:
+                return
+            if abs(pos_pct - last_pct) > 0.5:
+                last_move_t = time.time()
+            last_pct = pos_pct
+            progressed = abs(pos_pct - start_pct) >= min_progress_pct
+            stalled = (time.time() - last_move_t) >= stall_window_s
+            if progressed and stalled:
+                return  # stopped after real progress -- e.g. stalled against a held object
+            time.sleep(0.05)
+        raise RuntimeError(
+            f"gripper did not reach {'CLOSED' if closed else 'OPEN'} "
+            f"({target_pct:.1f}%) and never stalled after real progress, within "
+            f"{timeout_s:.1f}s -- started {start_pct:.1f}%, stopped at {pos_pct:.1f}%. "
+            f"Refusing to proceed; do not throw on an unconfirmed grip.")
 
     def rehearse_or_throw(self, coeffs, arm, verbose=True, track=None,
                           track_every=1):
@@ -888,7 +970,10 @@ class HardwareThrowExecutor:
                     except Exception:
                         pass
                 if (not released) and s >= s_fire:
-                    self.set_gripper(closed=False)  # OPEN -> release
+                    # confirm=False: this runs inside the 40 Hz streaming loop --
+                    # blocking here to poll gripper feedback stalls the loop and
+                    # the arm coasts uncommanded until it returns. See set_gripper.
+                    self.set_gripper(closed=False, confirm=False)  # OPEN -> release
                     released = True
                     release_wall = wall
                     if verbose:
