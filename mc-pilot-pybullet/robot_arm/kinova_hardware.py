@@ -120,6 +120,36 @@ HIGH_LEVEL_MAX_HZ = 40.0
 GRIPPER_RELEASE_LATENCY_S = 0.0679
 
 
+# Wall-clock window, after the release-time gripper OPEN command, during which
+# NO new SendJointSpeedsCommand is sent.
+#
+# FOUND 2026-08-22: SendGripperCommand is silently ignored by the arm's
+# embedded controller for as long as SendJointSpeedsCommand is being actively
+# streamed -- reproduced with an isolated test (arm not even moving, zero
+# velocities streamed): the gripper does not move AT ALL while the stream is
+# continuous, and only resumes once the stream pauses. This is not a session/
+# channel issue (a fully separate TCP session for the gripper command was
+# tried and made no difference) -- it is the controller's own real-time
+# scheduling declining to service a gripper write while it's busy servicing
+# joint-speed writes.
+#
+# Measured travel achieved (STATIC, no ball, no throw inertia) for a pause
+# starting right when the command is sent: 100ms -> 83.8% closed (was 99%),
+# 150ms -> 76.0%, 200ms -> 69.0%, 300ms -> 51.5%. A real throw has centrifugal/
+# inertial assistance ejecting the ball well before "fully open" is needed, so
+# this is a conservative choice, not a tight one.
+#
+# SAFETY: during the pause, JointSpeeds "hold until superseded" (see
+# HIGH_LEVEL_MAX_HZ), so the arm coasts at the exact release-instant velocity
+# -- not accelerating further, but also not running the planned follow-through
+# deceleration -- for this whole window. Checked against joint limits at the
+# real release state (q_release, qd_release, results_kinetic_chain_gen3/2):
+# worst-case margin at 300ms is 76.4 deg, so 200ms leaves an enormous safety
+# margin. Re-check this margin for any different checkpoint/pose table --
+# it is a property of THIS release configuration, not a general law.
+GRIPPER_RELEASE_PAUSE_S = 0.20
+
+
 # --------------------------------------------------------------------------- #
 # Safety limits
 # --------------------------------------------------------------------------- #
@@ -322,6 +352,14 @@ class _KortexBackend:
             self._rt_cyclic = None
             print("[KORTEX] real-time feedback closed")
 
+    # NOTE: a "separate TCP session for gripper commands" was tried and
+    # removed 2026-08-22 -- the arm explicitly REJECTS a write command from
+    # any session other than the one currently in control
+    # (KServerException ERROR_DEVICE/SESSION_NOT_IN_CONTROL), it does not
+    # just ignore it. Only one session may write at a time; see
+    # GRIPPER_RELEASE_PAUSE_S for the fix that actually works (a brief gap
+    # in the SAME session's command stream).
+
     def read_gripper(self):
         """
         (position_percent, velocity) of the gripper finger motor.
@@ -394,7 +432,17 @@ class _KortexBackend:
         self._base.SendJointSpeedsCommand(cmd)
 
     def send_gripper(self, pos):
-        """pos in [0,1]; 0=open, 1=closed (Kortex GRIPPER_POSITION)."""
+        """
+        pos in [0,1]; 0=open, 1=closed (Kortex GRIPPER_POSITION).
+
+        Always on the main command session -- the arm rejects a gripper write
+        from any OTHER session while this one is in control
+        (SESSION_NOT_IN_CONTROL), so a second session is not an option here.
+        Sending this while SendJointSpeedsCommand is being actively streamed
+        on this same session is silently ignored by the arm regardless; see
+        GRIPPER_RELEASE_PAUSE_S in rehearse_or_throw for the actual fix (a
+        brief gap in the stream, not a different channel).
+        """
         from kortex_api.autogen.messages import Base_pb2
         cmd = Base_pb2.GripperCommand()
         cmd.mode = Base_pb2.GRIPPER_POSITION
@@ -821,6 +869,16 @@ class HardwareThrowExecutor:
         and the standalone CLI command get to block.
         """
         target = self.gripper_closed if closed else self.gripper_open
+        if not confirm:
+            # Fire-and-forget path -- MUST NOT read feedback here. This is the
+            # in-loop release call (rehearse_or_throw, s_fire): an extra
+            # read_gripper() here was briefly introduced alongside the
+            # already_holding check below and ran unconditionally, putting an
+            # untested blocking call inside the 40 Hz command loop at the
+            # exact release instant. Keep this branch a single send, nothing
+            # else, always.
+            self.backend.send_gripper(target)
+            return
         opposite_pct = (self.gripper_open if closed else self.gripper_closed) * 100.0
         start_pct, start_vel = self.backend.read_gripper()
         # Already sitting closed-on-an-object from a PRIOR call (e.g. re-confirming
@@ -832,8 +890,6 @@ class HardwareThrowExecutor:
                           and abs(start_vel) < 1e-3)
         self.backend.send_gripper(target)
         if already_holding:
-            return
-        if not confirm:
             return
         target_pct = target * 100.0
         t0 = time.time()
@@ -929,6 +985,7 @@ class HardwareThrowExecutor:
             s_fire = t_w
 
         released = False
+        release_pause_until = None
         s = 0.0
         # Absolute-deadline pacing. `time.sleep(dt)` sleeps dt PLUS however long
         # the loop body took plus scheduler slop, so the period silently drifts
@@ -953,7 +1010,16 @@ class HardwareThrowExecutor:
                     break
                 q, qd, _ = arm.get_setpoint(coeffs, s, with_accel=True)
                 qd_cmd = self.limits.clamp_velocity(np.asarray(qd) * ds_dwall)
-                self.backend.send_joint_velocities(qd_cmd)
+                # Skip sending during the post-release pause window (see
+                # GRIPPER_RELEASE_PAUSE_S) -- SendGripperCommand is silently
+                # ignored by the arm while SendJointSpeedsCommand is being
+                # actively streamed, so the OPEN command needs a real gap with
+                # nothing competing on the command channel. The arm holds its
+                # last commanded velocity for this whole window (checked
+                # against joint limits at the real release state -- see that
+                # constant's docstring for the margin).
+                if release_pause_until is None or wall >= release_pause_until:
+                    self.backend.send_joint_velocities(qd_cmd)
                 # The throw is streamed OPEN-LOOP in velocity: q is computed and
                 # then discarded. Any velocity-tracking error therefore
                 # INTEGRATES into position error over the 8.5 s trajectory, and
@@ -976,10 +1042,12 @@ class HardwareThrowExecutor:
                     self.set_gripper(closed=False, confirm=False)  # OPEN -> release
                     released = True
                     release_wall = wall
+                    release_pause_until = wall + GRIPPER_RELEASE_PAUSE_S
                     if verbose:
                         print(f"[exec] gripper OPEN commanded at wall={wall:.3f}s "
                               f"(s={s:.3f}); fingers expected to move at "
-                              f"s={t_r:.3f} after {lead:.3f}s lead")
+                              f"s={t_r:.3f} after {lead:.3f}s lead; pausing joint-"
+                              f"speed commands until wall={release_pause_until:.3f}s")
                 tick += 1
                 deadline = t0 + tick * dt
                 late = time.perf_counter() - deadline
