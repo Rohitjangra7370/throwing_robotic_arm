@@ -1235,8 +1235,14 @@ def ransac_track(obs, rig, R_bc, t_bc, g=G_BASE, thresh_px=2.0,
                                     obs[usable[b], 0], pts_b[b], g=g)
         except RuntimeError:
             continue
-        err = np.abs(_residuals(np.concatenate([p0, v0]), obs[usable],
-                                rig, R_bc, t_bc, g)).reshape(-1, 4)
+        try:
+            err = np.abs(_residuals(np.concatenate([p0, v0]), obs[usable],
+                                    rig, R_bc, t_bc, g)).reshape(-1, 4)
+        except RuntimeError:
+            # A wild minimal-sample hypothesis can put the arc behind the camera,
+            # where project() has no answer. That is a rejected hypothesis, not an
+            # error -- drop the sample and keep searching.
+            continue
         inl = usable[np.max(err, axis=1) <= thresh_px]
         if inl.size > best_idx.size:
             best_idx = inl
@@ -1244,8 +1250,8 @@ def ransac_track(obs, rig, R_bc, t_bc, g=G_BASE, thresh_px=2.0,
     frac = best_idx.size / float(n)
     if best_idx.size < MIN_INLIER_FRAMES or frac < min_inlier_frac:
         raise RuntimeError(
-            f"no ballistic arc found: best consensus {best_idx.size}/{n} frames "
-            f"(fraction {frac:.2f}, need >= {min_inlier_frac} and "
+            f"no ballistic arc found: best inlier consensus {best_idx.size}/{n} "
+            f"frames (inlier fraction {frac:.2f}, need >= {min_inlier_frac} and "
             f">= {MIN_INLIER_FRAMES} frames) -- this recording does not contain "
             f"a clean throw")
 
