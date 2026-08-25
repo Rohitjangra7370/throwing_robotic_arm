@@ -27,10 +27,13 @@ FRAME. Base frame throughout: base at z = 0, floor at z = -base_height =
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
 __all__ = ["G_BASE", "Z_FLOOR_BASE", "BALL_RADIUS", "ballistic_position",
-           "solve_impact_time", "solve_impact", "fit_two_points"]
+           "solve_impact_time", "solve_impact", "fit_two_points",
+           "FitResult", "fit_ballistic", "MIN_INLIER_FRAMES", "MAX_RMS_PX"]
 
 G_BASE = np.array([0.0, 0.0, -9.81])
 Z_FLOOR_BASE = -0.433      # measured base plate; see CLAUDE.md's frame note
@@ -112,3 +115,99 @@ def fit_two_points(t_a, p_a, t_b, p_b, g=G_BASE, min_dt=0.02):
     v0 = (q_b - q_a) / (t_b - t_a)
     p0 = q_a - v0 * t_a
     return p0, v0
+
+
+MIN_INLIER_FRAMES = 12     # spec section 6: 2x redundancy over 6 unknowns
+MAX_RMS_PX = 1.0           # spec section 6, vs 0.15 px assumed centroid precision
+
+
+@dataclass
+class FitResult:
+    """A fitted trajectory and how much to trust it."""
+    p0: np.ndarray
+    v0: np.ndarray
+    cov: np.ndarray        # 6x6 over [p0, v0]
+    rms_px: float
+    n_obs: int
+
+
+def _residuals(theta, obs, rig, R_bc, t_bc, g):
+    """Stacked (u1, v1, u2, v2) reprojection residuals, 4 per observation."""
+    p0, v0 = theta[:3], theta[3:]
+    p_b = ballistic_position(p0, v0, obs[:, 0], g=g)
+    p_c = (p_b - t_bc) @ R_bc            # == (R_bc.T @ (p_b - t_bc).T).T
+    u1, v1, u2, v2 = rig.project(p_c)
+    pred = np.stack([u1, v1, u2, v2], axis=-1)
+    return (pred - obs[:, 1:]).ravel()
+
+
+def fit_ballistic(obs, rig, R_bc, t_bc, g=G_BASE, max_iter=50, tol=1e-10):
+    """
+    Fit (p0, v0) to timed stereo pixel observations by Gauss-Newton.
+
+    `obs` is (N, 5): columns [t, u1, v1, u2, v2]. `R_bc`, `t_bc` are the camera
+    pose in base coordinates (p_base = R_bc @ p_cam + t_bc).
+
+    THE OBJECTIVE IS PIXEL ERROR, NOT ERROR AGAINST TRIANGULATED POINTS.
+    Pixel noise is the iid quantity. Triangulated points carry correlated,
+    strongly range-dependent noise (a fixed 0.2 px of disparity is 4 cm at 2 m
+    and 1 cm at 1 m), so least-squares over them silently weights the far,
+    noisier frames as heavily as the near ones. Fitting in pixels is the
+    statistically correct thing and costs nothing offline.
+
+    The Jacobian is computed by central differences ON PURPOSE. It is 6 columns
+    over a few hundred residuals -- microseconds offline -- and this codebase has
+    a long history of silent sign errors in hand-derived geometry. A wrong
+    analytic Jacobian does not crash; it converges somewhere plausible.
+    """
+    obs = np.asarray(obs, float)
+    if obs.ndim != 2 or obs.shape[1] != 5:
+        raise ValueError(f"obs must be (N, 5) [t,u1,v1,u2,v2], got {obs.shape}")
+    if obs.shape[0] < MIN_INLIER_FRAMES:
+        raise RuntimeError(
+            f"only {obs.shape[0]} observations, need >= {MIN_INLIER_FRAMES} "
+            f"(2x redundancy over 6 unknowns) -- refusing to fit")
+
+    R_bc = np.asarray(R_bc, float); t_bc = np.asarray(t_bc, float)
+    g = np.asarray(g, float)
+    order = np.argsort(obs[:, 0])
+    obs = obs[order]
+
+    # Initialise from the two most widely separated frames, triangulated.
+    p_first = rig.triangulate(*obs[0, 1:])
+    p_last = rig.triangulate(*obs[-1, 1:])
+    to_base = lambda p_c: R_bc @ p_c + t_bc
+    p0, v0 = fit_two_points(obs[0, 0], to_base(p_first),
+                            obs[-1, 0], to_base(p_last), g=g)
+    theta = np.concatenate([p0, v0])
+
+    r = _residuals(theta, obs, rig, R_bc, t_bc, g)
+    for _ in range(max_iter):
+        J = np.empty((r.size, 6))
+        for k in range(6):
+            step = 1e-6 * max(1.0, abs(theta[k]))
+            tp = theta.copy(); tp[k] += step
+            tm = theta.copy(); tm[k] -= step
+            J[:, k] = (_residuals(tp, obs, rig, R_bc, t_bc, g)
+                       - _residuals(tm, obs, rig, R_bc, t_bc, g)) / (2.0 * step)
+        delta, *_ = np.linalg.lstsq(J, -r, rcond=None)
+        theta = theta + delta
+        r = _residuals(theta, obs, rig, R_bc, t_bc, g)
+        if np.linalg.norm(delta) < tol:
+            break
+
+    m = r.size
+    dof = m - 6
+    if dof <= 0:
+        raise RuntimeError(f"{m} residuals cannot constrain 6 parameters")
+    sigma2 = float(r @ r) / dof
+    JtJ = J.T @ J
+    try:
+        cov = sigma2 * np.linalg.inv(JtJ)
+    except np.linalg.LinAlgError as exc:
+        raise RuntimeError(f"singular normal equations -- the trajectory is "
+                           f"not observable from these frames: {exc}") from exc
+
+    rms_px = float(np.sqrt(float(r @ r) / m))
+    return FitResult(p0=theta[:3].copy(), v0=theta[3:].copy(), cov=cov,
+                     rms_px=rms_px, n_obs=int(obs.shape[0]))
