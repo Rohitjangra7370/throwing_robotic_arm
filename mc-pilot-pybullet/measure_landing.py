@@ -19,7 +19,7 @@ from perception.ball_track import (detect_candidates, frame_diagnostics,
                                    median_background)
 from perception.ray_plane import D435I_IR_848x480
 from perception.stereo import D435I_IR_BASELINE_M, StereoRig, pair_candidates
-from perception.trajectory import (BALL_RADIUS, G_BASE, Z_FLOOR_BASE,
+from perception.trajectory import (BALL_RADIUS, Z_FLOOR_BASE,
                                    ransac_track, solve_impact)
 
 __all__ = ["build_observations", "measure_landing", "default_rig"]
@@ -119,3 +119,52 @@ def measure_landing(rec, R_bc, t_bc, z_floor=Z_FLOOR_BASE,
             "n_frames": int(obs.shape[0]), "n_inliers": int(inliers.size),
             "rms_px": fit.rms_px, "p0": fit.p0, "v0": fit.v0,
             "max_mask_frac": max_frac}
+
+
+def load_extrinsic(path):
+    """
+    Load T_B_C from a .npz with `R` (3x3) and `t` (3,), the convention used
+    throughout this project: p_base = R @ p_cam + t.
+    """
+    z = np.load(path)
+    R, t = np.asarray(z["R"], float), np.asarray(z["t"], float)
+    if R.shape != (3, 3) or t.shape != (3,):
+        raise ValueError(f"expected R (3,3) and t (3,), got {R.shape} and {t.shape}")
+    if not np.allclose(R.T @ R, np.eye(3), atol=1e-6):
+        raise ValueError("R is not orthonormal -- this is not a rotation")
+    return R, t
+
+
+def main():
+    import argparse
+
+    from perception.ir_capture import load_recording
+
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--recording", required=True)
+    ap.add_argument("--extrinsic", required=True, help=".npz with R (3x3), t (3,)")
+    ap.add_argument("--z_floor", type=float, default=Z_FLOOR_BASE)
+    ap.add_argument("--ball_radius", type=float, default=BALL_RADIUS)
+    ap.add_argument("--seed", type=int, default=0)
+    args = ap.parse_args()
+
+    rec = load_recording(args.recording)
+    R_bc, t_bc = load_extrinsic(args.extrinsic)
+    out = measure_landing(rec, R_bc, t_bc, z_floor=args.z_floor,
+                          ball_radius=args.ball_radius, seed=args.seed)
+
+    print(f"landing (base frame): x = {out['x']:+.4f} m   y = {out['y']:+.4f} m")
+    print(f"  sigma            : {out['sigma_xy_m'] * 1e3:.1f} mm")
+    print(f"  impact at t      : {out['t_impact']:.4f} s")
+    print(f"  frames / inliers : {out['n_frames']} / {out['n_inliers']}")
+    print(f"  fit RMS          : {out['rms_px']:.3f} px")
+    print(f"  max changed-px   : {out['max_mask_frac']:.2%}  (>15% = bumped camera)")
+    print(f"  release p0       : {np.array2string(out['p0'], precision=4)}")
+    print(f"  release v0       : {np.array2string(out['v0'], precision=4)}  "
+          f"|v0| = {np.linalg.norm(out['v0']):.4f} m/s")
+    print("\nNOTE: absolute accuracy is bounded by T_B_C, not by the vision. "
+          "Confirm the extrinsic is current for the present mount.")
+
+
+if __name__ == "__main__":
+    main()
