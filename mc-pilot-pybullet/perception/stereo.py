@@ -98,3 +98,43 @@ class StereoRig:
         x = (u1 - i.ppx) * z / i.fx
         y = (v1 - i.ppy) * z / i.fy
         return np.stack([x, y, z], axis=-1)
+
+
+def pair_candidates(left, right, row_tol_px=3.0, area_ratio_tol=2.5):
+    """
+    Match left-image detections to right-image detections.
+
+    `left` and `right` are sequences of (u, v, area_px). Returns a list of
+    (left_index, right_index), one-to-one, best-first.
+
+    The pair is rectified, so a true match lies on the same row -- `row_tol_px`
+    covers motion blur and centroid noise, not epipolar geometry. Disparity must
+    be positive (IR2 is the right camera). Area must agree within
+    `area_ratio_tol`, which rejects pairing the ball against a background object
+    that happens to share its row.
+
+    Greedy nearest-row assignment is sufficient because there is one ball in
+    flight; if the scene ever has two, the RANSAC ballistic association in
+    `trajectory.py` is the backstop, not this function.
+    """
+    scored = []
+    for li, (ul, vl, al) in enumerate(left):
+        for ri, (ur, vr, ar) in enumerate(right):
+            if ul - ur <= 0:
+                continue
+            drow = abs(vl - vr)
+            if drow > row_tol_px:
+                continue
+            ratio = max(al, ar) / max(min(al, ar), 1e-9)
+            if ratio > area_ratio_tol:
+                continue
+            scored.append((drow, li, ri))
+
+    scored.sort()
+    used_l, used_r, out = set(), set(), []
+    for _, li, ri in scored:
+        if li in used_l or ri in used_r:
+            continue
+        used_l.add(li); used_r.add(ri)
+        out.append((li, ri))
+    return out

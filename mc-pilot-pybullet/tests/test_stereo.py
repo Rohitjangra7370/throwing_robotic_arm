@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from perception.ray_plane import D435I_IR_848x480
-from perception.stereo import D435I_IR_BASELINE_M, StereoRig
+from perception.stereo import D435I_IR_BASELINE_M, StereoRig, pair_candidates
 
 RIG = StereoRig(D435I_IR_848x480, D435I_IR_BASELINE_M)
 
@@ -60,3 +60,35 @@ def test_batch_shape_contract():
     got = RIG.triangulate(u1, v1, u2, v2)
     assert got.shape == (3, 3)
     assert np.allclose(got, pts, atol=1e-9)
+
+
+def test_pairing_matches_on_row_and_area():
+    left = [(500.0, 200.0, 150.0), (300.0, 400.0, 140.0)]
+    right = [(292.0, 400.5, 145.0), (489.0, 199.6, 152.0)]
+    assert sorted(pair_candidates(left, right)) == [(0, 1), (1, 0)]
+
+
+def test_pairing_rejects_a_row_mismatch():
+    left = [(500.0, 200.0, 150.0)]
+    right = [(489.0, 260.0, 152.0)]
+    assert pair_candidates(left, right) == []
+
+
+def test_pairing_rejects_an_area_mismatch():
+    """Same row, but one blob is 10x the other -- not the same object."""
+    left = [(500.0, 200.0, 150.0)]
+    right = [(489.0, 200.0, 1500.0)]
+    assert pair_candidates(left, right) == []
+
+
+def test_pairing_rejects_negative_disparity():
+    """A right-image detection to the RIGHT of its left partner is impossible."""
+    left = [(400.0, 200.0, 150.0)]
+    right = [(430.0, 200.0, 150.0)]
+    assert pair_candidates(left, right) == []
+
+
+def test_pairing_is_one_to_one_and_prefers_the_closer_row():
+    left = [(500.0, 200.0, 150.0)]
+    right = [(489.0, 202.9, 150.0), (487.0, 200.1, 150.0)]
+    assert pair_candidates(left, right) == [(0, 1)]
