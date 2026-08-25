@@ -158,3 +158,52 @@ Once ~10 real throws are logged, that is the input to the real MC-PILOT model up
 The throw pipeline is unaffected (74/74 tests pass), but **onnx / tensorboard / wandb are broken
 on this machine**. Do not try to fix that on run day. Never use bare `pip` — it resolves to the
 Blender snap's Python 3.13. Use `python3 -m pip`.
+
+## 6. Landing measurement (vision) — NOT YET RUN ON REAL HARDWARE
+
+Everything in this section is **verified synthetically only** (see `CLAUDE.md`'s ball-tracking
+bullet and `docs/superpowers/specs/2026-08-25-ball-tracking-design.md`). No frame from the real
+camera has ever entered this pipeline — the D435i is currently unplugged. This is the procedure
+to run once it is mounted and `T_B_C` is re-measured; do not treat any number below as measured
+until it has actually been produced on run day.
+
+**Step 0, once, before the first real throw of the day: pick exposure and emitter.**
+`IRRecorder`'s defaults (`exposure_us=2000`, `emitter=True`) are reasoned, not measured — the
+A/B that would validate them (spec §9: 2 ms exposure risks under-exposure indoors with the
+emitter off; the emitter's static floor pattern should subtract out in background diff but may
+saturate the ball) has never been run. Run `tune_ir_exposure.py` **first**, on run day, before
+any throw is recorded, and write the chosen values here:
+
+| Setting | Value | Chosen on | Notes |
+|---|---|---|---|
+| `exposure_us` | *(not yet run)* | | |
+| `emitter` | *(not yet run)* | | |
+
+**Per throw:**
+
+```bash
+python3 record_throw_ir.py ...     # ring-buffers the dual-IR window to disk; keep every recording,
+                                    # it is a permanent regression fixture, not a scratch file
+python3 measure_landing.py ...     # offline: recording -> first-contact (x, y) in base frame
+```
+
+**Refusal conditions — a refusal means RE-THROW, never hand-tune a threshold to make a bad
+track pass:**
+
+- fewer than **12** usable frames on the track (of ~44 expected)
+- RANSAC inlier fraction below **0.6**
+- RMS reprojection residual above **1.0 px**
+
+Each of these raises with a diagnostic identifying which one fired, in the style of
+`ball_detector.py`'s `detect_ball_bgsub` — the pipeline is built to fail loudly rather than
+report a plausible-looking wrong number, and this project has a documented history of exactly
+that failure mode. If a track is refused, re-throw; do not lower the thresholds to force a
+number out of a bad recording.
+
+Independent cross-check (spec §7.3, Task 11 Step 3 — **not yet run**, needs the overhead mount
+and a re-measured `T_B_C`): on throws where the ball does not bounce far, compare
+`measure_landing.py`'s first-contact point against the existing static `ball_detector.py` +
+`ray_plane.ball_center_on_plane` resting measurement. Agreement to within a couple of
+centimetres is expected; a systematic offset in one direction implicates `T_B_C`, not the
+fitter, since both paths share the extrinsic. Record both numbers and their difference — do not
+adjust anything to make them agree.

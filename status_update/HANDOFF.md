@@ -1,5 +1,52 @@
 # Session Handoff — MC-PILOT Throwing Arm
 
+_Last updated: **2026-08-26** (supersedes the 2026-07-27 handoff, kept below the divider).
+This session = **documentation only, Task 11 of the ball-tracking plan**
+(`docs/superpowers/plans/2026-08-25-ball-tracking.md`, spec at
+`docs/superpowers/specs/2026-08-25-ball-tracking-design.md`). No code changed. Tasks 1-10 of that
+plan — the stereo-IR ball-tracking and landing-measurement pipeline — were implemented and
+committed in prior sessions (commits `78cbb84`..`2d7ae2f`); this session wrote up `CLAUDE.md`,
+`HARDWARE_RUNBOOK.md`, and this entry, and explicitly did **not** attempt Task 11 Step 3 (the
+real-throw acceptance gate) because the RealSense D435i is currently physically unplugged and
+no arm session was available. Nothing here should be read as new evidence — it is a writeup of
+what Tasks 1-10 already established, plus an explicit statement of what is still unverified._
+
+## 0. READ FIRST — REAL vs ASSIGNED vs NOT-WORKING (this session)
+
+| Claim / artifact | Status |
+|---|---|
+| `perception/stereo.py`, `perception/ball_track.py`, `perception/trajectory.py` (triangulation, RANSAC ballistic association, Gauss-Newton fit + impact solve) | **REAL, but verified SYNTHETICALLY ONLY.** 147 tests pass; end-to-end synthetic parabola (projected through the real measured IR intrinsics and 49.9448 mm baseline) recovers the landing point to 0.18 mm; Gauss-Newton at 0.15 px pixel noise, 40 frames, 30 seeds, averages 0.47 mm; RANSAC separates 40/40 true detections from 12 injected arm-like outliers. No camera, no arm, no real image was involved in any of these numbers. |
+| `perception/ir_capture.py` (dual-IR ring-buffer recorder) | **NOT-WORKING / NEVER RUN.** The live-capture path has never executed against the real camera. The D435i was unplugged before it could run once. |
+| `record_throw_ir.py` | **NOT-WORKING.** Has never captured anything — depends on `ir_capture.py`'s untested live path. |
+| `measure_landing.py` | **REAL against a synthetic recording only.** Runs correctly end-to-end on a synthetic fixture; has never been pointed at a real recording because none exists. |
+| `achieved_fps` / the ~44-usable-frames-at-90fps error budget | **ASSIGNED, unvalidated.** A reasoned estimate from the D435i's advertised 90 fps IR streams, not a measurement — nothing has streamed from the real sensor yet. |
+| `IRRecorder` exposure/emitter defaults (`exposure_us=2000`, `emitter=True`) | **ASSIGNED, unvalidated.** `tune_ir_exposure.py` exists to decide these via an A/B and has not been run. Must be run first on run day (see `HARDWARE_RUNBOOK.md` §6) before any real throw is recorded. |
+| Comparison against the existing static `ball_detector.py` + `ray_plane.py` path on a real throw | **NOT DONE.** This is Task 11 Step 3 / design spec §7.3, the real-throw acceptance gate. Explicitly not attempted this session — needs the overhead camera mount, a re-measured `T_B_C`, and the robot arm, none of which were available. Do not simulate or approximate this step; it either happens on real hardware or it hasn't happened. |
+| `T_B_C` (camera-to-base extrinsic) | **STALE.** Still the 2026-08-22 laptop-held-rig calibration, explicitly not the final mount, with marginal board detection quality throughout. Absolute accuracy of any future landing measurement is bounded by this, not by the vision pipeline above. |
+| Everything touching the real camera or the real arm, for this pipeline | **NONE OF IT.** As of this session, zero frames from the real D435i and zero real throws have gone through any part of `perception/`. Every millimetre figure anywhere in this pipeline's documentation is a synthetic/relative accuracy, not an absolute one. |
+
+## 0a. Open items (priority)
+
+1. **Mount the D435i on the final overhead rig** and re-measure `T_B_C` via
+   `calibrate_via_wrist_camera.py` (the adopted FK + shared-marker path) — the current extrinsic
+   is the superseded laptop-rig one. This blocks Task 11 Step 3 and any absolute-frame landing
+   number.
+2. **Run `tune_ir_exposure.py`** on run day, before the first real throw, to settle exposure and
+   emitter (spec §9) — record the chosen values in `HARDWARE_RUNBOOK.md` §6, which currently has
+   a blank table waiting for them.
+3. **Run `ir_capture.py`'s live path for the first time** via `record_throw_ir.py` — everything
+   downstream of it has only ever seen synthetic data.
+4. **Run the Task 11 Step 3 acceptance gate** (design spec §7.3): for at least 5 low-bounce real
+   throws, compare `measure_landing.py`'s first-contact point against the static
+   `ball_detector.py` + `ray_plane.ball_center_on_plane` resting measurement, and report both
+   numbers and their difference. Expected agreement is a couple of centimetres; a consistent
+   directional offset would point at `T_B_C`, not the fitter — report the numbers, do not adjust
+   anything to force agreement.
+5. Only after 3-4 does this pipeline have any standing to feed a real landing error back into the
+   GP ("close the loop" in `HARDWARE_SETUP.md`) — nothing before that point is real-world evidence.
+
+---
+
 _Last updated: **2026-07-27** (supersedes the 2026-07-23 handoff, kept below the divider).
 This session = **no new sim results, no new claims** — a codebase reliability pass ahead of
 hardware bring-up tomorrow, triggered by Deepak's "let's plan hardware experiments" reply to
