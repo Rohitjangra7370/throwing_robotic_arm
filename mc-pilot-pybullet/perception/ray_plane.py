@@ -37,7 +37,7 @@ from __future__ import annotations
 import numpy as np
 
 __all__ = ["Intrinsics", "pixel_ray", "intersect_plane", "ball_center_on_plane",
-           "D435I_COLOR_1280x720", "D435I_COLOR_1920x1080"]
+           "D435I_COLOR_1280x720", "D435I_COLOR_1920x1080", "D435I_IR_848x480"]
 
 
 class Intrinsics:
@@ -76,6 +76,17 @@ D435I_COLOR_1280x720 = Intrinsics(fx=910.79, fy=910.15, ppx=654.06, ppy=370.69,
 # must be for the same sensor.
 D435I_COLOR_1920x1080 = Intrinsics(fx=1366.19, fy=1365.22, ppx=981.10, ppy=556.04,
                                    width=1920, height=1080, coeffs=(0., 0., 0., 0., 0.))
+
+# Read off the lab D435i (SN 349522070924, fw 5.17.3.10) on 2026-08-25 via
+# pyrealsense2 stream profiles. IR, not colour: both IR imagers are global
+# shutter (OV9282) while the colour imager (OV2740) is rolling shutter, and the
+# IR field of view is much wider (89.7 x 58.8 deg vs 70.2 x 43.2), which is what
+# puts the ball's flight in frame from an overhead mount at all.
+# fx == fy exactly, and all distortion coefficients are zero -- factory
+# rectified, so undistortion is a no-op HERE and must be re-checked if the
+# stream resolution ever changes.
+D435I_IR_848x480 = Intrinsics(fx=426.167, fy=426.167, ppx=420.286, ppy=238.505,
+                              width=848, height=480, coeffs=(0., 0., 0., 0., 0.))
 
 
 def _undistort(x, y, coeffs, iters=5):
