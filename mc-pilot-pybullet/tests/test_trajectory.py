@@ -76,3 +76,74 @@ def test_two_point_fit_refuses_a_degenerate_sample():
     p = np.array([0.0, 0.0, 1.0])
     with pytest.raises(RuntimeError, match="separated"):
         fit_two_points(0.20, p, 0.2001, p)
+
+
+from perception.ray_plane import D435I_IR_848x480
+from perception.stereo import D435I_IR_BASELINE_M, StereoRig
+from perception.trajectory import FitResult, fit_ballistic
+
+RIG = StereoRig(D435I_IR_848x480, D435I_IR_BASELINE_M)
+
+# Overhead mount, camera at base-frame (0.82, 0, 1.767) looking straight down.
+# Same R convention as tests/test_ray_plane.py::_overhead.
+R_BC = np.array([[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]])
+T_BC = np.array([0.82, 0.0, 1.767])
+
+TRUE_P0 = np.array([0.035, 0.0, 1.137])
+TRUE_V0 = np.array([1.6218, 0.0, 0.1419])
+
+
+def _synth_obs(times, p0=TRUE_P0, v0=TRUE_V0, noise_px=0.0, seed=0):
+    """Project a known base-frame parabola into both IR images."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for t in times:
+        p_b = ballistic_position(p0, v0, t)
+        p_c = R_BC.T @ (p_b - T_BC)
+        u1, v1, u2, v2 = RIG.project(p_c)
+        rows.append([t, u1, v1, u2, v2])
+    obs = np.asarray(rows, float)
+    if noise_px:
+        obs[:, 1:] += rng.normal(0.0, noise_px, size=obs[:, 1:].shape)
+    return obs
+
+
+def test_noiseless_fit_recovers_the_trajectory_exactly():
+    obs = _synth_obs(np.linspace(0.13, 0.55, 40))
+    fit = fit_ballistic(obs, RIG, R_BC, T_BC)
+    assert isinstance(fit, FitResult)
+    assert np.allclose(fit.p0, TRUE_P0, atol=1e-6)
+    assert np.allclose(fit.v0, TRUE_V0, atol=1e-6)
+    assert fit.rms_px < 1e-6
+    assert fit.n_obs == 40
+
+
+def test_landing_error_under_realistic_pixel_noise_beats_the_budget():
+    """
+    Spec's error budget claims ~4.4 mm total sigma at 0.15 px centroid noise.
+    Assert the realised spread over 30 trials is under 1 cm -- comfortably
+    inside the budget, but loose enough not to be a flaky test.
+    """
+    truth = solve_impact(TRUE_P0, TRUE_V0, z_floor=Z_FLOOR_BASE)
+    errs = []
+    for seed in range(30):
+        obs = _synth_obs(np.linspace(0.13, 0.55, 40), noise_px=0.15, seed=seed)
+        fit = fit_ballistic(obs, RIG, R_BC, T_BC)
+        x, y, _ = solve_impact(fit.p0, fit.v0, z_floor=Z_FLOOR_BASE)
+        errs.append(np.hypot(x - truth[0], y - truth[1]))
+    assert np.mean(errs) < 0.010, f"mean landing error {np.mean(errs) * 1e3:.1f} mm"
+
+
+def test_fit_reports_a_usable_covariance():
+    obs = _synth_obs(np.linspace(0.13, 0.55, 40), noise_px=0.15, seed=7)
+    fit = fit_ballistic(obs, RIG, R_BC, T_BC)
+    assert fit.cov.shape == (6, 6)
+    assert np.all(np.diag(fit.cov) > 0)
+    assert np.allclose(fit.cov, fit.cov.T, atol=1e-12)
+
+
+def test_fit_refuses_too_few_observations():
+    """Spec section 6: fewer than 12 usable frames is a refusal, not a guess."""
+    obs = _synth_obs(np.linspace(0.13, 0.55, 8))
+    with pytest.raises(RuntimeError, match="12"):
+        fit_ballistic(obs, RIG, R_BC, T_BC)
