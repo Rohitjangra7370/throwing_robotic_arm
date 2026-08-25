@@ -33,7 +33,8 @@ import numpy as np
 
 __all__ = ["G_BASE", "Z_FLOOR_BASE", "BALL_RADIUS", "ballistic_position",
            "solve_impact_time", "solve_impact", "fit_two_points",
-           "FitResult", "fit_ballistic", "MIN_INLIER_FRAMES", "MAX_RMS_PX"]
+           "FitResult", "fit_ballistic", "MIN_INLIER_FRAMES", "MAX_RMS_PX",
+           "ransac_track"]
 
 G_BASE = np.array([0.0, 0.0, -9.81])
 Z_FLOOR_BASE = -0.433      # measured base plate; see CLAUDE.md's frame note
@@ -211,3 +212,84 @@ def fit_ballistic(obs, rig, R_bc, t_bc, g=G_BASE, max_iter=50, tol=1e-10):
     rms_px = float(np.sqrt(float(r @ r) / m))
     return FitResult(p0=theta[:3].copy(), v0=theta[3:].copy(), cov=cov,
                      rms_px=rms_px, n_obs=int(obs.shape[0]))
+
+
+def ransac_track(obs, rig, R_bc, t_bc, g=G_BASE, thresh_px=2.0,
+                 min_inlier_frac=0.6, iters=300, seed=0):
+    """
+    Pick out the frames that lie on one ballistic arc, then fit them.
+
+    THIS IS THE ARM REJECTOR. The arm moves fast in exactly the region the ball
+    starts in, and it is the dominant false-positive source. Rather than mask it
+    out by hand -- which would need re-drawing for every mount and every pose,
+    and would silently clip real detections -- this exploits the one property the
+    ball has and the arm does not: the ball's positions fit a parabola with
+    g = 9.81. Reflections and the second bounce fall out for the same reason.
+
+    Minimal sample is 2 timed 3-D points (6 equations, 6 unknowns). Scoring is
+    in pixels, consistent with `fit_ballistic`'s objective.
+
+    Returns (inlier_indices_into_obs, FitResult).
+    """
+    obs = np.asarray(obs, float)
+    if obs.ndim != 2 or obs.shape[1] != 5:
+        raise ValueError(f"obs must be (N, 5) [t,u1,v1,u2,v2], got {obs.shape}")
+    n = obs.shape[0]
+    if n < MIN_INLIER_FRAMES:
+        raise RuntimeError(f"only {n} observations, need >= {MIN_INLIER_FRAMES}")
+
+    R_bc = np.asarray(R_bc, float); t_bc = np.asarray(t_bc, float)
+    g = np.asarray(g, float)
+    rng = np.random.default_rng(seed)
+
+    # Triangulate once. A pair that cannot be triangulated at all (bad disparity,
+    # mismatched row) is dropped here rather than poisoning the sampling.
+    usable, pts_b = [], []
+    for i in range(n):
+        try:
+            p_c = rig.triangulate(*obs[i, 1:])
+        except RuntimeError:
+            continue
+        usable.append(i)
+        pts_b.append(R_bc @ p_c + t_bc)
+    usable = np.asarray(usable, int)
+    if usable.size < MIN_INLIER_FRAMES:
+        raise RuntimeError(
+            f"only {usable.size} of {n} observations triangulate at all "
+            f"(need >= {MIN_INLIER_FRAMES}) -- check left/right pairing")
+    pts_b = np.asarray(pts_b, float)
+
+    best_idx = np.empty(0, dtype=int)
+    for _ in range(iters):
+        a, b = rng.choice(usable.size, size=2, replace=False)
+        try:
+            p0, v0 = fit_two_points(obs[usable[a], 0], pts_b[a],
+                                    obs[usable[b], 0], pts_b[b], g=g)
+        except RuntimeError:
+            continue
+        try:
+            err = np.abs(_residuals(np.concatenate([p0, v0]), obs[usable],
+                                    rig, R_bc, t_bc, g)).reshape(-1, 4)
+        except RuntimeError:
+            # A wild minimal-sample hypothesis can put the arc behind the camera,
+            # where project() has no answer. That is a rejected hypothesis, not an
+            # error -- drop the sample and keep searching.
+            continue
+        inl = usable[np.max(err, axis=1) <= thresh_px]
+        if inl.size > best_idx.size:
+            best_idx = inl
+
+    frac = best_idx.size / float(n)
+    if best_idx.size < MIN_INLIER_FRAMES or frac < min_inlier_frac:
+        raise RuntimeError(
+            f"no ballistic arc found: best inlier consensus {best_idx.size}/{n} "
+            f"frames (inlier fraction {frac:.2f}, need >= {min_inlier_frac} and "
+            f">= {MIN_INLIER_FRAMES} frames) -- this recording does not contain "
+            f"a clean throw")
+
+    fit = fit_ballistic(obs[best_idx], rig, R_bc, t_bc, g=g)
+    if fit.rms_px > MAX_RMS_PX:
+        raise RuntimeError(
+            f"fit RMS {fit.rms_px:.2f} px exceeds {MAX_RMS_PX} px -- the frames "
+            f"agree on an arc but not a good one; do not use this landing point")
+    return best_idx, fit

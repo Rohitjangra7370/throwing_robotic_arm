@@ -147,3 +147,44 @@ def test_fit_refuses_too_few_observations():
     obs = _synth_obs(np.linspace(0.13, 0.55, 8))
     with pytest.raises(RuntimeError, match="12"):
         fit_ballistic(obs, RIG, R_BC, T_BC)
+
+
+from perception.trajectory import ransac_track
+
+
+def _arm_like_outliers(n, seed=3):
+    """
+    Rows that look like detections but do not lie on ANY g=9.81 parabola --
+    what the moving arm, a reflection, or the second bounce produce.
+    """
+    rng = np.random.default_rng(seed)
+    t = rng.uniform(0.13, 0.55, size=n)
+    u1 = rng.uniform(100, 700, size=n)
+    v1 = rng.uniform(60, 420, size=n)
+    return np.stack([t, u1, v1, u1 - rng.uniform(8, 20, size=n), v1], axis=-1)
+
+
+def test_ransac_rejects_arm_like_outliers_and_recovers_the_ball():
+    good = _synth_obs(np.linspace(0.13, 0.55, 40), noise_px=0.15, seed=1)
+    obs = np.vstack([good, _arm_like_outliers(12)])
+    idx, fit = ransac_track(obs, RIG, R_BC, T_BC)
+    assert len(idx) >= 36, f"kept only {len(idx)} of 40 true inliers"
+    assert set(idx.tolist()).issubset(set(range(40))), "an outlier was kept"
+    assert np.allclose(fit.p0, TRUE_P0, atol=0.02)
+    assert np.allclose(fit.v0, TRUE_V0, atol=0.05)
+
+
+def test_ransac_refuses_when_the_inlier_fraction_is_too_low():
+    """Spec section 6: below 0.6 inliers is a refusal, not a best effort."""
+    good = _synth_obs(np.linspace(0.13, 0.55, 14), noise_px=0.15, seed=2)
+    obs = np.vstack([good, _arm_like_outliers(40)])
+    with pytest.raises(RuntimeError, match="inlier"):
+        ransac_track(obs, RIG, R_BC, T_BC)
+
+
+def test_ransac_is_deterministic_for_a_fixed_seed():
+    obs = np.vstack([_synth_obs(np.linspace(0.13, 0.55, 40), noise_px=0.15, seed=1),
+                     _arm_like_outliers(12)])
+    a, _ = ransac_track(obs, RIG, R_BC, T_BC, seed=11)
+    b, _ = ransac_track(obs, RIG, R_BC, T_BC, seed=11)
+    assert np.array_equal(a, b)
