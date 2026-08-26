@@ -19,3 +19,8 @@ graphify-out/
 __pycache__/
 *.pyc
 mc-pilot-pybullet/robot_arm/_urdf_cache/
+
+# Raw IR capture dumps (throw_capture.py / record_and_annotate.py output) --
+# large uncompressed frame arrays, regenerable from the camera, not source.
+mc-pilot-pybullet/throws/
+mc-pilot-pybullet/throws_live/
