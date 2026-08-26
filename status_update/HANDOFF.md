@@ -1,5 +1,51 @@
 # Session Handoff — MC-PILOT Throwing Arm
 
+_Last updated: **2026-08-26** (supersedes the same-day documentation-only handoff below,
+kept below the divider). This session = **first real camera frames through `perception/`**,
+plus new tooling: a one-command record+annotate CLI, a single-ArUco-marker calibration script,
+and an auto-tf module so base-frame coordinates print themselves once a calibration exists.
+`throw_capture.py` was run for real this session — the D435i is no longer unplugged; 20 real
+triggered events sit in `throws/` (2.0 GB, gitignored) plus one fresh live demo in
+`throws_live/`. The arm was NOT reachable this session (`192.168.1.101` did not ping), so the
+new calibration script is written and import/argparse-verified but has never touched real
+hardware._
+
+## 0. READ FIRST — REAL vs ASSIGNED vs NOT-WORKING (this session)
+
+| Claim / artifact | Status |
+|---|---|
+| `perception/ball_track.py` `detect_candidates` + `perception/stereo.py` `pair_candidates`/`triangulate` | **NOW REAL, verified on real frames.** `throws/throw_003.npz` (119/130 frames paired) and a fresh live capture `throws_live/throw_000.npz` (86/130 paired) both visually confirmed via rendered annotated video: the detector circle sits on the ball in both IR streams throughout, and the triangulated 3D track is a smooth continuous arc, not noise. Supersedes "verified synthetically only" for these two modules specifically. |
+| `perception/ir_capture.py` live-capture path | **NOW REAL.** Ran via `throw_capture.py`; camera is plugged in and working. |
+| `perception/trajectory.py` (`ransac_track`/`fit_ballistic`/`solve_impact`) and `measure_landing.py`'s full pipeline | **STILL synthetic-only.** The ballistic fit needs a real `T_B_C` to be meaningful (gravity must actually point down in the frame it fits in); no real extrinsic exists yet, unchanged this session. |
+| `T_B_C` | **STILL STALE / still not on disk.** The 2026-08-22 laptop-rig calibration exists only in agent memory and a JSON, never as a file anything loads automatically. New this session: `perception/base_frame.py` defines a canonical load path (`calib/T_B_C.npz`) and `scripts/calibrate_marker_tf.py` can produce one — neither has been run against real hardware yet. |
+| New tools: `scripts/record_and_annotate.py`, `perception/visualize.py`, `scripts/calibrate_marker_tf.py`, `perception/base_frame.py` | **Code REAL; hardware paths mixed.** `record_and_annotate.py` + `perception/visualize.py` ran live end-to-end successfully (see above). `calibrate_marker_tf.py`'s geometry (reuses `calibrate_via_wrist_camera.py`'s `_rt`/`_compose`/`_invert`, not copied) and `base_frame.py`'s transform were unit-checked against known values and against a throwaway fake identity extrinsic on `throw_003.npz` — the auto-tf wiring runs cleanly and fails gracefully (no clean arc found) exactly as designed. Neither has touched the real Kortex arm. |
+
+## 0a. Open items (priority)
+
+1. **Run `scripts/calibrate_marker_tf.py` for real**, arm connected, one ArUco marker (from
+   `make_aruco_targets.py`'s loose `markers/` output) visible to both the D435i and the wrist
+   camera at once. This is the actual blocker for any base-frame landing number — everything
+   downstream (`record_and_annotate.py`'s auto-tf branch, `measure_landing.py`) is ready and
+   waiting on it.
+2. Cross-check the resulting single-marker calibration against `calibrate_via_wrist_camera.py`'s
+   ChArUco-board result via `--compare_json` — single-marker PnP off 4 points is noisier than
+   the board's dozens of corners.
+3. Once `calib/T_B_C.npz` exists, re-run `record_and_annotate.py` against a real throw and get
+   the first-ever real base-frame landing point + sigma out of `measure_landing.py`.
+4. `throws/` and `throws_live/` are ~2.1 GB combined, gitignored on purpose (raw capture dumps,
+   not source) — don't force-add them.
+
+## 0b. New files this session
+
+`mc-pilot-pybullet/perception/visualize.py` (`render_annotated` — annotated-video + 3D-plot
+renderer), `mc-pilot-pybullet/perception/base_frame.py` (canonical `calib/T_B_C.npz` loader +
+`to_base`/`auto_to_base`), `mc-pilot-pybullet/scripts/record_and_annotate.py` (one-command
+capture -> annotate -> auto base-frame print), `mc-pilot-pybullet/scripts/calibrate_marker_tf.py`
+(single-ArUco-marker + wrist-cam + FK calibration, writes the canonical extrinsic).
+`.gitignore` gained entries for `mc-pilot-pybullet/throws/` and `throws_live/`.
+
+---
+
 _Last updated: **2026-08-26** (supersedes the 2026-07-27 handoff, kept below the divider).
 This session = **documentation only, Task 11 of the ball-tracking plan**
 (`docs/superpowers/plans/2026-08-25-ball-tracking.md`, spec at
