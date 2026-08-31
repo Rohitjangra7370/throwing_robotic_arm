@@ -248,10 +248,19 @@ def fit_release_model(records):
         v0 = r.get("measured_v0")
         if v0 is None or r.get("commanded_speed") is None:
             continue
-        v = np.asarray(v0, float)
+        # Silently skip any malformed measured_v0: empty array, zero-magnitude,
+        # or non-finite (NaN, inf). A single bad record can corrupt the fit
+        # (observed: zero vector among two good records produced gain=-6.5),
+        # so guard tightly here.
+        try:
+            v = np.asarray(v0, float).ravel()
+            if v.size == 0 or np.linalg.norm(v) <= 1e-9 or not np.all(np.isfinite(v)):
+                continue
+        except (ValueError, TypeError):
+            continue
         cmd.append(float(r["commanded_speed"]))
         meas.append(float(np.linalg.norm(v)))
-        dirs.append(v / max(np.linalg.norm(v), 1e-12))
+        dirs.append(v / np.linalg.norm(v))
     if len(cmd) < 3:
         raise ValueError(f"need at least 3 measured throws to fit a release "
                          f"model, have {len(cmd)}")
@@ -269,9 +278,14 @@ def fit_release_model(records):
     sigma = float(np.std(resid, ddof=min(2, len(c) - 1)))
 
     d = np.asarray(dirs)
-    mean_dir = d.mean(axis=0)
-    mean_dir /= max(np.linalg.norm(mean_dir), 1e-12)
-    spread = np.degrees(np.arccos(np.clip(d @ mean_dir, -1, 1))).max()
+    # Maximum pairwise angle: the honest measure of "release direction spread".
+    # Previous code computed max deviation from mean direction, which under-reports
+    # (reports θ/2 for two throws θ apart) and degenerates as θ→180° (reports ~90°).
+    spread = 0.0
+    for i in range(len(d)):
+        for j in range(i + 1, len(d)):
+            angle = np.degrees(np.arccos(np.clip(np.dot(d[i], d[j]), -1, 1)))
+            spread = max(spread, angle)
 
     return {"gain": float(gain), "offset": float(offset),
             "residual_sigma": sigma, "n": int(len(c)),
