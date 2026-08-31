@@ -120,8 +120,40 @@ def load_pose_table(cfg, override=None):
     return list(np.load(path, allow_pickle=True))
 
 
+def _check_tool_offset_matches_table(table, tool_offset_z):
+    """
+    Fail closed on a --tool_offset_z / table mismatch, mirroring the existing
+    floor_z stamp precedent (train_mc_pilot_pb_arm.py): a table searched at
+    one TCP offset is only valid at that offset -- passing the wrong one here
+    silently reproduces exactly the 12 cm / 0.39 m/s error this fix exists to
+    remove, just relocated to a different mismatch.
+    """
+    if table is None:
+        return
+    stamped = table[0].get("tool_offset")
+    if stamped is None:
+        if tool_offset_z != 0.0:
+            raise RuntimeError(
+                f"--tool_offset_z {tool_offset_z} given but the loaded table "
+                "carries no tool_offset stamp, so it predates this flag and "
+                "was searched at the bare flange (tool_offset=0). Re-search "
+                "with find_throw_pose.py --tool_offset_z, or pass 0.0 here."
+            )
+        return
+    want = np.array([0.0, 0.0, tool_offset_z], dtype=float)
+    got = np.array(stamped, dtype=float)
+    if not np.allclose(want, got, atol=1e-6):
+        raise RuntimeError(
+            f"tool_offset mismatch: table was searched at tool_offset={got.tolist()} "
+            f"but --tool_offset_z {tool_offset_z} implies {want.tolist()}. "
+            "Running with the wrong offset reproduces the release error this "
+            "flag exists to fix, just at a different magnitude. Pass the "
+            f"matching --tool_offset_z {float(got[2])}."
+        )
+
+
 def plan_throw_for_target(arm, profile, cfg, pol, target_xy, opt_pose=None,
-                          u_cap=None, wrist_roll_offset=0.0):
+                          u_cap=None, wrist_roll_offset=0.0, tool_offset_z=0.0):
     """
     policy(target) -> release speed -> release state -> joint trajectory.
 
@@ -156,10 +188,12 @@ def plan_throw_for_target(arm, profile, cfg, pol, target_xy, opt_pose=None,
                       speed * np.sin(a)])
 
     table = load_pose_table(cfg, opt_pose)
+    _check_tool_offset_matches_table(table, tool_offset_z)
     solver = OptimizedReleaseSolver(
         opt_posture_table=table,
         opt_launch_deg=float(cfg.get("opt_launch_deg",
                                      table[0]["elev_deg"] if table else 43.0)),
+        tool_offset=[0.0, 0.0, tool_offset_z],
     )
     q_ovr = qd_ovr = None
     if solver.active:
@@ -193,7 +227,7 @@ def plan_throw_for_target(arm, profile, cfg, pol, target_xy, opt_pose=None,
     return coeffs, q_release, qd_release, v_ach, speed, v_cmd, rel
 
 
-def release_box_from_table(arm, table, margin=0.10):
+def release_box_from_table(arm, table, margin=0.10, tool_offset=None):
     """
     Safe release box derived from the pose table's OWN release locus.
 
@@ -204,15 +238,26 @@ def release_box_from_table(arm, table, margin=0.10):
     the check meaningful instead of arbitrary: it asserts the planned release is
     where THIS calibrated table says it should be, and still catches a release
     that has wandered somewhere unexpected.
+
+    `tool_offset` MUST match whatever was passed to the OptimizedReleaseSolver
+    that produced the release being checked -- solve() now reports the TCP
+    position, not the bare flange, when an offset is given. A box still
+    anchored to the flange fails a correctly-solved TCP release as "outside
+    the box" purely because the box itself was never moved (reproduced live:
+    a valid TCP-offset plan PASSED precheck and FAILED only this check).
     """
+    offset = np.zeros(3) if tool_offset is None else np.array(tool_offset, dtype=float)
     pts = []
     for e in table:
         q = np.asarray(e["q"], dtype=float)
         for li, jid in enumerate(arm._joint_ids):
             p.resetJointState(arm._arm_id, jid, float(q[li]), physicsClientId=arm._cid)
-        pts.append(np.array(p.getLinkState(
-            arm._arm_id, arm._ee_link, computeForwardKinematics=True,
-            physicsClientId=arm._cid)[4]))
+        ls = p.getLinkState(arm._arm_id, arm._ee_link, computeForwardKinematics=True,
+                            physicsClientId=arm._cid)
+        world_pos, _ = p.multiplyTransforms(
+            ls[4], ls[5], offset.tolist(), [0, 0, 0, 1], physicsClientId=arm._cid
+        )
+        pts.append(np.array(world_pos))
     for li, jid in enumerate(arm._joint_ids):
         p.resetJointState(arm._arm_id, jid, float(arm._q_neutral[li]), 0.0,
                           physicsClientId=arm._cid)
@@ -272,9 +317,10 @@ def cmd_plan(args):
     coeffs, q_rel, qd_rel, v_ach, speed, v_cmd, rel = plan_throw_for_target(
         arm, profile, cfg, pol, args.target,
         opt_pose=args.opt_pose, u_cap=args.u_cap,
-        wrist_roll_offset=np.deg2rad(args.wrist_roll_offset_deg))
+        wrist_roll_offset=np.deg2rad(args.wrist_roll_offset_deg),
+        tool_offset_z=args.tool_offset_z)
     table = load_pose_table(cfg, args.opt_pose)
-    box = release_box_from_table(arm, table) if table else None
+    box = release_box_from_table(arm, table, tool_offset=[0.0, 0.0, args.tool_offset_z]) if table else None
     limits = make_limits(profile, args.speed_scale, release_box=box, arm=arm,
                          positioning_scale=args.positioning_scale)
     ex = HardwareThrowExecutor(limits, dry_run=True)
@@ -399,9 +445,10 @@ def cmd_throw(args):
     coeffs, q_rel, qd_rel, v_ach, speed, v_cmd, rel = plan_throw_for_target(
         arm, profile, cfg, pol, args.target,
         opt_pose=args.opt_pose, u_cap=args.u_cap,
-        wrist_roll_offset=np.deg2rad(args.wrist_roll_offset_deg))
+        wrist_roll_offset=np.deg2rad(args.wrist_roll_offset_deg),
+        tool_offset_z=args.tool_offset_z)
     table = load_pose_table(cfg, args.opt_pose)
-    box = release_box_from_table(arm, table) if table else None
+    box = release_box_from_table(arm, table, tool_offset=[0.0, 0.0, args.tool_offset_z]) if table else None
     limits = make_limits(profile, args.speed_scale, release_box=box, arm=arm,
                          positioning_scale=args.positioning_scale)
     with HardwareThrowExecutor(limits, dry_run=not args.arm, ip=args.ip) as ex:
@@ -474,6 +521,13 @@ def build_parser():
             help="hard ceiling on commanded release speed (m/s). The shipped "
                  "Gen3 table's kinematic max 1.628 is NOT follow-through "
                  "recoverable; 1.60 is the measured safe cap.",
+        )
+        sp.add_argument(
+            "--tool_offset_z", type=float, default=0.0,
+            help="TCP offset along ee_link's z-axis (m); must match the "
+                 "loaded table's own 'tool_offset' stamp or the plan is "
+                 "refused. 0.12 for the real Robotiq 2F-85 (measured from "
+                 "the arm's own firmware). Table with no stamp requires 0.0.",
         )
         sp.add_argument(
             "--wrist_roll_offset_deg", type=float, default=0.0,
