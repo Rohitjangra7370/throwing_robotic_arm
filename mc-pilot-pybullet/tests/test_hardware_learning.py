@@ -45,3 +45,48 @@ def test_escalation_refuses_skipping_a_rung():
 def test_escalation_allows_repeating_or_dropping_back():
     assert scale_allowed(0.15, [0.15, 0.30])[0]
     assert scale_allowed(0.30, [0.15, 0.30])[0]
+
+
+def test_track_to_state_samples_has_the_exact_shapes_the_model_expects():
+    """(n, 8) = [x,y,z,vx,vy,vz,Px,Py] and (n, 1) with the speed only at t=0 --
+    verified against PyBulletThrowingSystem.rollout, not assumed."""
+    from hardware_learning import track_to_state_samples
+    t = np.arange(0.0, 0.50, 1 / 90.0)
+    p0, v0, g = np.array([0.3, 0.0, 0.02]), np.array([1.39, 0.0, 0.37]), np.array([0, 0, -9.81])
+    pts = p0 + np.outer(t, v0) + 0.5 * np.outer(t ** 2, g)
+    s, u = track_to_state_samples(pts, t, (0.71, 0.02), 1.44, ts=0.02)
+    assert s.shape[1] == 8 and u.shape[1] == 1
+    assert s.shape[0] == u.shape[0]
+    assert u[0, 0] == pytest.approx(1.44)
+    assert np.allclose(u[1:, 0], 0.0)
+    assert np.allclose(s[:, 6], 0.71) and np.allclose(s[:, 7], 0.02)
+
+
+def test_track_to_state_samples_recovers_a_known_velocity_profile():
+    from hardware_learning import track_to_state_samples
+    t = np.arange(0.0, 0.50, 1 / 90.0)
+    p0, v0, g = np.array([0.3, 0.0, 0.02]), np.array([1.39, 0.0, 0.37]), np.array([0, 0, -9.81])
+    pts = p0 + np.outer(t, v0) + 0.5 * np.outer(t ** 2, g)
+    s, _ = track_to_state_samples(pts, t, (0.71, 0.02), 1.44, ts=0.02)
+    assert np.allclose(s[0, 0:3], p0, atol=2e-3)
+    assert np.allclose(s[0, 3:6], v0, atol=2e-2)
+    dt = 0.02
+    dv = (s[1:, 3:6] - s[:-1, 3:6]) / dt
+    assert np.allclose(dv[:, 2].mean(), -9.81, atol=0.5)
+
+
+def test_track_to_state_samples_is_sampled_at_ts_not_at_camera_rate():
+    """90 fps in, 50 Hz out -- the GP's propagation assumes Ts spacing."""
+    from hardware_learning import track_to_state_samples
+    t = np.arange(0.0, 0.50, 1 / 90.0)
+    pts = np.stack([t * 1.4, t * 0, 0.02 - 4.9 * t ** 2], axis=1)
+    s, _ = track_to_state_samples(pts, t, (0.71, 0.0), 1.44, ts=0.02)
+    assert 24 <= s.shape[0] <= 26        # 0.50 s / 0.02 s
+
+
+def test_track_to_state_samples_rejects_a_track_too_short_to_difference():
+    from hardware_learning import track_to_state_samples
+    t = np.array([0.0, 0.01])
+    pts = np.zeros((2, 3))
+    with pytest.raises(ValueError, match="too short"):
+        track_to_state_samples(pts, t, (0.71, 0.0), 1.44, ts=0.02)
