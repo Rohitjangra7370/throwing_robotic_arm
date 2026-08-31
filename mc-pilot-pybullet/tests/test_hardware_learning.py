@@ -142,16 +142,29 @@ def test_verdict_ensemble_threshold_re_pinned_to_se():
 
 
 def test_verdict_includes_both_conditions_and_names_failure():
-    """Exceeding k*SE is not enough if the result could be aliased extrinsic
-    rotation. A mean dev above k*SE but below systematic floor fails the second
-    condition and reports which one failed."""
+    """RE-PINNED to verify the AND gate is actually checked. Exceeding k*SE is
+    not enough if the result could be aliased extrinsic rotation. This test
+    creates a case where above_se=True but above_sys=False, so removing the
+    systematic-floor condition would flip the verdict. Previous version used
+    dv=0.002, sigma_v=0.5, n=40 which gave above_se=False, above_sys=True
+    (opposite of the docstring claim), so it passed for the wrong reason.
+
+    Correct case: dv_learned=0.0015, sigma_v=0.001, n=250, k=2.0 yields:
+    - k*SE = 0.000126 (cleared by 0.0015)
+    - systematic_floor = 0.0019176 (NOT cleared by 0.0015)
+    - Verdict: above_noise=False because the systematic floor fails."""
     from hardware_learning import deviation_verdict, systematic_dv_floor
     sys_floor = systematic_dv_floor()
     assert pytest.approx(sys_floor, abs=1e-6) == 0.001918
-    # Mean dev above k*SE but below systematic floor: should fail
-    above_se_below_sys = deviation_verdict(np.full((40, 1), 0.002), sigma_v=0.5, k=2.0)
-    assert not above_se_below_sys["above_noise"]
-    assert "systematic floor" in above_se_below_sys["text"]
+
+    # Case: mean_dev clears SE threshold but NOT systematic floor
+    above_se_below_sys = deviation_verdict(np.full((250, 1), 0.0015), sigma_v=0.001, k=2.0)
+    assert not above_se_below_sys["above_noise"], "Systematic floor not cleared; should be below-noise"
+    assert above_se_below_sys["mean_deviation"] > 2.0 * above_se_below_sys["standard_error"], \
+        "SE threshold cleared but systematic floor is not"
+    assert "systematic floor" in above_se_below_sys["text"].lower()
+    # When systematic floor is the blocker, no n_required should appear
+    assert "calibration" in above_se_below_sys["text"].lower()
 
 
 def test_verdict_k_zero_does_not_raise():

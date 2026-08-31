@@ -170,8 +170,10 @@ def deviation_verdict(dv_learned, sigma_v=None, k=2.0):
 
     Returns dict with keys: rms_deviation, rms_sigma, ratio, mean_deviation,
     standard_error, systematic_floor, above_noise, n_samples, text. When the
-    verdict is BELOW NOISE, the text includes the sample count that would be
-    needed to resolve the measured signal above the SE threshold.
+    verdict is BELOW NOISE and only the random-noise threshold is the blocker
+    (systematic floor is cleared), the text includes the sample count that would
+    be needed to resolve the measured signal. When the systematic floor is the
+    blocker, the text explains that it is a hard limit requiring better calibration.
     """
     d = np.asarray(dv_learned, float)
     sigma_v = velocity_noise_sigma() if sigma_v is None else float(sigma_v)
@@ -192,29 +194,29 @@ def deviation_verdict(dv_learned, sigma_v=None, k=2.0):
     above_sys = mean_d > sys_floor
     above = above_se and above_sys
 
-    # Required sample count for this mean deviation to exceed k*SE
-    if mean_d > 1e-12:
-        n_required = int(np.ceil((k * sigma_v / mean_d) ** 2))
-    else:
-        n_required = int(1e9)
-
     condition_text = ""
+    remedy_text = ""
     if above:
-        condition_text = "Exceeds both random-noise threshold and systematic floor."
-    elif above_se:
-        condition_text = f"Exceeds random-noise threshold ({k:g}*SE={k*se:.4f}) but NOT systematic floor ({sys_floor:.4f})."
-    elif above_sys:
-        condition_text = f"Exceeds systematic floor ({sys_floor:.4f}) but NOT random-noise threshold ({k:g}*SE={k*se:.4f})."
+        condition_text = f"Exceeds both {k:g}*SE={k*se:.4f} m/s and systematic floor {sys_floor:.4f} m/s."
+    elif above_se and not above_sys:
+        # SE cleared, but systematic floor is the blocker
+        condition_text = f"Exceeds random-noise threshold ({k:g}*SE={k*se:.4f}) but NOT systematic floor ({sys_floor:.4f} m/s)."
+        remedy_text = "The systematic floor is a hard limit from extrinsic rotation error (0.0019 m/s); more samples cannot resolve it — the remedy is better calibration."
+    elif above_sys and not above_se:
+        # Systematic floor cleared, SE is the blocker
+        condition_text = f"Exceeds systematic floor ({sys_floor:.4f} m/s) but NOT random-noise threshold ({k:g}*SE={k*se:.4f})."
+        if mean_d > 1e-12:
+            n_required = int(np.ceil((k * sigma_v / mean_d) ** 2))
+            remedy_text = f"To resolve this mean deviation above the noise threshold would require ~{n_required} samples at this effect size."
     else:
-        condition_text = f"Below both: {k:g}*SE={k*se:.4f}, systematic floor {sys_floor:.4f}."
+        # Both conditions fail
+        condition_text = f"Below both: {k:g}*SE={k*se:.4f} m/s, systematic floor {sys_floor:.4f} m/s."
+        remedy_text = "The systematic floor (extrinsic rotation error) is the binding constraint. Sampling cannot resolve this — a better calibration is required."
 
     text = (f"{'ABOVE NOISE' if above else 'BELOW NOISE'}: "
             f"mean deviation {mean_d:.4f} m/s vs {k:g}*SE {k*se:.4f} m/s "
             f"over {n} samples. {condition_text} "
-            + (""
-               if above else
-               f"To resolve this mean deviation above the noise threshold would require "
-               f"~{n_required} samples at this effect size. "))
+            + (remedy_text if remedy_text else ""))
 
     return {
         "rms_deviation": rms_d,
