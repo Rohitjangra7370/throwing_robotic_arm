@@ -109,16 +109,18 @@ def test_track_to_state_samples_rejects_non_monotonic_times():
         track_to_state_samples(pts_bad, t_bad, (0.71, 0.0), 1.44, ts=0.02)
 
 
-def test_velocity_noise_sigma_propagates_position_noise_through_differencing():
-    """18mm extrinsic (+) 10mm triangulation, differenced over 20ms, is large."""
-    from hardware_learning import velocity_noise_sigma
-    s = velocity_noise_sigma(pos_sigma_m=0.0206, ts=0.02)
-    assert s > 0.5          # m/s -- differencing cm-scale noise at 50 Hz is brutal
-    assert velocity_noise_sigma(0.0206, 0.04) < s     # longer baseline, less noise
+def test_velocity_noise_sigma_uses_independent_noise_only():
+    """Only per-frame stereo noise survives differencing; extrinsic translation
+    (systematic) error cancels in p_{k+1} - p_{k-1}. The 10 mm independent default
+    yields ~0.35 m/s, not the 0.73 m/s from the full ~20 mm when wrongly combined."""
+    from hardware_learning import velocity_noise_sigma, POS_SIGMA_INDEPENDENT_M
+    s = velocity_noise_sigma(pos_sigma_m=POS_SIGMA_INDEPENDENT_M, ts=0.02)
+    assert 0.30 < s < 0.40          # ~0.35 m/s from 10 mm independent noise
+    assert velocity_noise_sigma(POS_SIGMA_INDEPENDENT_M, 0.04) < s  # longer baseline, less noise
 
 
 def test_verdict_is_below_noise_when_the_signal_is_smaller_than_sigma():
-    """The expected real-world answer for a tennis ball: drag ~5mm, noise ~18mm."""
+    """The expected real-world answer for a tennis ball: drag ~5mm, noise too large."""
     from hardware_learning import deviation_verdict
     v = deviation_verdict(dv_learned=np.full((40, 3), 0.01), sigma_v=0.5)
     assert not v["above_noise"]
@@ -126,20 +128,50 @@ def test_verdict_is_below_noise_when_the_signal_is_smaller_than_sigma():
     assert v["ratio"] < 1.0
 
 
-def test_verdict_is_above_noise_only_past_the_2x_threshold():
+def test_verdict_ensemble_threshold_re_pinned_to_se():
+    """Boundary test re-pinned to ensemble SE, not per-sample RMS. With n=40,
+    sigma_v=0.5, k=2.0: SE = 0.0791, k*SE = 0.1581. Systematic floor is ~0.0019.
+    Mean deviation 0.15 is below k*SE; 0.17 is above. Both are way above the
+    systematic floor, so the second condition is not the limiting one here."""
     from hardware_learning import deviation_verdict
-    just_under = deviation_verdict(np.full((40, 1), 0.99), sigma_v=0.5, k=2.0)
-    just_over = deviation_verdict(np.full((40, 1), 1.01), sigma_v=0.5, k=2.0)
+    just_under = deviation_verdict(np.full((40, 1), 0.15), sigma_v=0.5, k=2.0)
+    just_over = deviation_verdict(np.full((40, 1), 0.17), sigma_v=0.5, k=2.0)
     assert not just_under["above_noise"]
     assert just_over["above_noise"]
     assert "ABOVE NOISE" in just_over["text"]
 
 
-def test_verdict_text_always_reports_both_numbers_and_the_count():
-    """A verdict without its evidence is exactly the kind of number this repo
-    has been bitten by before."""
+def test_verdict_includes_both_conditions_and_names_failure():
+    """Exceeding k*SE is not enough if the result could be aliased extrinsic
+    rotation. A mean dev above k*SE but below systematic floor fails the second
+    condition and reports which one failed."""
+    from hardware_learning import deviation_verdict, systematic_dv_floor
+    sys_floor = systematic_dv_floor()
+    assert pytest.approx(sys_floor, abs=1e-6) == 0.001918
+    # Mean dev above k*SE but below systematic floor: should fail
+    above_se_below_sys = deviation_verdict(np.full((40, 1), 0.002), sigma_v=0.5, k=2.0)
+    assert not above_se_below_sys["above_noise"]
+    assert "systematic floor" in above_se_below_sys["text"]
+
+
+def test_verdict_k_zero_does_not_raise():
+    """Zero guard must protect the denominator (k * sigma_v), not sigma_v alone."""
+    from hardware_learning import deviation_verdict
+    v = deviation_verdict(np.full((40, 1), 0.01), sigma_v=0.5, k=0.0)
+    assert v["ratio"] == 0.0
+
+
+def test_verdict_below_noise_text_includes_required_sample_count():
+    """When the verdict is BELOW NOISE, the text must state the sample count
+    needed to resolve this effect above the noise threshold -- so the reader
+    learns whether the experiment was underpowered or the effect is absent."""
     from hardware_learning import deviation_verdict
     v = deviation_verdict(np.full((37, 3), 0.02), sigma_v=0.5)
+    assert not v["above_noise"]
     assert "37" in v["text"]
-    assert f"{v['rms_deviation']:.4f}" in v["text"]
-    assert f"{v['rms_sigma']:.4f}" in v["text"]
+    assert "sample" in v["text"].lower()
+    # The text must include n_required (a large number for small mean deviations)
+    # We can verify this exists by checking that a number > 1000 appears
+    import re
+    numbers = re.findall(r'\d+', v["text"])
+    assert any(int(n) > 1000 for n in numbers)

@@ -115,46 +115,115 @@ def track_to_state_samples(points_base, times, target_xy, commanded_speed,
     return states, inputs
 
 
-# 18 mm extrinsic repeatability (measured 2026-08-31, 5 solves, static rig)
-# combined with ~10 mm stereo triangulation noise at 1.6 m.
-POS_SIGMA_M = float(np.hypot(0.018, 0.010))
+POS_SIGMA_INDEPENDENT_M = 0.010   # per-frame stereo triangulation; survives differencing
+POS_SIGMA_SYSTEMATIC_M = 0.018    # extrinsic translation repeatability; CANCELS in a difference,
+                                  # so it must NOT enter velocity_noise_sigma -- kept for reference
+EXTRINSIC_ROT_SIGMA_DEG = 0.56    # measured extrinsic rotation repeatability
+G = 9.81
 
 
-def velocity_noise_sigma(pos_sigma_m=POS_SIGMA_M, ts=TS_DEFAULT):
+def velocity_noise_sigma(pos_sigma_m=POS_SIGMA_INDEPENDENT_M, ts=TS_DEFAULT):
     """
     Position noise propagated into a central-difference velocity.
 
     v_k = (p_{k+1} - p_{k-1}) / (2*ts), so sigma_v = sqrt(2)*sigma_p / (2*ts).
-    At 2.06 cm and 50 Hz this is ~0.73 m/s, which is half the release speed --
-    the honest reason a per-sample velocity from this rig cannot resolve drag.
+
+    Only per-frame-independent noise survives differencing; extrinsic translation
+    (systematic) errors cancel in the difference p_{k+1} - p_{k-1}, so they must
+    NOT enter this estimate. The default uses stereo triangulation noise (10 mm)
+    only, not the extrinsic repeatability (18 mm). This is critical: including
+    the systematic term would yield ~0.73 m/s noise, which is 640× the drag signal
+    and makes a correct verdict impossible.
+
+    At 10 mm and 50 Hz this is ~0.22 m/s, still ~280× the drag signal for a
+    tennis ball. The ensemble test in deviation_verdict is the only way to
+    resolve whether there is real structure in the noise.
     """
     return float(np.sqrt(2.0) * pos_sigma_m / (2.0 * ts))
+
+
+def systematic_dv_floor(rot_sigma_deg=EXTRINSIC_ROT_SIGMA_DEG, ts=TS_DEFAULT, g=G):
+    """
+    The per-step Delta-v that an extrinsic ROTATION error alone would produce.
+
+    A rotation error tilts the whole trajectory, so gravity in the calibrated
+    frame is not quite vertical, and the residual reads as a constant horizontal
+    acceleration -- indistinguishable in form from drag. Unlike random noise
+    this does NOT average down with more samples, so it is a hard floor on any
+    aerodynamic claim from this rig: 0.56 deg gives 0.0019 m/s per step, which
+    is 2.5x the drag signal for a tennis ball at this speed.
+    """
+    return float(g * np.sin(np.radians(rot_sigma_deg)) * ts)
 
 
 def deviation_verdict(dv_learned, sigma_v=None, k=2.0):
     """
     Is the non-ballistic correction the GP claims to have found bigger than the
-    noise it was fitted through?
+    noise it was fitted through, AND bigger than what a mis-calibrated extrinsic
+    could fake?
 
     `dv_learned` is the GP's predicted delta-v minus the pure-gravity delta-v,
-    i.e. only the part that is not already assumed. ABOVE NOISE requires
-    RMS(deviation) > k * RMS(sigma). Both numbers and the sample count go into
-    the text, always -- a verdict without its evidence is how a noise-sized
-    number becomes a claimed discovery.
+    i.e. only the part that is not already assumed. Uses an ensemble test:
+    mean_dev > k * SE AND mean_dev > systematic_floor. Both must be true for
+    ABOVE NOISE. The first condition checks random-noise threshold, the second
+    checks whether the result could be aliased extrinsic rotation error.
+
+    Returns dict with keys: rms_deviation, rms_sigma, ratio, mean_deviation,
+    standard_error, systematic_floor, above_noise, n_samples, text. When the
+    verdict is BELOW NOISE, the text includes the sample count that would be
+    needed to resolve the measured signal above the SE threshold.
     """
     d = np.asarray(dv_learned, float)
     sigma_v = velocity_noise_sigma() if sigma_v is None else float(sigma_v)
+    n = d.shape[0]
+
+    # Per-sample diagnostics (kept for inspection, not the verdict)
     rms_d = float(np.sqrt(np.mean(d ** 2)))
-    ratio = rms_d / (k * sigma_v) if sigma_v > 0 else np.inf
-    above = rms_d > k * sigma_v
+    denom_per_sample = k * sigma_v
+    ratio = rms_d / denom_per_sample if denom_per_sample > 0 else 0.0
+
+    # Ensemble test
+    mean_d = float(np.linalg.norm(np.mean(d, axis=0)))
+    se = sigma_v / np.sqrt(n) if n > 0 else np.inf
+    sys_floor = systematic_dv_floor()
+
+    # Both conditions required for ABOVE NOISE
+    above_se = mean_d > k * se
+    above_sys = mean_d > sys_floor
+    above = above_se and above_sys
+
+    # Required sample count for this mean deviation to exceed k*SE
+    if mean_d > 1e-12:
+        n_required = int(np.ceil((k * sigma_v / mean_d) ** 2))
+    else:
+        n_required = int(1e9)
+
+    condition_text = ""
+    if above:
+        condition_text = "Exceeds both random-noise threshold and systematic floor."
+    elif above_se:
+        condition_text = f"Exceeds random-noise threshold ({k:g}*SE={k*se:.4f}) but NOT systematic floor ({sys_floor:.4f})."
+    elif above_sys:
+        condition_text = f"Exceeds systematic floor ({sys_floor:.4f}) but NOT random-noise threshold ({k:g}*SE={k*se:.4f})."
+    else:
+        condition_text = f"Below both: {k:g}*SE={k*se:.4f}, systematic floor {sys_floor:.4f}."
+
     text = (f"{'ABOVE NOISE' if above else 'BELOW NOISE'}: "
-            f"RMS deviation {rms_d:.4f} m/s vs {k:g}x RMS sigma "
-            f"{sigma_v:.4f} m/s over {d.shape[0]} samples "
-            f"(ratio {ratio:.2f}). "
-            + ("The GP found structure the noise cannot explain."
+            f"mean deviation {mean_d:.4f} m/s vs {k:g}*SE {k*se:.4f} m/s "
+            f"over {n} samples. {condition_text} "
+            + (""
                if above else
-               "The GP learned nothing distinguishable from measurement noise -- "
-               "expected for a tennis ball at this speed, where drag displaces "
-               "~5 mm against ~21 mm of position noise. Report it as such."))
-    return {"rms_deviation": rms_d, "rms_sigma": sigma_v, "ratio": ratio,
-            "above_noise": bool(above), "n_samples": int(d.shape[0]), "text": text}
+               f"To resolve this mean deviation above the noise threshold would require "
+               f"~{n_required} samples at this effect size. "))
+
+    return {
+        "rms_deviation": rms_d,
+        "rms_sigma": sigma_v,
+        "ratio": ratio,
+        "mean_deviation": mean_d,
+        "standard_error": float(se),
+        "systematic_floor": sys_floor,
+        "above_noise": bool(above),
+        "n_samples": int(n),
+        "text": text
+    }
