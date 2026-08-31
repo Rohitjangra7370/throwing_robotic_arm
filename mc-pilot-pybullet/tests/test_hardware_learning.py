@@ -254,10 +254,10 @@ def test_injected_drag_is_recovered_when_noise_is_set_below_it():
 
 
 def test_fit_release_model_skips_malformed_measured_v0():
-    """Zero-magnitude, non-finite, or empty measured_v0 must be skipped cleanly.
-    A single bad record can corrupt the fit (observed: [0,0,0] among two good
-    records produced gain=-6.5, offset=+10.65 — physically impossible, returned
-    with no error). Guards tightly against silent corruption."""
+    """Zero-magnitude, non-finite, empty, non-3-vector measured_v0 must be
+    skipped cleanly. A single bad record can corrupt the fit (observed: [0,0,0]
+    among two good records produced gain=-6.5, offset=+10.65 — physically
+    impossible, returned with no error). Guards tightly against silent corruption."""
     from hardware_learning import fit_release_model
     recs = [
         {"commanded_speed": 1.4, "measured_v0": [1.26, 0, 0], "landing_xy": [0.7, 0]},
@@ -266,10 +266,11 @@ def test_fit_release_model_skips_malformed_measured_v0():
         {"commanded_speed": 1.7, "measured_v0": [float('nan'), 0, 0], "landing_xy": [0.7, 0]},  # non-finite — skip
         {"commanded_speed": 1.8, "measured_v0": [1.62, 0, 0], "landing_xy": [0.7, 0]},
         {"commanded_speed": 1.9, "measured_v0": [], "landing_xy": [0.7, 0]},  # empty — skip
+        {"commanded_speed": 1.95, "measured_v0": 5.0, "landing_xy": [0.7, 0]},  # scalar, not 3-vector — skip
         {"commanded_speed": 2.0, "measured_v0": [1.80, 0, 0], "landing_xy": [0.7, 0]}
     ]
     result = fit_release_model(recs)
-    # Should have skipped the zero, NaN, and empty records; left with 4 good ones
+    # Should have skipped zero, NaN, empty, and scalar records; left with 4 good ones
     assert result["n"] == 4
     # With a linear relationship (measured ≈ 0.9*commanded), gain should be close to 0.9
     assert 0.85 < result["gain"] < 0.95
@@ -277,8 +278,11 @@ def test_fit_release_model_skips_malformed_measured_v0():
 
 def test_fit_release_model_direction_spread_is_maximum_pairwise_angle():
     """Release direction spread must be the maximum pairwise angle, not max
-    deviation from mean. Previous code under-reported (θ/2 for θ apart) and
-    degenerated at large angles (reported ~90° as θ→180°)."""
+    deviation from mean. The old code computed max deviation from a vector mean
+    that often cancels to near-zero; normalizing that unstable vector produced
+    spurious results (on this exact input: ~180° from opposite-side residual).
+    This test must enforce the correct 120° ± 1°, not just > 100° which would
+    pass the old broken code's spurious 180° output."""
     from hardware_learning import fit_release_model
     # Three release directions 120° apart in a plane: should report ~120°
     recs = [
@@ -287,8 +291,9 @@ def test_fit_release_model_direction_spread_is_maximum_pairwise_angle():
         {"commanded_speed": 1.2, "measured_v0": [-0.5, -0.866, 0.0], "landing_xy": [0.7, 0]},  # 120° from first, 120° from second
     ]
     result = fit_release_model(recs)
-    # Max pairwise angle should be ~120°, not 60° (what the old mean-deviation code reported)
-    assert result["direction_error_deg"] > 100.0
+    # Must be within 1° of 120°. A looser bound like > 100° would pass the old
+    # code's spurious ~180° output, making the test a false guard.
+    assert abs(result["direction_error_deg"] - 120.0) < 1.0
 
 
 def test_production_path_can_report_above_noise():
