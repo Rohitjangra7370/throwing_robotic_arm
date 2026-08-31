@@ -306,6 +306,63 @@ def build_argparser():
     return ap
 
 
+# --------------------------------------------------------------------------- #
+# Pure arg-snapshot builders -- deliberately module-level functions, not
+# SessionApp methods.
+#
+# BUG (found 2026-09-01, Step 6 verification): the worker thread used to call
+# `self.ip_var.get()` etc. directly. Tkinter variables may only be touched
+# from the thread running mainloop -- off that thread `.get()` raises
+# `RuntimeError: main thread is not in main loop`, and because the error
+# handler itself scheduled a callback via `root.after` (another Tk call, from
+# the same bad thread), THAT raised too and the whole failure died as an
+# unhandled thread traceback. The operator-facing result: click "Run
+# start-of-day", the worker dies silently, the window just sits there -- no
+# verdict, no error dialog, for a safety-relevant app.
+#
+# The fix is a hard boundary: every `*_var.get()` read happens in the button
+# handler, on the main thread, BEFORE the worker thread is started. What
+# crosses into the worker is a plain dict of already-read strings. These two
+# functions turn that dict (+ the base CLI args) into the Namespace each
+# worker needs -- they never import tkinter and never reference `self`, so
+# they cannot violate the single-thread rule by construction, and are
+# unit-testable from any thread with no Tk display at all (see
+# tests/test_hardware_session.py).
+# --------------------------------------------------------------------------- #
+def build_stage_zero_args(base_args, fields):
+    """
+    `fields` is the plain dict SessionApp._read_shared_fields() returns
+    (ip/robot/log_path/opt_pose/tool_offset_z, already read from Tk on the
+    main thread). Pure otherwise: touches no Tk object.
+    """
+    ns = argparse.Namespace(**vars(base_args))
+    ns.ip = fields["ip"]
+    ns.robot = fields["robot"]
+    ns.log_path = fields["log_path"]
+    ns.opt_pose = fields["opt_pose"]
+    try:
+        ns.tool_offset_z = float(fields["tool_offset_z"])
+    except ValueError as e:
+        raise ValueError(f"bad numeric field 'tool_offset_z': {e}") from e
+    if ns.floor_z is None:
+        ns.floor_z = -ns.base_height
+    return ns
+
+
+def build_cycle_args(base_args, fields):
+    """Same contract as build_stage_zero_args -- see its docstring."""
+    ns = argparse.Namespace(**vars(base_args))
+    ns.ip = fields["ip"]
+    ns.robot = fields["robot"]
+    ns.log_path = fields["log_path"]
+    ns.opt_pose = fields["opt_pose"]
+    try:
+        ns.tool_offset_z = float(fields["tool_offset_z"])
+    except ValueError as e:
+        raise ValueError(f"bad numeric field 'tool_offset_z': {e}") from e
+    return ns
+
+
 class SessionApp:
     """
     Thin Tk shell over SessionState / ThrowCycle -- same shape as
@@ -313,6 +370,14 @@ class SessionApp:
     scrolling log, worker-thread orchestration). Not unit-tested, matching how
     the rest of this repo treats GUI and hardware code; every safety rule this
     depends on lives in SessionState, which IS tested.
+
+    THREADING RULE (see the module-level note above `build_stage_zero_args`):
+    every `self.*_var.get()`/`.set()`/widget `.configure()`/`.cget()` call
+    happens on the Tk main thread -- either directly in a button handler, or
+    in a `_finish_*` callback reached via `self._safe_after`. A worker thread
+    method (`_do_stage_zero`, `_start_camera`, `_do_throw`) receives whatever
+    plain values it needs as arguments and must never read `self.*_var` or
+    touch a widget itself.
     """
 
     def __init__(self, root, args):
@@ -432,6 +497,44 @@ class SessionApp:
     def _set_status(self, text, color="black"):
         self.status.configure(text=text, foreground=color)
 
+    def _read_shared_fields(self):
+        """
+        Read the ip/robot/checkpoint fields shared between stage 0 and the
+        throw cycle. MUST be called on the Tk main thread -- feeds
+        build_stage_zero_args / build_cycle_args, which is where the
+        corresponding worker thread actually runs. See the threading note on
+        the class docstring.
+        """
+        return {
+            "ip": self.ip_var.get(),
+            "robot": self.robot_var.get(),
+            "log_path": self.log_path_var.get(),
+            "opt_pose": self.opt_pose_var.get(),
+            "tool_offset_z": self.tool_offset_var.get(),
+        }
+
+    def _safe_after(self, fn, context):
+        """
+        Cross-thread hand-off onto the Tk main thread. `root.after` IS the
+        sanctioned way to reach the GUI from a worker thread while mainloop
+        is running -- the 2026-09-01 bug was Tk variable reads happening
+        directly ON the worker thread (fixed by moving those to the
+        main-thread callers, see the module-level note above
+        build_stage_zero_args), not this hand-off itself.
+
+        Still wrapped: if scheduling ever fails (window torn down mid-run,
+        interpreter not in a state to accept the call), the failure must stay
+        visible. Silently losing it would leave an operator staring at an
+        idle window with no verdict and no error -- worse than a traceback,
+        for a safety-relevant app. Falls back to stderr, which needs no Tk
+        object to be reachable.
+        """
+        try:
+            self.root.after(0, fn)
+        except Exception as e:
+            print(f"[hardware_session] could not schedule GUI update ({context}): {e!r}",
+                 file=sys.stderr)
+
     def _refresh_buttons(self):
         self.throw_btn.configure(state=("normal" if (self.state.can_throw() and not self._busy)
                                         else "disabled"))
@@ -451,36 +554,33 @@ class SessionApp:
     def on_run_stage_zero(self):
         if self._busy:
             return
+        from tkinter import messagebox
+        fields = self._read_shared_fields()      # Tk reads happen HERE, main thread only
+        try:
+            sz_args = build_stage_zero_args(self.args, fields)   # pure -- see its docstring
+        except ValueError as e:
+            messagebox.showerror("Bad input", str(e))
+            return
         self._busy = True
         self.stage0_btn.configure(state="disabled")
         self._refresh_buttons()
         self._set_status("running start-of-day checks (arm read-only, planner only) ...",
                          "orange")
         self._append("\n$ start-of-day\n")
-        threading.Thread(target=self._do_stage_zero, daemon=True).start()
+        threading.Thread(target=self._do_stage_zero, args=(sz_args,), daemon=True).start()
 
-    def _build_stage_zero_args(self):
+    def _do_stage_zero(self, sz_args):
+        """
+        Worker thread. `sz_args` was already built on the main thread by
+        on_run_stage_zero -- this function must never read `self.*_var` or
+        touch a widget; only self._safe_after() may reach back into the GUI.
+        """
         try:
-            ns = argparse.Namespace(**vars(self.args))
-            ns.ip = self.ip_var.get()
-            ns.robot = self.robot_var.get()
-            ns.log_path = self.log_path_var.get()
-            ns.opt_pose = self.opt_pose_var.get()
-            ns.tool_offset_z = float(self.tool_offset_var.get())
-            if ns.floor_z is None:
-                ns.floor_z = -ns.base_height
-            return ns
-        except ValueError as e:
-            raise ValueError(f"bad numeric field: {e}")
-
-    def _do_stage_zero(self):
-        try:
-            sz_args = self._build_stage_zero_args()
             go, failures, rep = run_stage_zero(sz_args)
         except Exception as e:                     # never leave the session hung
-            self.root.after(0, lambda: self._finish_stage_zero_error(e))
+            self._safe_after(lambda: self._finish_stage_zero_error(e), "stage-zero error result")
             return
-        self.root.after(0, lambda: self._finish_stage_zero(go, failures, rep))
+        self._safe_after(lambda: self._finish_stage_zero(go, failures, rep), "stage-zero result")
 
     def _finish_stage_zero(self, go, failures, rep):
         for stage, level, msg in rep.rows:
@@ -523,7 +623,7 @@ class SessionApp:
                 break
             time.sleep(0.05)
         self.camera = cam
-        self.root.after(0, lambda: self._finish_camera(confirmed, cam.error))
+        self._safe_after(lambda: self._finish_camera(confirmed, cam.error), "camera-ready result")
 
     def _finish_camera(self, confirmed, error):
         if confirmed:
@@ -590,6 +690,14 @@ class SessionApp:
                 messagebox.showerror("Bad input", "Target X/Y must be numbers.")
                 return
 
+        fields = self._read_shared_fields()      # Tk reads happen HERE, main thread only
+        ball_id = self.ball_id_var.get()          # ditto
+        try:
+            cycle_args = build_cycle_args(self.args, fields)   # pure -- see its docstring
+        except ValueError as e:
+            messagebox.showerror("Bad input", str(e))
+            return
+
         self.confirm_var.set(False)   # re-affirm required every cycle, not just once
         self._busy = True
         self.throw_btn.configure(state="disabled")
@@ -597,54 +705,59 @@ class SessionApp:
                          f"speed_scale={speed_scale}) ...", "orange")
         self._append(f"\n$ throw {self.throw_index}  target={target}  "
                      f"speed_scale={speed_scale}\n")
-        threading.Thread(target=self._do_throw, args=(target, speed_scale), daemon=True).start()
+        throw_index = self.throw_index   # snapshot -- the worker must not depend on
+                                         # self.throw_index still meaning the same thing
+                                         # if this method runs again before it finishes
+        threading.Thread(target=self._do_throw,
+                         args=(cycle_args, ball_id, target, speed_scale, throw_index),
+                         daemon=True).start()
 
-    def _cycle_args(self):
-        ns = argparse.Namespace(**vars(self.args))
-        ns.ip = self.ip_var.get()
-        ns.robot = self.robot_var.get()
-        ns.log_path = self.log_path_var.get()
-        ns.opt_pose = self.opt_pose_var.get()
-        ns.tool_offset_z = float(self.tool_offset_var.get())
-        return ns
-
-    def _do_throw(self, target, speed_scale):
+    def _do_throw(self, cycle_args, ball_id, target, speed_scale, throw_index):
+        """
+        Worker thread. `cycle_args`/`ball_id` were already read from Tk on the
+        main thread by on_throw -- this function, and everything it calls
+        (ThrowCycle, run_closed_loop_throws, pybullet), must never read
+        `self.*_var` or touch a widget; only self._safe_after() may reach
+        back into the GUI.
+        """
         plan = None
         try:
-            cycle = ThrowCycle(self.state, self.camera, self._cycle_args())
+            cycle = ThrowCycle(self.state, self.camera, cycle_args)
 
             grasped, msg = cycle.step_pickup()
-            self.root.after(0, lambda: self._append(f"[pickup] {msg}\n"))
+            self._safe_after(lambda: self._append(f"[pickup] {msg}\n"), "pickup log line")
             if not grasped:
-                self.root.after(0, lambda: self._finish_throw_refused(msg))
+                self._safe_after(lambda: self._finish_throw_refused(msg), "pickup refusal")
                 return
 
             plan = cycle.step_plan(target, speed_scale)
-            self.root.after(0, lambda: self._append(
+            self._safe_after(lambda: self._append(
                 f"[plan] release pos in safe box: {plan['release_box_ok']}\n"
-                f"{plan['report']}\nPRECHECK: {'PASS' if plan['precheck_ok'] else 'FAIL'}\n"))
+                f"{plan['report']}\nPRECHECK: {'PASS' if plan['precheck_ok'] else 'FAIL'}\n"),
+                "plan log line")
             if not plan["precheck_ok"] or not plan["release_box_ok"]:
                 why = ("precheck failed" if not plan["precheck_ok"] else "") + \
                       (" and " if not plan["precheck_ok"] and not plan["release_box_ok"] else "") + \
                       ("release position outside the safe box" if not plan["release_box_ok"] else "")
-                self.root.after(0, lambda: self._finish_throw_refused(f"REFUSE: {why}"))
+                self._safe_after(lambda: self._finish_throw_refused(f"REFUSE: {why}"),
+                                 "plan refusal")
                 return
 
             landing_xy, measurement, exec_stats = cycle.step_throw_and_measure(
-                plan, target, speed_scale, self.throw_index)
+                plan, target, speed_scale, throw_index)
 
             from run_closed_loop_throws import append_log, build_throw_record
             record = build_throw_record(
-                throw_index=self.throw_index, target=target,
+                throw_index=throw_index, target=target,
                 commanded_speed=plan["speed"], speed_scale=speed_scale,
                 q_release=plan["q_rel"], qd_release=plan["qd_rel"],
                 precheck_ok=plan["precheck_ok"], exec_stats=exec_stats,
-                ball_id=self.ball_id_var.get(), capture_file=None,
+                ball_id=ball_id, capture_file=None,
                 landing_xy=landing_xy, measurement=measurement,
                 release_in_box=plan["release_box_ok"])
-            append_log(record, self.args.out_log)
+            append_log(record, cycle_args.out_log)
         except Exception as e:
-            self.root.after(0, lambda: self._finish_throw_error(e))
+            self._safe_after(lambda: self._finish_throw_error(e), "throw error result")
             return
         finally:
             if plan is not None:
@@ -653,7 +766,7 @@ class SessionApp:
                     p.disconnect(plan["cid"])
                 except Exception:
                     pass
-        self.root.after(0, lambda: self._finish_throw_ok(record))
+        self._safe_after(lambda: self._finish_throw_ok(record), "throw result")
 
     def _finish_throw_refused(self, why):
         self._busy = False
