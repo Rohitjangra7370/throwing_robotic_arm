@@ -143,6 +143,24 @@ class _NumpyJSONEncoder(json.JSONEncoder):
         return super().default(o)
 
 
+def _build_and_log_throw_record(throw_index, target, commanded_speed, speed_scale,
+                                q_release, qd_release, precheck_ok, exec_stats,
+                                ball_id, capture_file, landing_xy,
+                                release_box_ok, measurement):
+    """Helper factored from main() for testability and clarity.
+
+    Wraps build_throw_record() with the new parameters wired from the caller.
+    This makes the wiring explicit and testable without mocking the full main().
+    """
+    return build_throw_record(
+        throw_index=throw_index, target=target, commanded_speed=commanded_speed,
+        speed_scale=speed_scale, q_release=q_release, qd_release=qd_release,
+        precheck_ok=precheck_ok, exec_stats=exec_stats, ball_id=ball_id,
+        capture_file=capture_file, landing_xy=landing_xy,
+        measurement=measurement, release_in_box=release_box_ok,
+    )
+
+
 def build_throw_record(throw_index, target, commanded_speed, speed_scale,
                        q_release, qd_release, precheck_ok, exec_stats,
                        ball_id, capture_file, landing_xy,
@@ -298,7 +316,7 @@ def main(argv=None):
     import pybullet as p
     p.disconnect(cid)
 
-    capture_file, landing_xy = None, None
+    capture_file, landing_xy, measurement = None, None, None
     if args.measure and args.arm:
         print(f"\n[measure] polling {args.throws_dir} for a new recording "
               f"(throw_capture.py must already be running and armed there)...")
@@ -318,17 +336,20 @@ def main(argv=None):
                 out, err = _measure(rec_path, args.extrinsic, args.z_floor,
                                     args.ball_radius, args.measure_seed, args.target)
                 capture_file, landing_xy = rec_path, [float(out["x"]), float(out["y"])]
+                measurement = out
             except Exception as e:
                 print(f"[measure] REFUSED this track: {e}. Per HARDWARE_RUNBOOK.md: "
                       "re-throw, do not hand-tune a threshold to force a number out "
                       "of a bad recording. landing_xy stays null.")
                 capture_file = rec_path
+                measurement = {"refusal_reason": str(e)}
 
-    record = build_throw_record(
+    record = _build_and_log_throw_record(
         throw_index=args.throw_index, target=args.target, commanded_speed=speed,
         speed_scale=args.speed_scale, q_release=q_rel, qd_release=qd_rel,
         precheck_ok=precheck_ok, exec_stats=exec_stats, ball_id=args.ball_id,
         capture_file=capture_file, landing_xy=landing_xy,
+        release_box_ok=release_box_ok, measurement=measurement,
     )
     append_log(record, args.out_log)
     print(f"[log] appended throw_index={args.throw_index} -> {args.out_log}")
