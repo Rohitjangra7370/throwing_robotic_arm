@@ -191,3 +191,62 @@ def test_verdict_below_noise_text_includes_required_sample_count():
     import re
     numbers = re.findall(r'\d+', v["text"])
     assert any(int(n) > 1000 for n in numbers)
+
+
+def test_fit_release_model_recovers_a_known_gain_and_offset():
+    from hardware_learning import fit_release_model
+    rng = np.random.default_rng(0)
+    recs = []
+    for c in np.linspace(1.2, 1.6, 12):
+        actual = 0.90 * c + 0.05
+        recs.append({"commanded_speed": float(c),
+                     "measured_v0": [float(actual), 0.0, 0.0],
+                     "landing_xy": [0.7, 0.0]})
+    out = fit_release_model(recs)
+    assert out["gain"] == pytest.approx(0.90, abs=1e-6)
+    assert out["offset"] == pytest.approx(0.05, abs=1e-6)
+    assert out["n"] == 12
+
+
+def test_fit_release_model_skips_refused_throws():
+    """A throw with no measurement carries no release information."""
+    from hardware_learning import fit_release_model
+    recs = [{"commanded_speed": 1.4, "measured_v0": [1.31, 0, 0], "landing_xy": [0.7, 0]},
+            {"commanded_speed": 1.5, "measured_v0": None, "landing_xy": None},
+            {"commanded_speed": 1.6, "measured_v0": [1.49, 0, 0], "landing_xy": [0.7, 0]}]
+    assert fit_release_model(recs)["n"] == 2
+
+
+def test_fit_release_model_refuses_to_fit_too_few_points():
+    from hardware_learning import fit_release_model
+    recs = [{"commanded_speed": 1.4, "measured_v0": [1.3, 0, 0], "landing_xy": [0.7, 0]}]
+    with pytest.raises(ValueError, match="at least 3"):
+        fit_release_model(recs)
+
+
+def test_pure_parabola_teaches_the_gp_nothing():
+    """
+    THE TAUTOLOGY GUARD. A gravity-only track must produce a learned deviation
+    that the verdict calls BELOW NOISE. If someone resamples fit_ballistic's
+    output into add_data, this is what should catch it.
+    """
+    from hardware_learning import deviation_verdict, track_to_state_samples
+    t = np.arange(0.0, 0.50, 1 / 90.0)
+    p0, v0, g = np.array([0.3, 0.0, 0.02]), np.array([1.39, 0.0, 0.37]), np.array([0, 0, -9.81])
+    pts = p0 + np.outer(t, v0) + 0.5 * np.outer(t ** 2, g)
+    s, _ = track_to_state_samples(pts, t, (0.71, 0.0), 1.44)
+
+    dv = np.diff(s[:, 3:6], axis=0)
+    dv_gravity = np.tile(g * 0.02, (dv.shape[0], 1))
+    verdict = deviation_verdict(dv - dv_gravity)
+    assert not verdict["above_noise"], (
+        "a pure-gravity track produced a deviation the verdict called real -- "
+        "the guard against feeding the fitted parabola back has broken")
+
+
+def test_injected_drag_is_recovered_when_noise_is_set_below_it():
+    """The verdict must also be able to say yes, or it is not a test."""
+    from hardware_learning import deviation_verdict
+    dv = np.full((40, 3), 0.05)
+    assert deviation_verdict(dv, sigma_v=0.001)["above_noise"]
+    assert not deviation_verdict(dv, sigma_v=1.0)["above_noise"]
