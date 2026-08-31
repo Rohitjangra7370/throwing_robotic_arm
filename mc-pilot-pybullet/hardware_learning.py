@@ -229,3 +229,48 @@ def deviation_verdict(dv_learned, sigma_v=None, k=2.0):
         "n_samples": int(n),
         "text": text
     }
+
+
+def fit_release_model(records):
+    """
+    Commanded release speed -> measured release speed, over the logged throws.
+
+    This is the term worth fitting. At this speed the flight is ballistic to
+    within ~5 mm while the release carries 2.9-3.7 cm of command quantisation
+    plus ~1 cm of gripper-latency residual, so the discrepancy between what the
+    policy asked for and what the ball actually left with is both large and
+    directly observable in `measured_v0`.
+
+    Refused throws (no measurement) are skipped, not imputed.
+    """
+    cmd, meas, dirs = [], [], []
+    for r in records:
+        v0 = r.get("measured_v0")
+        if v0 is None or r.get("commanded_speed") is None:
+            continue
+        v = np.asarray(v0, float)
+        cmd.append(float(r["commanded_speed"]))
+        meas.append(float(np.linalg.norm(v)))
+        dirs.append(v / max(np.linalg.norm(v), 1e-12))
+    if len(cmd) < 2:
+        raise ValueError(f"need at least 3 measured throws to fit a release "
+                         f"model, have {len(cmd)}")
+
+    c = np.asarray(cmd)
+    m = np.asarray(meas)
+    A = np.stack([c, np.ones_like(c)], axis=1)
+    (gain, offset), *_ = np.linalg.lstsq(A, m, rcond=None)
+    resid = m - (gain * c + offset)
+    sigma = float(np.std(resid, ddof=min(2, len(c) - 1)))
+
+    d = np.asarray(dirs)
+    mean_dir = d.mean(axis=0)
+    mean_dir /= max(np.linalg.norm(mean_dir), 1e-12)
+    spread = np.degrees(np.arccos(np.clip(d @ mean_dir, -1, 1))).max()
+
+    return {"gain": float(gain), "offset": float(offset),
+            "residual_sigma": sigma, "n": int(len(c)),
+            "direction_error_deg": float(spread),
+            "text": (f"measured |v0| = {gain:.4f} * commanded + {offset:+.4f} m/s, "
+                     f"residual sigma {sigma:.4f} m/s over {len(c)} throws; "
+                     f"release direction spread {spread:.2f} deg")}
