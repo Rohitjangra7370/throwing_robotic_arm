@@ -8,14 +8,26 @@ Stage 0 runs BEFORE the camera thread starts, because calibration needs colour
 at 1920x1080 while tracking needs IR at 848x480/90fps. Sequential, so there is
 no stream reconfiguration mid-session and start_of_day.py is reused exactly as
 it is, opening and closing the camera itself.
+
+    python3 hardware_session.py --dry_run
+
+NO TASK IN THIS PLAN EVER EXECUTES A REAL THROW. This file wires the planner
+and the safety gates -- `ThrowCycle` calls existing, already-gated code
+(`run_hardware_throw.py`, `pickup_and_lift.py`, `HardwareThrowExecutor`), it
+does not add a new way to move the arm.
 """
 from __future__ import annotations
 
+import argparse
 import enum
+import queue
+import sys
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from hardware_learning import scale_allowed
+from hardware_learning import propose_targets, scale_allowed
 
 
 class Stage(enum.Enum):
@@ -49,6 +61,11 @@ class SessionState:
 
     @property
     def logged_scales(self):
+        # Built ONLY from this session's own record_throw history -- see the
+        # module-level note above. Never seeded from a file on disk: a prior
+        # (untrusted) JSONL could otherwise unlock a higher speed_scale than
+        # was actually earned in THIS session, and there is deliberately no
+        # session-resume path that would need one.
         return [t["speed_scale"] for t in self.throws
                 if t.get("landing_xy") is not None]
 
@@ -79,3 +96,629 @@ class SessionState:
 
     def can_reoptimize_policy(self):
         return self.model_updated
+
+
+def run_stage_zero(args):
+    """start_of_day.py's own stages, reused. Returns (go, failures, report)."""
+    import start_of_day as sod
+    rep = sod.Report()
+    ok = sod.stage_env(rep)
+    ok &= sod.stage_arm(rep, args)
+    calib_ok, _ = sod.stage_calibrate(rep, args) if ok else (False, None)
+    ok &= calib_ok
+    ok &= sod.stage_throw(rep, args)
+    return ok, [m for _, lvl, m in rep.rows if lvl == sod.FAIL], rep
+
+
+class ThrowCycle:
+    """
+    One throw, as the sequence of gates HARDWARE_RUNBOOK.md Sec 2 describes.
+    Each step returns (ok, message) and refuses to advance past a failure.
+    """
+
+    def __init__(self, state, camera, args):
+        self.state, self.camera, self.args = state, camera, args
+
+    def step_pickup(self):
+        from pickup_and_lift import pickup_and_lift
+        grasped, pct = pickup_and_lift(self.args.ip, self.args.robot,
+                                       self.args.pickup_pose, self.args.lift_z)
+        return grasped, (f"grasped a ball ({pct:.1f}% closed)" if grasped else
+                         f"CLOSED ON NOTHING ({pct:.1f}%) -- place a ball and retry")
+
+    def step_plan(self, target, speed_scale):
+        """
+        Exactly the sequence run_closed_loop_throws.main() uses -- same calls,
+        same order, so there is one planning path and not two.
+
+        Two verdicts, deliberately kept apart: precheck can pass while the
+        release position is outside the safe box, and the GUI must show both.
+        """
+        import numpy as np
+        import run_hardware_throw as H
+        from robot_arm.kinova_hardware import HardwareThrowExecutor
+
+        a = self.args
+        arm, profile, cid = H.build_arm(a.robot)
+        pol, cfg = H.load_policy(a.log_path, None)
+        coeffs, q_rel, qd_rel, v_ach, speed, v_cmd, rel = H.plan_throw_for_target(
+            arm, profile, cfg, pol, target,
+            opt_pose=a.opt_pose, u_cap=a.u_cap, tool_offset_z=a.tool_offset_z,
+            wrist_roll_offset=np.deg2rad(a.wrist_roll_offset_deg))
+        table = H.load_pose_table(cfg, a.opt_pose)
+        box = H.release_box_from_table(
+            arm, table, tool_offset=[0.0, 0.0, a.tool_offset_z]) if table else None
+        limits = H.make_limits(profile, speed_scale, release_box=box, arm=arm,
+                               positioning_scale=a.positioning_scale)
+        ex = HardwareThrowExecutor(limits, dry_run=not a.arm, ip=a.ip)
+
+        release_box_ok = ex.check_release_pos(rel)
+        precheck_ok, report = ex.precheck(coeffs, arm,
+                                          release_speed=float(np.linalg.norm(v_ach)))
+        return {"arm": arm, "profile": profile, "cid": cid, "ex": ex,
+                "coeffs": coeffs, "q_rel": q_rel, "qd_rel": qd_rel,
+                "speed": speed, "rel": rel, "precheck_ok": precheck_ok,
+                "report": report, "release_box_ok": release_box_ok}
+
+    def step_throw_and_measure(self, plan, target, speed_scale, throw_index):
+        import time
+        import numpy as np
+        from measure_landing import measure_landing
+        from perception import base_frame
+
+        ex, arm, profile = plan["ex"], plan["arm"], plan["profile"]
+
+        def _on_release():
+            self.camera.mark_release(time.time())
+
+        with ex:
+            ex.set_gripper(closed=True)
+            ex.home(arm, np.array(profile.q_neutral, float), duration=self.args.duration)
+            ex.backend.open_realtime_feedback()
+            try:
+                ex.rehearse_or_throw(plan["coeffs"], arm, track=None,
+                                     on_release=_on_release)
+            finally:
+                ex.backend.close_realtime_feedback()
+        exec_stats = dict(getattr(ex, "last_exec_stats", {}) or {})
+
+        event = self.camera.pop_event(timeout=self.args.measure_timeout)
+        if event is None or "error" in event:
+            return None, {"refusal_reason": (event or {}).get("error", "no capture window")}, exec_stats
+
+        R, t = base_frame.load_extrinsic()
+        try:
+            meas = measure_landing(event["rec"], R, t, z_floor=-self.args.base_height,
+                                   ball_radius=self.args.ball_radius)
+            return [float(meas["x"]), float(meas["y"])], meas, exec_stats
+        except RuntimeError as e:
+            # A refusal means re-throw. Never loosen a threshold to force a number.
+            return None, {"refusal_reason": str(e)}, exec_stats
+
+
+# --------------------------------------------------------------------------- #
+# Tk dashboard
+#
+# BINDING DECISIONS (from review) -- do not relitigate these:
+#   1. The live view is drawn on the camera thread, never from Tk. Tkinter
+#      owns the main thread; CameraThread's on_frame callback renders and
+#      calls cv2.imshow/cv2.waitKey itself.
+#   2. on_frame is handed ZERO-COPY views into the RealSense SDK's frame
+#      buffer, valid only for the duration of the call -- see
+#      session_camera.py's FRAME OWNERSHIP CONTRACT. _on_frame below renders
+#      synchronously and never stores/queues ir1/ir2.
+#   3. SessionState.logged_scales is built only from this session's own
+#      record_throw history (enforced above) -- there is no session-resume
+#      path, and that is deliberate.
+# --------------------------------------------------------------------------- #
+def build_argparser():
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--ip", default="192.168.1.101")
+    ap.add_argument("--username", default="admin")
+    ap.add_argument("--password", default="admin")
+    ap.add_argument("--robot", default="kinova_gen3_dyn")
+    ap.add_argument("--arm", action="store_true",
+                    help="talk to the REAL arm during the throw cycle (default: dry-run "
+                         "executor). Stage 0's own read-only checks/planner call are "
+                         "unaffected by this flag either way.")
+    ap.add_argument("--dry_run", action="store_true",
+                    help="force dry-run for the whole session even if --arm is also "
+                         "given -- makes the safe default explicit and cannot be "
+                         "overridden by --arm.")
+
+    g = ap.add_argument_group("board (must match what is physically on the floor)")
+    g.add_argument("--squares_x", type=int, default=5)
+    g.add_argument("--squares_y", type=int, default=7)
+    g.add_argument("--square_mm", type=float, default=35.0,
+                   help="MEASURED printed square, not nominal")
+    g.add_argument("--marker_ratio", type=float, default=0.75)
+
+    g = ap.add_argument_group("stage-0 cameras (1920x1080 colour, calibration only)")
+    g.add_argument("--d435i_width", type=int, default=1920)
+    g.add_argument("--d435i_height", type=int, default=1080)
+    g.add_argument("--rtsp_url", default=None)
+    g.add_argument("--n_frames", type=int, default=5)
+
+    g = ap.add_argument_group("stage-0 gates")
+    g.add_argument("--floor_z", type=float, default=None,
+                   help="defaults to -base_height (base frame: base at 0, floor "
+                        "at -base_height)")
+    g.add_argument("--floor_tol_m", type=float, default=0.02)
+    g.add_argument("--tilt_tol_deg", type=float, default=5.0)
+    g.add_argument("--scale_tol_m", type=float, default=0.05)
+    g.add_argument("--repeat_tol_m", type=float, default=0.02)
+    g.add_argument("--drift_tol_m", type=float, default=0.03)
+    g.add_argument("--drift_tol_deg", type=float, default=5.0)
+    g.add_argument("--max_reproj_px", type=float, default=1.0)
+    g.add_argument("--min_corners", type=int, default=8)
+    g.add_argument("--no_write", action="store_true",
+                   help="run stage-0's calibration gates but do not save the extrinsic")
+
+    g = ap.add_argument_group("checkpoint / throw planning")
+    g.add_argument("--log_path", default="results_kinetic_chain_gen3_tcp/1")
+    g.add_argument("--opt_pose", default="throw_pose_table_tcp.npy")
+    g.add_argument("--tool_offset_z", type=float, default=0.12)
+    g.add_argument("--base_height", type=float, default=0.433)
+    g.add_argument("--u_cap", type=float, default=2.00)
+    g.add_argument("--target", type=float, nargs=2, default=[0.71, 0.0],
+                   help="stage 0's own fixed throw-readiness planner target; the throw "
+                        "cycle's per-throw target comes from the GUI fields / the "
+                        "auto-proposed spread, not this flag")
+    g.add_argument("--plan_speed_scale", type=float, default=1.0)
+    g.add_argument("--wrist_roll_offset_deg", type=float, default=90.0,
+                   help="OPEN ITEM (see CLAUDE.md): tuned for the OLD checkpoint's 5 deg "
+                        "release; the current checkpoint releases at 15 deg elevation and "
+                        "this must be re-verified visually on the arm, not assumed safe "
+                        "from the numeric precheck alone.")
+
+    g = ap.add_argument_group("throw cycle")
+    g.add_argument("--pickup_pose", default="pickup_pose.json")
+    g.add_argument("--lift_z", type=float, default=0.10)
+    g.add_argument("--duration", type=float, default=4.0)
+    g.add_argument("--positioning_scale", type=float, default=1.0)
+    g.add_argument("--speed_scale", type=float, default=0.15)
+    g.add_argument("--ball_id", default="unassigned")
+    g.add_argument("--ball_radius", type=float, default=0.0327)
+    g.add_argument("--measure_timeout", type=float, default=30.0)
+    g.add_argument("--min_throws_for_update", type=int, default=5)
+    g.add_argument("--out_log", default="hardware_session_log.jsonl")
+    g.add_argument("--auto_targets", dest="auto_targets", action="store_true",
+                   default=True,
+                   help="auto-fill the per-throw target from hardware_learning."
+                        "propose_targets, a stratified spread across the trained band "
+                        "(default on)")
+    g.add_argument("--no_auto_targets", dest="auto_targets", action="store_false",
+                   help="use the Target X/Y fields for every throw instead")
+    g.add_argument("--n_targets", type=int, default=10)
+    g.add_argument("--target_seed", type=int, default=0)
+
+    g = ap.add_argument_group("session camera (848x480 IR, tracking)")
+    g.add_argument("--camera_fps", type=int, default=90)
+    g.add_argument("--camera_width", type=int, default=848)
+    g.add_argument("--camera_height", type=int, default=480)
+    g.add_argument("--exposure_us", type=int, default=2000)
+    g.add_argument("--no_emitter", action="store_true")
+    g.add_argument("--camera_ready_timeout", type=float, default=8.0,
+                   help="seconds to wait for the first confirmed frame before giving "
+                        "up on the camera and staying CALIBRATED (throwing disabled)")
+
+    return ap
+
+
+class SessionApp:
+    """
+    Thin Tk shell over SessionState / ThrowCycle -- same shape as
+    closed_loop_gui.py (fields, a confirm checkbox that resets every run, a
+    scrolling log, worker-thread orchestration). Not unit-tested, matching how
+    the rest of this repo treats GUI and hardware code; every safety rule this
+    depends on lives in SessionState, which IS tested.
+    """
+
+    def __init__(self, root, args):
+        self.root = root
+        self.args = args
+        self.state = SessionState(min_throws_for_update=args.min_throws_for_update)
+        self.camera = None
+        self.throw_index = 0
+        self._busy = False
+        self.log_q = queue.Queue()
+        self.targets = propose_targets(int(args.n_targets), seed=int(args.target_seed))
+
+        self._build_widgets()
+        self.root.after(100, self._drain_log)
+        self._refresh_buttons()
+        self._set_status(f"COLD -- run start-of-day to begin", "gray")
+
+    # -- widget construction ------------------------------------------------ #
+    def _field(self, frm, row, label, default):
+        import tkinter as tk
+        from tkinter import ttk
+        ttk.Label(frm, text=label).grid(row=row, column=0, sticky="w", pady=2)
+        var = tk.StringVar(value=str(default))
+        ttk.Entry(frm, textvariable=var, width=34).grid(row=row, column=1, sticky="w")
+        return var
+
+    def _build_widgets(self):
+        import tkinter as tk
+        from tkinter import ttk
+
+        frm = ttk.Frame(self.root, padding=10)
+        frm.grid(sticky="nsew")
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+
+        r = 0
+        self.ip_var = self._field(frm, r, "Arm IP", self.args.ip); r += 1
+        self.robot_var = self._field(frm, r, "Robot profile", self.args.robot); r += 1
+        self.log_path_var = self._field(frm, r, "Checkpoint log_path", self.args.log_path); r += 1
+        self.opt_pose_var = self._field(frm, r, "Pose table", self.args.opt_pose); r += 1
+        self.tool_offset_var = self._field(
+            frm, r, "Tool offset z (m)", self.args.tool_offset_z); r += 1
+        self.target_x_var = self._field(frm, r, "Target X (m)", self.args.target[0]); r += 1
+        self.target_y_var = self._field(frm, r, "Target Y (m)", self.args.target[1]); r += 1
+        self.ball_id_var = self._field(frm, r, "Ball ID", self.args.ball_id); r += 1
+
+        ttk.Label(frm, text="speed_scale").grid(row=r, column=0, sticky="w", pady=2)
+        self.speed_scale_var = tk.StringVar(value=str(self.args.speed_scale))
+        speeds = ttk.Frame(frm)
+        speeds.grid(row=r, column=1, sticky="w")
+        for s in ("0.15", "0.30", "0.60", "1.00"):
+            ttk.Radiobutton(speeds, text=s, variable=self.speed_scale_var, value=s).pack(side="left")
+        r += 1
+
+        self.auto_targets_var = tk.BooleanVar(value=self.args.auto_targets)
+        ttk.Checkbutton(
+            frm, text=f"Auto-cycle {len(self.targets)} stratified proposed targets "
+                     f"(uncheck to use the Target X/Y fields instead)",
+            variable=self.auto_targets_var).grid(row=r, column=0, columnspan=2, sticky="w")
+        r += 1
+
+        self.confirm_var = tk.BooleanVar(value=False)
+        self.confirm_cb = ttk.Checkbutton(
+            frm, text="Ball loaded, workspace clear, E-stop in hand",
+            variable=self.confirm_var)
+        self.confirm_cb.grid(row=r, column=0, columnspan=2, sticky="w", pady=(8, 2))
+        r += 1
+
+        self.stage0_btn = ttk.Button(frm, text="Run start-of-day", command=self.on_run_stage_zero)
+        self.stage0_btn.grid(row=r, column=0, sticky="ew", pady=4, padx=(0, 4))
+        self.throw_btn = ttk.Button(frm, text="Pick up & throw", command=self.on_throw,
+                                    state="disabled")
+        self.throw_btn.grid(row=r, column=1, sticky="ew", pady=4)
+        r += 1
+        self.update_btn = ttk.Button(frm, text="Update model", command=self.on_update_model,
+                                     state="disabled")
+        self.update_btn.grid(row=r, column=0, sticky="ew", pady=4, padx=(0, 4))
+        self.reopt_btn = ttk.Button(frm, text="Re-optimize policy", command=self.on_reoptimize_policy,
+                                    state="disabled")
+        self.reopt_btn.grid(row=r, column=1, sticky="ew", pady=4)
+        r += 1
+
+        self.status = ttk.Label(frm, text="idle", foreground="gray")
+        self.status.grid(row=r, column=0, columnspan=2, sticky="w")
+        r += 1
+
+        columns = ("idx", "target", "speed_scale", "landing")
+        self.table = ttk.Treeview(frm, columns=columns, show="headings", height=6)
+        widths = {"idx": 40, "target": 140, "speed_scale": 80, "landing": 260}
+        for c in columns:
+            self.table.heading(c, text=c)
+            self.table.column(c, width=widths[c])
+        self.table.grid(row=r, column=0, columnspan=2, sticky="nsew", pady=(6, 0))
+        r += 1
+
+        self.log = tk.Text(frm, width=112, height=22, state="disabled",
+                           bg="black", fg="#c0ffc0", font=("Courier", 10))
+        self.log.grid(row=r, column=0, columnspan=2, sticky="nsew", pady=(6, 0))
+        frm.rowconfigure(r, weight=1)
+
+    # -- log / status helpers ------------------------------------------------ #
+    def _append(self, text):
+        self.log_q.put(text)
+
+    def _drain_log(self):
+        try:
+            while True:
+                line = self.log_q.get_nowait()
+                self.log.configure(state="normal")
+                self.log.insert("end", line)
+                self.log.see("end")
+                self.log.configure(state="disabled")
+        except queue.Empty:
+            pass
+        self.root.after(100, self._drain_log)
+
+    def _set_status(self, text, color="black"):
+        self.status.configure(text=text, foreground=color)
+
+    def _refresh_buttons(self):
+        self.throw_btn.configure(state=("normal" if (self.state.can_throw() and not self._busy)
+                                        else "disabled"))
+        self.update_btn.configure(state=("normal" if self.state.can_update_model() else "disabled"))
+        self.reopt_btn.configure(state=("normal" if self.state.can_reoptimize_policy() else "disabled"))
+
+    def _append_throw_row(self, record):
+        landing = record.get("landing_xy")
+        landing_txt = (f"{landing[0]:+.3f}, {landing[1]:+.3f}" if landing is not None
+                       else f"REFUSED: {record.get('refusal_reason')}")
+        tgt = record["target"]
+        self.table.insert("", "end", values=(
+            record["throw_index"], f"{tgt[0]:+.3f}, {tgt[1]:+.3f}",
+            record["speed_scale"], landing_txt))
+
+    # -- Run start-of-day ---------------------------------------------------- #
+    def on_run_stage_zero(self):
+        if self._busy:
+            return
+        self._busy = True
+        self.stage0_btn.configure(state="disabled")
+        self._refresh_buttons()
+        self._set_status("running start-of-day checks (arm read-only, planner only) ...",
+                         "orange")
+        self._append("\n$ start-of-day\n")
+        threading.Thread(target=self._do_stage_zero, daemon=True).start()
+
+    def _build_stage_zero_args(self):
+        try:
+            ns = argparse.Namespace(**vars(self.args))
+            ns.ip = self.ip_var.get()
+            ns.robot = self.robot_var.get()
+            ns.log_path = self.log_path_var.get()
+            ns.opt_pose = self.opt_pose_var.get()
+            ns.tool_offset_z = float(self.tool_offset_var.get())
+            if ns.floor_z is None:
+                ns.floor_z = -ns.base_height
+            return ns
+        except ValueError as e:
+            raise ValueError(f"bad numeric field: {e}")
+
+    def _do_stage_zero(self):
+        try:
+            sz_args = self._build_stage_zero_args()
+            go, failures, rep = run_stage_zero(sz_args)
+        except Exception as e:                     # never leave the session hung
+            self.root.after(0, lambda: self._finish_stage_zero_error(e))
+            return
+        self.root.after(0, lambda: self._finish_stage_zero(go, failures, rep))
+
+    def _finish_stage_zero(self, go, failures, rep):
+        for stage, level, msg in rep.rows:
+            self._append(f"[{level:5s}][{stage}] {msg}\n")
+        self.state.record_startup(go=go, failures=failures)
+        self._busy = False
+        self.stage0_btn.configure(state="normal")
+        if go:
+            self._append("\n=== GO -- calibrated, planned, and gated ===\n")
+            self._set_status("GO -- starting session camera ...", "orange")
+            threading.Thread(target=self._start_camera, daemon=True).start()
+        else:
+            self._append(f"\n=== NO-GO -- BLOCKED: {self.state.blocked_reason} ===\n")
+            self._set_status(f"NO-GO / BLOCKED: {self.state.blocked_reason}", "red")
+        self._refresh_buttons()
+
+    def _finish_stage_zero_error(self, exc):
+        self.state.record_startup(go=False, failures=[str(exc)])
+        self._busy = False
+        self.stage0_btn.configure(state="normal")
+        self._append(f"\n=== start-of-day raised: {exc!r} ===\n")
+        self._set_status(f"NO-GO / BLOCKED: {exc}", "red")
+        self._refresh_buttons()
+
+    # -- camera --------------------------------------------------------------- #
+    def _start_camera(self):
+        from session_camera import CameraThread
+        cam = CameraThread(seconds=3.0, fps=self.args.camera_fps,
+                           width=self.args.camera_width, height=self.args.camera_height,
+                           exposure_us=self.args.exposure_us,
+                           emitter=not self.args.no_emitter, on_frame=self._on_frame)
+        cam.start()
+        deadline = time.time() + self.args.camera_ready_timeout
+        confirmed = False
+        while time.time() < deadline:
+            if cam.error is not None:
+                break
+            if len(cam.buf) > 0:
+                confirmed = True
+                break
+            time.sleep(0.05)
+        self.camera = cam
+        self.root.after(0, lambda: self._finish_camera(confirmed, cam.error))
+
+    def _finish_camera(self, confirmed, error):
+        if confirmed:
+            self.state.camera_ready()
+            self._append("\n=== camera confirmed live -- session READY ===\n")
+            self._set_status("READY -- calibrated + camera live", "green")
+        else:
+            self._append(f"\n=== camera did not confirm a frame within "
+                         f"{self.args.camera_ready_timeout:.0f}s"
+                         f"{': ' + repr(error) if error else ''} -- staying CALIBRATED, "
+                         f"throwing stays disabled ===\n")
+            self._set_status("CALIBRATED but camera not confirmed -- throwing disabled", "red")
+        self._refresh_buttons()
+
+    def _on_frame(self, ts, ir1, ir2):
+        """
+        Runs INLINE on the camera thread, at capture rate (up to ~90 Hz).
+        `ir1`/`ir2` are ZERO-COPY views into the RealSense SDK's own frame
+        buffer, valid only for this call (see session_camera.py's FRAME
+        OWNERSHIP CONTRACT) -- render synchronously, never store or queue
+        them. Tk is never touched from here.
+        """
+        try:
+            import cv2
+            from session_overlay import render_overlay
+            frame = render_overlay(
+                ir1, ir2, status=f"stage={self.state.stage.value} throws={self.state.n_throws}")
+            cv2.imshow("session -- live IR", frame)
+            cv2.waitKey(1)
+        except Exception:
+            pass   # a display hiccup must never kill the capture thread
+
+    # -- Pick up & throw ------------------------------------------------------ #
+    def on_throw(self):
+        if self._busy:
+            return
+        from tkinter import messagebox
+        if not self.state.can_throw():
+            messagebox.showwarning("Not ready", "Session is not READY -- run start-of-day "
+                                                "(and confirm the camera came up) first.")
+            return
+        if not self.confirm_var.get():
+            messagebox.showwarning(
+                "Not confirmed",
+                "Check \"Ball loaded, workspace clear, E-stop in hand\" first -- "
+                "this resets after every throw on purpose.")
+            return
+        try:
+            speed_scale = float(self.speed_scale_var.get())
+        except ValueError:
+            messagebox.showerror("Bad input", "speed_scale must be a number.")
+            return
+        ok, why = self.state.check_scale(speed_scale)
+        if not ok:
+            messagebox.showwarning("Escalation ladder", why)
+            return
+
+        if self.auto_targets_var.get():
+            target = [float(x) for x in self.targets[self.throw_index % len(self.targets)]]
+        else:
+            try:
+                target = [float(self.target_x_var.get()), float(self.target_y_var.get())]
+            except ValueError:
+                messagebox.showerror("Bad input", "Target X/Y must be numbers.")
+                return
+
+        self.confirm_var.set(False)   # re-affirm required every cycle, not just once
+        self._busy = True
+        self.throw_btn.configure(state="disabled")
+        self._set_status(f"pickup -> plan -> throw (target={tuple(round(t,3) for t in target)}, "
+                         f"speed_scale={speed_scale}) ...", "orange")
+        self._append(f"\n$ throw {self.throw_index}  target={target}  "
+                     f"speed_scale={speed_scale}\n")
+        threading.Thread(target=self._do_throw, args=(target, speed_scale), daemon=True).start()
+
+    def _cycle_args(self):
+        ns = argparse.Namespace(**vars(self.args))
+        ns.ip = self.ip_var.get()
+        ns.robot = self.robot_var.get()
+        ns.log_path = self.log_path_var.get()
+        ns.opt_pose = self.opt_pose_var.get()
+        ns.tool_offset_z = float(self.tool_offset_var.get())
+        return ns
+
+    def _do_throw(self, target, speed_scale):
+        plan = None
+        try:
+            cycle = ThrowCycle(self.state, self.camera, self._cycle_args())
+
+            grasped, msg = cycle.step_pickup()
+            self.root.after(0, lambda: self._append(f"[pickup] {msg}\n"))
+            if not grasped:
+                self.root.after(0, lambda: self._finish_throw_refused(msg))
+                return
+
+            plan = cycle.step_plan(target, speed_scale)
+            self.root.after(0, lambda: self._append(
+                f"[plan] release pos in safe box: {plan['release_box_ok']}\n"
+                f"{plan['report']}\nPRECHECK: {'PASS' if plan['precheck_ok'] else 'FAIL'}\n"))
+            if not plan["precheck_ok"] or not plan["release_box_ok"]:
+                why = ("precheck failed" if not plan["precheck_ok"] else "") + \
+                      (" and " if not plan["precheck_ok"] and not plan["release_box_ok"] else "") + \
+                      ("release position outside the safe box" if not plan["release_box_ok"] else "")
+                self.root.after(0, lambda: self._finish_throw_refused(f"REFUSE: {why}"))
+                return
+
+            landing_xy, measurement, exec_stats = cycle.step_throw_and_measure(
+                plan, target, speed_scale, self.throw_index)
+
+            from run_closed_loop_throws import append_log, build_throw_record
+            record = build_throw_record(
+                throw_index=self.throw_index, target=target,
+                commanded_speed=plan["speed"], speed_scale=speed_scale,
+                q_release=plan["q_rel"], qd_release=plan["qd_rel"],
+                precheck_ok=plan["precheck_ok"], exec_stats=exec_stats,
+                ball_id=self.ball_id_var.get(), capture_file=None,
+                landing_xy=landing_xy, measurement=measurement,
+                release_in_box=plan["release_box_ok"])
+            append_log(record, self.args.out_log)
+        except Exception as e:
+            self.root.after(0, lambda: self._finish_throw_error(e))
+            return
+        finally:
+            if plan is not None:
+                try:
+                    import pybullet as p
+                    p.disconnect(plan["cid"])
+                except Exception:
+                    pass
+        self.root.after(0, lambda: self._finish_throw_ok(record))
+
+    def _finish_throw_refused(self, why):
+        self._busy = False
+        self._append(f"\n=== throw refused: {why} ===\n")
+        self._set_status(f"REFUSED: {why}", "red")
+        self._refresh_buttons()
+
+    def _finish_throw_error(self, exc):
+        self._busy = False
+        self._append(f"\n=== throw cycle raised: {exc!r} ===\n")
+        self._set_status(f"ERROR: {exc}", "red")
+        self._refresh_buttons()
+
+    def _finish_throw_ok(self, record):
+        from tkinter import messagebox
+        self.state.record_throw(record)
+        self.throw_index += 1
+        self._busy = False
+        self._append_throw_row(record)
+        landing = record.get("landing_xy")
+        if landing is None:
+            self._append(f"\n=== throw {record['throw_index']} logged -- MEASUREMENT "
+                         f"REFUSED: {record.get('refusal_reason')} ===\n")
+            self._set_status("logged -- measurement refused, re-throw", "orange")
+        else:
+            self._append(f"\n=== throw {record['throw_index']} logged -- landing "
+                         f"{tuple(round(v, 3) for v in landing)} ===\n")
+            self._set_status("logged -- clean run", "green")
+        self._refresh_buttons()
+        messagebox.showinfo("Reload", "Place the next ball at the pickup pose, then "
+                                      "re-check confirm before the next throw.")
+
+    # -- Update model / Re-optimize policy (gated here, wired in later tasks) - #
+    def on_update_model(self):
+        from tkinter import messagebox
+        messagebox.showinfo(
+            "Not yet wired",
+            "This button unlocks once "
+            f"{self.state.min_throws_for_update} measured throws are logged (see the gate "
+            "in SessionState.can_update_model) -- the model-update logic itself "
+            "(hardware_learning.ingest_throws) lands in a later step of this plan.")
+
+    def on_reoptimize_policy(self):
+        from tkinter import messagebox
+        messagebox.showinfo(
+            "Not yet wired",
+            "This button unlocks only after 'Update model' has run once (see "
+            "SessionState.can_reoptimize_policy) -- the re-optimization logic itself "
+            "lands in a later step of this plan.")
+
+
+def main(argv=None):
+    args = build_argparser().parse_args(argv)
+    if args.floor_z is None:
+        args.floor_z = -args.base_height
+    if args.dry_run:
+        args.arm = False   # explicit and cannot be overridden by also passing --arm
+
+    import tkinter as tk
+    root = tk.Tk()
+    root.title("Kinova Gen3 -- hardware throw session")
+    SessionApp(root, args)
+    root.mainloop()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -915,9 +915,18 @@ class HardwareThrowExecutor:
             f"Refusing to proceed; do not throw on an unconfirmed grip.")
 
     def rehearse_or_throw(self, coeffs, arm, verbose=True, track=None,
-                          track_every=1):
+                          track_every=1, on_release=None):
         """
         Stream the throw with PER-PHASE time scaling.
+
+        `on_release`, if given, is called with no arguments the instant the
+        gripper OPEN command is issued (inside the 40 Hz streaming loop, right
+        after `set_gripper`, before `released` is set). It MUST return
+        immediately -- this sits inside the same loop whose gripper-confirm
+        call once stalled a tick by 693 ms (see `set_gripper`'s docstring), so
+        the callback is for timestamping and handoff only, never blocking
+        work. `on_release=None` is a no-op, unchanged from every existing
+        caller's behavior.
 
         `speed_scale` applies to the THROW phase only; windup and follow-through
         run at `positioning_scale`. Scaling them together was a design flaw with
@@ -1040,6 +1049,8 @@ class HardwareThrowExecutor:
                     # blocking here to poll gripper feedback stalls the loop and
                     # the arm coasts uncommanded until it returns. See set_gripper.
                     self.set_gripper(closed=False, confirm=False)  # OPEN -> release
+                    if on_release is not None:
+                        on_release()
                     released = True
                     release_wall = wall
                     release_pause_until = wall + GRIPPER_RELEASE_PAUSE_S
