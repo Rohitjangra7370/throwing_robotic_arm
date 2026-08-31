@@ -163,8 +163,11 @@ def test_verdict_includes_both_conditions_and_names_failure():
     assert above_se_below_sys["mean_deviation"] > 2.0 * above_se_below_sys["standard_error"], \
         "SE threshold cleared but systematic floor is not"
     assert "systematic floor" in above_se_below_sys["text"].lower()
-    # When systematic floor is the blocker, no n_required should appear
     assert "calibration" in above_se_below_sys["text"].lower()
+    # When systematic floor is the blocker, no n_required should appear; this assertion
+    # catches regressions that re-add sample-count guidance in the floor-is-blocker branch
+    assert "would require" not in above_se_below_sys["text"].lower(), \
+        "n_required text should not appear when systematic floor is the blocker"
 
 
 def test_verdict_k_zero_does_not_raise():
