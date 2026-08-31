@@ -113,3 +113,48 @@ def track_to_state_samples(points_base, times, target_xy, commanded_speed,
     inputs = np.zeros((n, 1))
     inputs[0, 0] = float(commanded_speed)
     return states, inputs
+
+
+# 18 mm extrinsic repeatability (measured 2026-08-31, 5 solves, static rig)
+# combined with ~10 mm stereo triangulation noise at 1.6 m.
+POS_SIGMA_M = float(np.hypot(0.018, 0.010))
+
+
+def velocity_noise_sigma(pos_sigma_m=POS_SIGMA_M, ts=TS_DEFAULT):
+    """
+    Position noise propagated into a central-difference velocity.
+
+    v_k = (p_{k+1} - p_{k-1}) / (2*ts), so sigma_v = sqrt(2)*sigma_p / (2*ts).
+    At 2.06 cm and 50 Hz this is ~0.73 m/s, which is half the release speed --
+    the honest reason a per-sample velocity from this rig cannot resolve drag.
+    """
+    return float(np.sqrt(2.0) * pos_sigma_m / (2.0 * ts))
+
+
+def deviation_verdict(dv_learned, sigma_v=None, k=2.0):
+    """
+    Is the non-ballistic correction the GP claims to have found bigger than the
+    noise it was fitted through?
+
+    `dv_learned` is the GP's predicted delta-v minus the pure-gravity delta-v,
+    i.e. only the part that is not already assumed. ABOVE NOISE requires
+    RMS(deviation) > k * RMS(sigma). Both numbers and the sample count go into
+    the text, always -- a verdict without its evidence is how a noise-sized
+    number becomes a claimed discovery.
+    """
+    d = np.asarray(dv_learned, float)
+    sigma_v = velocity_noise_sigma() if sigma_v is None else float(sigma_v)
+    rms_d = float(np.sqrt(np.mean(d ** 2)))
+    ratio = rms_d / (k * sigma_v) if sigma_v > 0 else np.inf
+    above = rms_d > k * sigma_v
+    text = (f"{'ABOVE NOISE' if above else 'BELOW NOISE'}: "
+            f"RMS deviation {rms_d:.4f} m/s vs {k:g}x RMS sigma "
+            f"{sigma_v:.4f} m/s over {d.shape[0]} samples "
+            f"(ratio {ratio:.2f}). "
+            + ("The GP found structure the noise cannot explain."
+               if above else
+               "The GP learned nothing distinguishable from measurement noise -- "
+               "expected for a tennis ball at this speed, where drag displaces "
+               "~5 mm against ~21 mm of position noise. Report it as such."))
+    return {"rms_deviation": rms_d, "rms_sigma": sigma_v, "ratio": ratio,
+            "above_noise": bool(above), "n_samples": int(d.shape[0]), "text": text}

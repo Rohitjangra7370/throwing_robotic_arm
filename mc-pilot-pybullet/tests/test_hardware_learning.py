@@ -107,3 +107,39 @@ def test_track_to_state_samples_rejects_non_monotonic_times():
     pts_bad[5], pts_bad[20] = pts_bad[20], pts_bad[5]
     with pytest.raises(ValueError, match="non-decreasing"):
         track_to_state_samples(pts_bad, t_bad, (0.71, 0.0), 1.44, ts=0.02)
+
+
+def test_velocity_noise_sigma_propagates_position_noise_through_differencing():
+    """18mm extrinsic (+) 10mm triangulation, differenced over 20ms, is large."""
+    from hardware_learning import velocity_noise_sigma
+    s = velocity_noise_sigma(pos_sigma_m=0.0206, ts=0.02)
+    assert s > 0.5          # m/s -- differencing cm-scale noise at 50 Hz is brutal
+    assert velocity_noise_sigma(0.0206, 0.04) < s     # longer baseline, less noise
+
+
+def test_verdict_is_below_noise_when_the_signal_is_smaller_than_sigma():
+    """The expected real-world answer for a tennis ball: drag ~5mm, noise ~18mm."""
+    from hardware_learning import deviation_verdict
+    v = deviation_verdict(dv_learned=np.full((40, 3), 0.01), sigma_v=0.5)
+    assert not v["above_noise"]
+    assert "BELOW NOISE" in v["text"]
+    assert v["ratio"] < 1.0
+
+
+def test_verdict_is_above_noise_only_past_the_2x_threshold():
+    from hardware_learning import deviation_verdict
+    just_under = deviation_verdict(np.full((40, 1), 0.99), sigma_v=0.5, k=2.0)
+    just_over = deviation_verdict(np.full((40, 1), 1.01), sigma_v=0.5, k=2.0)
+    assert not just_under["above_noise"]
+    assert just_over["above_noise"]
+    assert "ABOVE NOISE" in just_over["text"]
+
+
+def test_verdict_text_always_reports_both_numbers_and_the_count():
+    """A verdict without its evidence is exactly the kind of number this repo
+    has been bitten by before."""
+    from hardware_learning import deviation_verdict
+    v = deviation_verdict(np.full((37, 3), 0.02), sigma_v=0.5)
+    assert "37" in v["text"]
+    assert f"{v['rms_deviation']:.4f}" in v["text"]
+    assert f"{v['rms_sigma']:.4f}" in v["text"]
