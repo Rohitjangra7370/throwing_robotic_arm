@@ -74,6 +74,34 @@ class IRRecorder:
             self._pipe.stop()
             self._pipe = None
 
+    def stream(self):
+        """
+        Yield `(timestamp, ir1, ir2)` once per captured frame pair, forever --
+        until the caller stops iterating (e.g. breaks out of a `for`) or the
+        pipeline is torn down.
+
+        `timestamp` is the same mid-exposure, seconds, wall-clock expression
+        `record()` has always used, NOT `time.time()`. It is left un-zeroed
+        here on purpose: zeroing is each consumer's job at its own boundary --
+        `record()` below does its own `ts - ts[0]`, `session_camera.RingBuffer
+        .window()` does its own at the window edge. Verified on this camera
+        2026-08-31: `get_timestamp()*1e-3` sat 11 ms from `time.time()`, so
+        this value is directly comparable to a `time.time()` release instant.
+        """
+        if self._pipe is None:
+            raise RuntimeError("use IRRecorder as a context manager")
+        half_exp_s = 0.5 * self.exposure_us * 1e-6
+        while True:
+            fs = self._pipe.wait_for_frames(2000)
+            f1 = fs.get_infrared_frame(1)
+            f2 = fs.get_infrared_frame(2)
+            if not f1 or not f2:
+                continue
+            ir1 = np.asanyarray(f1.get_data())
+            ir2 = np.asanyarray(f2.get_data())
+            ts = f1.get_timestamp() * 1e-3 + half_exp_s   # ms -> s, mid-exposure
+            yield ts, ir1, ir2
+
     def record(self, seconds):
         """Capture for `seconds`, return the recording dict."""
         if self._pipe is None:
@@ -82,18 +110,18 @@ class IRRecorder:
         ir1 = np.empty((n_expect, self.height, self.width), np.uint8)
         ir2 = np.empty((n_expect, self.height, self.width), np.uint8)
         ts = np.empty(n_expect, float)
-        half_exp_s = 0.5 * self.exposure_us * 1e-6
 
+        # Manual iteration (not `for ... in self.stream()`) so the time/count
+        # budget is checked BEFORE blocking on the next frame, exactly as the
+        # single `while` loop this replaced did -- a `for` loop would pull one
+        # extra frame from the generator ahead of the break check.
         k, t_end = 0, time.monotonic() + float(seconds)
+        frames = self.stream()
         while time.monotonic() < t_end and k < n_expect:
-            fs = self._pipe.wait_for_frames(2000)
-            f1 = fs.get_infrared_frame(1)
-            f2 = fs.get_infrared_frame(2)
-            if not f1 or not f2:
-                continue
-            ir1[k] = np.asanyarray(f1.get_data())
-            ir2[k] = np.asanyarray(f2.get_data())
-            ts[k] = f1.get_timestamp() * 1e-3 + half_exp_s   # ms -> s, mid-exposure
+            frame_ts, f1, f2 = next(frames)
+            ir1[k] = f1
+            ir2[k] = f2
+            ts[k] = frame_ts
             k += 1
 
         if k == 0:
