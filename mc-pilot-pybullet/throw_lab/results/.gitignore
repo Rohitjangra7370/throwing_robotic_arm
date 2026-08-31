@@ -1,0 +1,4 @@
+# default --out target of bench.py; a scratch file overwritten by every ad-hoc
+# run. The named result sets the README cites (bench_table, bench_legacy,
+# bench_legacy_whip, duration_sweep) are tracked.
+bench.npz
