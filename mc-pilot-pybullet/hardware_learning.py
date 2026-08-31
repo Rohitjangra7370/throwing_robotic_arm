@@ -201,7 +201,7 @@ def deviation_verdict(dv_learned, sigma_v=None, k=2.0):
     elif above_se and not above_sys:
         # SE cleared, but systematic floor is the blocker
         condition_text = f"Exceeds random-noise threshold ({k:g}*SE={k*se:.4f}) but NOT systematic floor ({sys_floor:.4f} m/s)."
-        remedy_text = "The systematic floor is a hard limit from extrinsic rotation error (0.0019 m/s); more samples cannot resolve it — the remedy is better calibration."
+        remedy_text = f"The systematic floor is a hard limit from extrinsic rotation error ({sys_floor:.4f} m/s); more samples cannot resolve it — the remedy is better calibration."
     elif above_sys and not above_se:
         # Systematic floor cleared, SE is the blocker
         condition_text = f"Exceeds systematic floor ({sys_floor:.4f} m/s) but NOT random-noise threshold ({k:g}*SE={k*se:.4f})."
