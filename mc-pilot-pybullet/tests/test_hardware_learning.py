@@ -90,3 +90,20 @@ def test_track_to_state_samples_rejects_a_track_too_short_to_difference():
     pts = np.zeros((2, 3))
     with pytest.raises(ValueError, match="too short"):
         track_to_state_samples(pts, t, (0.71, 0.0), 1.44, ts=0.02)
+
+
+def test_track_to_state_samples_rejects_non_monotonic_times():
+    """np.interp silently produces garbage for unordered xp (measured: 3.8 cm
+    position and 0.65 m/s velocity error from two swapped samples). This guard
+    prevents silent corruption when a caller merges tracks or reorders."""
+    from hardware_learning import track_to_state_samples
+    t = np.arange(0.0, 0.50, 1 / 90.0)
+    p0, v0, g = np.array([0.3, 0.0, 0.02]), np.array([1.39, 0.0, 0.37]), np.array([0, 0, -9.81])
+    pts = p0 + np.outer(t, v0) + 0.5 * np.outer(t ** 2, g)
+    # Swap two interior samples to break monotonicity
+    t_bad = t.copy()
+    t_bad[5], t_bad[20] = t_bad[20], t_bad[5]
+    pts_bad = pts.copy()
+    pts_bad[5], pts_bad[20] = pts_bad[20], pts_bad[5]
+    with pytest.raises(ValueError, match="non-decreasing"):
+        track_to_state_samples(pts_bad, t_bad, (0.71, 0.0), 1.44, ts=0.02)

@@ -75,6 +75,10 @@ def track_to_state_samples(points_base, times, target_xy, commanded_speed,
     velocity by central differences of the resampled positions, so the states
     obey the same `p_{t+1} = p_t + Ts*v_t + (Ts/2)*dv` relation the GP's
     propagation assumes (paper Eq. 18).
+
+    The first and last velocity samples (from one-sided differentiation) are the
+    noisiest in the array. Do not use them as a release-velocity estimate; the
+    fitted `v0` from `measure_landing` is the right source.
     """
     p = np.asarray(points_base, float)
     t = np.asarray(times, float).reshape(-1)
@@ -84,6 +88,14 @@ def track_to_state_samples(points_base, times, target_xy, commanded_speed,
         raise ValueError(f"track too short to difference: {t.size} samples")
 
     t0 = t - t[0]
+    if np.any(np.diff(t0) < 0.0):
+        raise ValueError(
+            "times must be non-decreasing -- np.interp silently returns garbage "
+            "for unordered xp (measured: 3.8 cm position / 0.65 m/s velocity "
+            "error from two swapped samples, with no exception). ransac_track "
+            "preserves chronological order, so this means the caller reordered "
+            "or merged tracks")
+
     grid = np.arange(0.0, t0[-1] + 1e-12, ts)
     if grid.size < 3:
         raise ValueError(f"track too short to difference: spans {t0[-1]:.3f} s at ts={ts}")
