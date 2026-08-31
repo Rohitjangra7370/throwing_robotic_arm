@@ -248,13 +248,13 @@ def fit_release_model(records):
         v0 = r.get("measured_v0")
         if v0 is None or r.get("commanded_speed") is None:
             continue
-        # Silently skip any malformed measured_v0: empty array, zero-magnitude,
-        # or non-finite (NaN, inf). A single bad record can corrupt the fit
-        # (observed: zero vector among two good records produced gain=-6.5),
+        # Silently skip any malformed measured_v0: not a 3-element vector, empty,
+        # zero-magnitude, or non-finite (NaN, inf). A single bad record can corrupt
+        # the fit (observed: zero vector among two good records produced gain=-6.5),
         # so guard tightly here.
         try:
             v = np.asarray(v0, float).ravel()
-            if v.size == 0 or np.linalg.norm(v) <= 1e-9 or not np.all(np.isfinite(v)):
+            if v.size != 3 or np.linalg.norm(v) <= 1e-9 or not np.all(np.isfinite(v)):
                 continue
         except (ValueError, TypeError):
             continue
@@ -279,8 +279,9 @@ def fit_release_model(records):
 
     d = np.asarray(dirs)
     # Maximum pairwise angle: the honest measure of "release direction spread".
-    # Previous code computed max deviation from mean direction, which under-reports
-    # (reports θ/2 for two throws θ apart) and degenerates as θ→180° (reports ~90°).
+    # Previous code computed max deviation from mean direction, which produced
+    # spurious results: normalizing a near-cancelling mean was numerically
+    # unstable (on this test's 120°-apart input: ~180° from floating-point residue).
     spread = 0.0
     for i in range(len(d)):
         for j in range(i + 1, len(d)):
