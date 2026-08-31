@@ -251,3 +251,70 @@ def test_injected_drag_is_recovered_when_noise_is_set_below_it():
     dv = np.full((40, 3), 0.05)
     assert deviation_verdict(dv, sigma_v=0.001)["above_noise"]
     assert not deviation_verdict(dv, sigma_v=1.0)["above_noise"]
+
+
+def test_fit_release_model_skips_malformed_measured_v0():
+    """Zero-magnitude, non-finite, or empty measured_v0 must be skipped cleanly.
+    A single bad record can corrupt the fit (observed: [0,0,0] among two good
+    records produced gain=-6.5, offset=+10.65 — physically impossible, returned
+    with no error). Guards tightly against silent corruption."""
+    from hardware_learning import fit_release_model
+    recs = [
+        {"commanded_speed": 1.4, "measured_v0": [1.26, 0, 0], "landing_xy": [0.7, 0]},
+        {"commanded_speed": 1.5, "measured_v0": [0.0, 0.0, 0.0], "landing_xy": [0.7, 0]},  # zero vector — skip
+        {"commanded_speed": 1.6, "measured_v0": [1.44, 0, 0], "landing_xy": [0.7, 0]},
+        {"commanded_speed": 1.7, "measured_v0": [float('nan'), 0, 0], "landing_xy": [0.7, 0]},  # non-finite — skip
+        {"commanded_speed": 1.8, "measured_v0": [1.62, 0, 0], "landing_xy": [0.7, 0]},
+        {"commanded_speed": 1.9, "measured_v0": [], "landing_xy": [0.7, 0]},  # empty — skip
+        {"commanded_speed": 2.0, "measured_v0": [1.80, 0, 0], "landing_xy": [0.7, 0]}
+    ]
+    result = fit_release_model(recs)
+    # Should have skipped the zero, NaN, and empty records; left with 4 good ones
+    assert result["n"] == 4
+    # With a linear relationship (measured ≈ 0.9*commanded), gain should be close to 0.9
+    assert 0.85 < result["gain"] < 0.95
+
+
+def test_fit_release_model_direction_spread_is_maximum_pairwise_angle():
+    """Release direction spread must be the maximum pairwise angle, not max
+    deviation from mean. Previous code under-reported (θ/2 for θ apart) and
+    degenerated at large angles (reported ~90° as θ→180°)."""
+    from hardware_learning import fit_release_model
+    # Three release directions 120° apart in a plane: should report ~120°
+    recs = [
+        {"commanded_speed": 1.0, "measured_v0": [1.0, 0.0, 0.0], "landing_xy": [0.7, 0]},
+        {"commanded_speed": 1.1, "measured_v0": [-0.5, 0.866, 0.0], "landing_xy": [0.7, 0]},  # 120° from first
+        {"commanded_speed": 1.2, "measured_v0": [-0.5, -0.866, 0.0], "landing_xy": [0.7, 0]},  # 120° from first, 120° from second
+    ]
+    result = fit_release_model(recs)
+    # Max pairwise angle should be ~120°, not 60° (what the old mean-deviation code reported)
+    assert result["direction_error_deg"] > 100.0
+
+
+def test_production_path_can_report_above_noise():
+    """The real pipeline (track_to_state_samples → deviation_verdict at defaults)
+    must be capable of returning ABOVE NOISE, not just negative verdicts. This test
+    deliberately injects a large, obviously super-threshold extra acceleration to
+    prove the instrument works in the positive direction. Real tennis-ball drag is
+    provably below the noise floor at default settings; this test does not claim
+    otherwise — only that the verdict can return True."""
+    from hardware_learning import track_to_state_samples, deviation_verdict
+    t = np.arange(0.0, 0.50, 1 / 90.0)
+    p0 = np.array([0.3, 0.0, 0.02])
+    v0 = np.array([1.39, 0.0, 0.37])
+    g = np.array([0, 0, -9.81])
+    # Extra acceleration: 10.0 m/s² is obviously super-threshold. With Ts=0.02,
+    # this produces Δv = 0.2 m/s per step, ~3000× the drag signal. The noise floor
+    # from stereo is ~0.22 m/s; this is way above it. With ~24 samples, this
+    # clears both the random-noise threshold (2*SE) and systematic floor.
+    a_extra = np.array([0.0, 0.0, 10.0])
+    pts = p0 + np.outer(t, v0) + 0.5 * np.outer(t ** 2, (g + a_extra))
+
+    s, _ = track_to_state_samples(pts, t, (0.71, 0.0), 1.44)
+    dv = np.diff(s[:, 3:6], axis=0)
+    dv_gravity = np.tile(g * 0.02, (dv.shape[0], 1))
+    verdict = deviation_verdict(dv - dv_gravity)
+
+    assert verdict["above_noise"], (
+        "the production path with deliberately super-threshold extra acceleration "
+        "failed to report ABOVE NOISE — the verdict is broken")
