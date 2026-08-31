@@ -232,3 +232,54 @@ def test_build_throw_record_is_backward_compatible():
     r = C.build_throw_record(0, [0.75, 0.05], 1.5, 0.15, [0.0] * 7, [0.0] * 7,
                              True, {}, "b", "c.npz", None)
     assert r["landing_xy"] is None and r["measured_v0"] is None
+
+
+def test_build_and_log_throw_record_wires_measurement_on_success():
+    """Integration test: verify the caller's helper passes measurement through."""
+    meas = {"x": 0.71, "y": 0.02, "sigma_xy_m": 0.018, "n_frames": 44,
+            "n_inliers": 40, "rms_px": 0.42,
+            "p0": np.array([0.30, 0.0, 0.02]), "v0": np.array([1.39, 0.0, 0.37]),
+            "max_mask_frac": 0.03}
+    r = C._build_and_log_throw_record(
+        throw_index=0, target=[0.71, 0.0], commanded_speed=1.44, speed_scale=0.15,
+        q_release=[0.0] * 7, qd_release=[0.0] * 7, precheck_ok=True, exec_stats={},
+        ball_id="tennis-01", capture_file="throws/throw_000.npz", landing_xy=[0.71, 0.02],
+        release_box_ok=True, measurement=meas)
+    # Verify measurement is wired through from the caller
+    assert r["measured_v0"] == [1.39, 0.0, 0.37]
+    assert r["sigma_xy_m"] == 0.018
+    assert r["release_in_box"] is True
+
+
+def test_build_and_log_throw_record_wires_refusal_reason_on_failure():
+    """Integration test: verify the caller passes refusal reasons through."""
+    refusal = {"refusal_reason": "inlier fraction 0.31 below minimum 0.40"}
+    r = C._build_and_log_throw_record(
+        throw_index=1, target=[0.75, 0.05], commanded_speed=1.5, speed_scale=0.15,
+        q_release=[0.0] * 7, qd_release=[0.0] * 7, precheck_ok=True, exec_stats={},
+        ball_id="tennis-01", capture_file="throws/throw_001.npz", landing_xy=None,
+        release_box_ok=True, measurement=refusal)
+    # Verify refusal is wired through
+    assert r["landing_xy"] is None
+    assert r["measured_v0"] is None
+    assert "inlier fraction 0.31" in r["refusal_reason"]
+    assert r["release_in_box"] is True
+
+
+def test_build_and_log_throw_record_wires_release_box_ok():
+    """Integration test: verify release_in_box is always wired, success or fail."""
+    # Success case with release_in_box=True
+    r1 = C._build_and_log_throw_record(
+        throw_index=0, target=[0.75, 0.05], commanded_speed=1.5, speed_scale=0.15,
+        q_release=[0.0] * 7, qd_release=[0.0] * 7, precheck_ok=True, exec_stats={},
+        ball_id="b", capture_file=None, landing_xy=None,
+        release_box_ok=True, measurement=None)
+    assert r1["release_in_box"] is True
+
+    # Success case with release_in_box=False
+    r2 = C._build_and_log_throw_record(
+        throw_index=0, target=[0.75, 0.05], commanded_speed=1.5, speed_scale=0.15,
+        q_release=[0.0] * 7, qd_release=[0.0] * 7, precheck_ok=True, exec_stats={},
+        ball_id="b", capture_file=None, landing_xy=None,
+        release_box_ok=False, measurement=None)
+    assert r2["release_in_box"] is False
