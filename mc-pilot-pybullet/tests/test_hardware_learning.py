@@ -213,8 +213,9 @@ def test_fit_release_model_skips_refused_throws():
     from hardware_learning import fit_release_model
     recs = [{"commanded_speed": 1.4, "measured_v0": [1.31, 0, 0], "landing_xy": [0.7, 0]},
             {"commanded_speed": 1.5, "measured_v0": None, "landing_xy": None},
-            {"commanded_speed": 1.6, "measured_v0": [1.49, 0, 0], "landing_xy": [0.7, 0]}]
-    assert fit_release_model(recs)["n"] == 2
+            {"commanded_speed": 1.6, "measured_v0": [1.49, 0, 0], "landing_xy": [0.7, 0]},
+            {"commanded_speed": 1.5, "measured_v0": [1.40, 0, 0], "landing_xy": [0.7, 0]}]
+    assert fit_release_model(recs)["n"] == 3
 
 
 def test_fit_release_model_refuses_to_fit_too_few_points():

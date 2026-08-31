@@ -252,9 +252,14 @@ def fit_release_model(records):
         cmd.append(float(r["commanded_speed"]))
         meas.append(float(np.linalg.norm(v)))
         dirs.append(v / max(np.linalg.norm(v), 1e-12))
-    if len(cmd) < 2:
+    if len(cmd) < 3:
         raise ValueError(f"need at least 3 measured throws to fit a release "
                          f"model, have {len(cmd)}")
+    # Why 3 is the floor: a line through 2 points fits exactly, yielding
+    # residual_sigma = 0 with zero degrees of freedom. This reads as a perfect
+    # model even for noisy data. The operator uses residual_sigma to decide
+    # whether to trust the release correction, so a structural zero would
+    # misreport a degenerate fit. Three points give 1 DoF and meaningful residual.
 
     c = np.asarray(cmd)
     m = np.asarray(meas)
