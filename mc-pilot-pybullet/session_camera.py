@@ -87,10 +87,38 @@ class CameraThread:
 
     Single-slot is deliberate: a slow consumer drops frames rather than
     stalling capture, because a stalled capture loses the throw.
+
+    FRAME OWNERSHIP CONTRACT
+    -------------------------
+    `IRRecorder.stream()` yields zero-copy numpy views over the RealSense
+    SDK's own frame buffer -- cheap, but only valid for as long as the SDK
+    frame itself is alive. Anything that outlives one capture-loop iteration
+    must hold an owned copy, not the view:
+      - `buf` (the `RingBuffer`) copies internally in `RingBuffer.append()`,
+        because it retains up to `capacity` frames simultaneously -- holding
+        that many live SDK frames at once exhausts the SDK's internal frame
+        pool and stalls capture (found and fixed on real hardware
+        2026-08-31; see `RingBuffer.append`'s docstring/comment).
+      - `latest()` also copies, for the same reason at a smaller scale: it is
+        read asynchronously by a display consumer with no guarantee about
+        when, including after `stop()`, so the one slot it holds must not be
+        a live SDK reference either.
+      - `on_frame`, by contrast, is called SYNCHRONOUSLY, inline, once per
+        captured frame, at capture rate (up to ~90 Hz) -- so it is handed the
+        raw zero-copy view on purpose, to avoid paying a copy on every frame
+        for callbacks that don't need one (e.g. blit-and-discard display).
+        **The array is only valid for the duration of that call. A callback
+        that wants to keep it past return must call `.copy()` itself.**
     """
 
     def __init__(self, seconds=3.0, fps=90, width=848, height=480,
                  exposure_us=2000, emitter=True, on_frame=None):
+        """
+        `on_frame(ts, ir1, ir2)`, if given, is called inline from the capture
+        thread once per frame with the RAW zero-copy arrays -- see the class
+        docstring's "FRAME OWNERSHIP CONTRACT". Copy inside the callback if
+        you need to keep the data past the call.
+        """
         self.buf = RingBuffer(seconds, fps)
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -107,9 +135,25 @@ class CameraThread:
         self._thread.start()
 
     def stop(self):
+        """
+        Signal the capture loop to end and wait up to 5 s for it to actually
+        exit, then return True iff the camera is confirmed free (the worker
+        thread is no longer alive) -- False if it is still running after the
+        timeout.
+
+        The D435i can be opened by exactly one process (see the module
+        docstring), so a caller that calls `stop()` and then assumes it may
+        reopen the camera without checking the return value has no positive
+        confirmation of that -- `Thread.join(timeout=...)` returns silently
+        on a timeout either way. Normal-path shutdown is well under 5 s, so
+        False should be rare, but it is exactly the case worth not silently
+        swallowing.
+        """
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=5.0)
+            return not self._thread.is_alive()
+        return True
 
     def latest(self):
         with self._lock:
@@ -152,9 +196,9 @@ class CameraThread:
                     if self._stop.is_set():
                         break
                     with self._lock:
-                        self.buf.append(ts, ir1, ir2)
-                        self._latest = (ts, ir1, ir2)
+                        self.buf.append(ts, ir1, ir2)     # RingBuffer.append copies internally
+                        self._latest = (ts, ir1.copy(), ir2.copy())   # see FRAME OWNERSHIP CONTRACT
                     if self._on_frame is not None:
-                        self._on_frame(ts, ir1, ir2)
+                        self._on_frame(ts, ir1, ir2)       # RAW view -- see FRAME OWNERSHIP CONTRACT
         except Exception as e:                     # a camera fault ends the session
             self.error = e
