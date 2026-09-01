@@ -160,11 +160,21 @@ class ThrowCycle:
                 "speed": speed, "rel": rel, "precheck_ok": precheck_ok,
                 "report": report, "release_box_ok": release_box_ok}
 
-    def step_throw_and_measure(self, plan, target, speed_scale, throw_index):
+    def step_throw_and_measure(self, plan, target, speed_scale, throw_index, extrinsic):
+        """
+        `extrinsic` is the (R, t) pair from `perception.base_frame.load_extrinsic()`,
+        already loaded by the CALLER before any physical motion started this cycle
+        (see `_do_throw`'s fail-fast load). Do not load it in here: that was the
+        original bug (Task 8 review, IMPORTANT 1) -- `load_extrinsic()` raises
+        `FileNotFoundError`/`ValueError`, and calling it down here, after the ball
+        has already left the hand, meant a bad calibration file could raise past
+        every handler and silently drop an already-executed throw from the
+        dataset, contradicting `build_throw_record`'s own documented invariant
+        that a refused throw is still logged.
+        """
         import time
         import numpy as np
         from measure_landing import measure_landing
-        from perception import base_frame
 
         ex, arm, profile = plan["ex"], plan["arm"], plan["profile"]
 
@@ -186,13 +196,18 @@ class ThrowCycle:
         if event is None or "error" in event:
             return None, {"refusal_reason": (event or {}).get("error", "no capture window")}, exec_stats
 
-        R, t = base_frame.load_extrinsic()
+        R, t = extrinsic
         try:
             meas = measure_landing(event["rec"], R, t, z_floor=-self.args.base_height,
                                    ball_radius=self.args.ball_radius)
             return [float(meas["x"]), float(meas["y"])], meas, exec_stats
-        except RuntimeError as e:
-            # A refusal means re-throw. Never loosen a threshold to force a number.
+        except Exception as e:
+            # Broad on purpose, not just RuntimeError: the ball has ALREADY LEFT
+            # THE HAND by this point (rehearse_or_throw already ran, above), so
+            # any failure past this line -- whatever type it raises -- must still
+            # yield a record with landing_xy=None and a refusal_reason, never
+            # escape and drop the throw from the dataset. A refusal means
+            # re-throw. Never loosen a threshold to force a number.
             return None, {"refusal_reason": str(e)}, exec_stats
 
 
@@ -223,9 +238,15 @@ def build_argparser():
                          "executor). Stage 0's own read-only checks/planner call are "
                          "unaffected by this flag either way.")
     ap.add_argument("--dry_run", action="store_true",
-                    help="force dry-run for the whole session even if --arm is also "
-                         "given -- makes the safe default explicit and cannot be "
-                         "overridden by --arm.")
+                    help="force args.arm=False -- cannot be overridden by also passing "
+                         "--arm. This makes HardwareThrowExecutor use its dry-run "
+                         "backend for the throw cycle's PLAN/EXECUTE path: no real "
+                         "joint-speed streaming, no real gripper release. It does NOT "
+                         "make the whole session inert: step_pickup() always calls "
+                         "pickup_and_lift(), which is hardcoded dry_run=False and "
+                         "always moves the real arm and grasps for real, independent "
+                         "of this flag. Stage 0's own read-only checks/planner call "
+                         "are unaffected by this flag either way.")
 
     g = ap.add_argument_group("board (must match what is physically on the floor)")
     g.add_argument("--squares_x", type=int, default=5)
@@ -391,9 +412,28 @@ class SessionApp:
         self.targets = propose_targets(int(args.n_targets), seed=int(args.target_seed))
 
         self._build_widgets()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(100, self._drain_log)
         self._refresh_buttons()
         self._set_status(f"COLD -- run start-of-day to begin", "gray")
+
+    def _on_close(self):
+        """
+        Wired to WM_DELETE_WINDOW (Task 8 review, IMPORTANT 3). The D435i can
+        be opened by exactly one process, and nothing previously ever called
+        `CameraThread.stop()` on window close -- a leaked capture thread meant
+        the operator had to kill the whole app to free the camera for the
+        next run.
+        """
+        if self.camera is not None:
+            print("[hardware_session] window closing -- stopping camera thread")
+            stopped = self.camera.stop()
+            if not stopped:
+                print("[hardware_session] camera thread did not confirm stopped "
+                     "within 5s on window close -- the D435i may still be held",
+                     file=sys.stderr)
+            self.camera = None
+        self.root.destroy()
 
     # -- widget construction ------------------------------------------------ #
     def _field(self, frm, row, label, default):
@@ -442,7 +482,7 @@ class SessionApp:
         self.confirm_var = tk.BooleanVar(value=False)
         self.confirm_cb = ttk.Checkbutton(
             frm, text="Ball loaded, workspace clear, E-stop in hand",
-            variable=self.confirm_var)
+            variable=self.confirm_var, command=self._on_confirm_toggled)
         self.confirm_cb.grid(row=r, column=0, columnspan=2, sticky="w", pady=(8, 2))
         r += 1
 
@@ -496,6 +536,35 @@ class SessionApp:
 
     def _set_status(self, text, color="black"):
         self.status.configure(text=text, foreground=color)
+
+    def _on_confirm_toggled(self):
+        """
+        Checkbutton `command=` callback -- fires on the main thread whenever
+        the operator clicks the confirm box.
+
+        IMPORTANT 2 fix (Task 8 review): `SessionState.confirmed` is the
+        actual safety-gate field (checked in `on_throw`, reset every throw by
+        `record_throw` -- see the re-affirm-every-cycle rule). Before this
+        fix the checkbox was a self-contained Tk widget `on_throw` read
+        directly via `confirm_var.get()`, and `state.confirmed` silently
+        tracked its own value with nothing ever consulting it -- the existing
+        regression test (`test_confirm_resets_after_every_throw`) exercised a
+        field production never read. This callback makes the checkbox the
+        write side of `state.confirmed`, so `on_throw`'s check against
+        `state.confirmed` (below) is checking the real thing.
+        """
+        self.state.confirmed = self.confirm_var.get()
+
+    def _set_confirmed(self, value):
+        """
+        The one place that writes BOTH the visual checkbox and
+        `state.confirmed` together -- use this instead of touching
+        `confirm_var`/`state.confirmed` separately so the two can never
+        drift apart (`confirm_var.set()` does NOT fire `_on_confirm_toggled`,
+        since that command only runs for a real user click).
+        """
+        self.confirm_var.set(value)
+        self.state.confirmed = value
 
     def _read_shared_fields(self):
         """
@@ -586,13 +655,34 @@ class SessionApp:
         for stage, level, msg in rep.rows:
             self._append(f"[{level:5s}][{stage}] {msg}\n")
         self.state.record_startup(go=go, failures=failures)
-        self._busy = False
-        self.stage0_btn.configure(state="normal")
         if go:
             self._append("\n=== GO -- calibrated, planned, and gated ===\n")
-            self._set_status("GO -- starting session camera ...", "orange")
-            threading.Thread(target=self._start_camera, daemon=True).start()
+            if self.camera is not None:
+                # A camera thread from an earlier "Run start-of-day" is still
+                # live -- the D435i can be opened by exactly one process, so
+                # starting a second CameraThread here would race it for the
+                # device (Task 8 review, IMPORTANT 3). record_startup() above
+                # just reset stage back to CALIBRATED unconditionally; restore
+                # READY immediately since this camera was already confirmed.
+                self._append("=== camera already live from a previous run -- "
+                             "not starting a second CameraThread ===\n")
+                self.state.camera_ready()
+                self._busy = False
+                self.stage0_btn.configure(state="normal")
+                self._set_status("READY -- calibrated + camera live (from earlier run)",
+                                 "green")
+            else:
+                self._set_status("GO -- starting session camera ...", "orange")
+                # _busy stays True (and stage0_btn stays disabled) through camera
+                # startup -- only cleared in _finish_camera now, not here. This is
+                # the IMPORTANT 3 fix: _busy used to clear right here, before the
+                # camera thread even started, so a second click on "Run
+                # start-of-day" could open a second CameraThread while the first
+                # still held the only D435i the process may open.
+                threading.Thread(target=self._start_camera, daemon=True).start()
         else:
+            self._busy = False
+            self.stage0_btn.configure(state="normal")
             self._append(f"\n=== NO-GO -- BLOCKED: {self.state.blocked_reason} ===\n")
             self._set_status(f"NO-GO / BLOCKED: {self.state.blocked_reason}", "red")
         self._refresh_buttons()
@@ -607,12 +697,24 @@ class SessionApp:
 
     # -- camera --------------------------------------------------------------- #
     def _start_camera(self):
+        import cv2
         from session_camera import CameraThread
+        from session_overlay import render_overlay
+        # Imported ONCE here, not per-frame in _on_frame (which runs at up to
+        # ~90 Hz) -- stashed as instance attributes for _on_frame to use. See
+        # the Task 8 review's MINOR note.
+        self._cv2 = cv2
+        self._render_overlay = render_overlay
+
         cam = CameraThread(seconds=3.0, fps=self.args.camera_fps,
                            width=self.args.camera_width, height=self.args.camera_height,
                            exposure_us=self.args.exposure_us,
                            emitter=not self.args.no_emitter, on_frame=self._on_frame)
         cam.start()
+        # Visible immediately (not only once confirmed) so a window-close or
+        # the second-thread guard in _finish_stage_zero can find and stop this
+        # thread even while it is still waiting to confirm its first frame.
+        self.camera = cam
         deadline = time.time() + self.args.camera_ready_timeout
         confirmed = False
         while time.time() < deadline:
@@ -622,10 +724,25 @@ class SessionApp:
                 confirmed = True
                 break
             time.sleep(0.05)
-        self.camera = cam
+        if not confirmed:
+            # Startup failed (timeout or camera fault) -- the D435i can only be
+            # opened by one process at a time, so a failed CameraThread MUST be
+            # stopped here, before the operator is allowed to retry "Run
+            # start-of-day" (Task 8 review, IMPORTANT 3): otherwise the retry's
+            # new CameraThread would race this one for the device. stop()'s
+            # return value is the actual confirmation the camera is free --
+            # never discard it.
+            stopped = cam.stop()
+            self.camera = None
+            if not stopped:
+                print("[hardware_session] camera thread did not confirm stopped "
+                     "within 5s after a failed startup -- the D435i may still be "
+                     "held; restarting the app may be required", file=sys.stderr)
         self._safe_after(lambda: self._finish_camera(confirmed, cam.error), "camera-ready result")
 
     def _finish_camera(self, confirmed, error):
+        self._busy = False
+        self.stage0_btn.configure(state="normal")
         if confirmed:
             self.state.camera_ready()
             self._append("\n=== camera confirmed live -- session READY ===\n")
@@ -644,15 +761,22 @@ class SessionApp:
         `ir1`/`ir2` are ZERO-COPY views into the RealSense SDK's own frame
         buffer, valid only for this call (see session_camera.py's FRAME
         OWNERSHIP CONTRACT) -- render synchronously, never store or queue
-        them. Tk is never touched from here.
+        them. Tk is never touched from here. `self._cv2`/`self._render_overlay`
+        are imported once in `_start_camera`, not per-call here -- see that
+        method's comment.
+
+        Reads self.state.stage/n_throws below -- on the camera thread, while
+        the main thread concurrently mutates SessionState (record_throw() etc).
+        GIL-safe (no torn reads of these plain attributes/properties), but a
+        real cross-thread access nonetheless; this codebase documents such
+        races explicitly elsewhere rather than leaving them implicit -- see
+        session_camera.py's RingBuffer: "Not thread-safe; the owner locks".
         """
         try:
-            import cv2
-            from session_overlay import render_overlay
-            frame = render_overlay(
+            frame = self._render_overlay(
                 ir1, ir2, status=f"stage={self.state.stage.value} throws={self.state.n_throws}")
-            cv2.imshow("session -- live IR", frame)
-            cv2.waitKey(1)
+            self._cv2.imshow("session -- live IR", frame)
+            self._cv2.waitKey(1)
         except Exception:
             pass   # a display hiccup must never kill the capture thread
 
@@ -665,7 +789,7 @@ class SessionApp:
             messagebox.showwarning("Not ready", "Session is not READY -- run start-of-day "
                                                 "(and confirm the camera came up) first.")
             return
-        if not self.confirm_var.get():
+        if not self.state.confirmed:
             messagebox.showwarning(
                 "Not confirmed",
                 "Check \"Ball loaded, workspace clear, E-stop in hand\" first -- "
@@ -698,7 +822,8 @@ class SessionApp:
             messagebox.showerror("Bad input", str(e))
             return
 
-        self.confirm_var.set(False)   # re-affirm required every cycle, not just once
+        self._set_confirmed(False)   # re-affirm required every cycle, not just once --
+                                      # resets the checkbox AND state.confirmed together
         self._busy = True
         self.throw_btn.configure(state="disabled")
         self._set_status(f"pickup -> plan -> throw (target={tuple(round(t,3) for t in target)}, "
@@ -724,6 +849,15 @@ class SessionApp:
         try:
             cycle = ThrowCycle(self.state, self.camera, cycle_args)
 
+            # Fail fast, BEFORE any physical motion: a missing/invalid
+            # calibration file must refuse HERE, where refusing costs nothing,
+            # not after the ball has left the hand (Task 8 review, IMPORTANT 1).
+            # Loading it once here and threading it through step_throw_and_measure
+            # is the fix -- see that method's docstring for why it must never
+            # load its own extrinsic again.
+            from perception import base_frame
+            extrinsic = base_frame.load_extrinsic()
+
             grasped, msg = cycle.step_pickup()
             self._safe_after(lambda: self._append(f"[pickup] {msg}\n"), "pickup log line")
             if not grasped:
@@ -744,7 +878,7 @@ class SessionApp:
                 return
 
             landing_xy, measurement, exec_stats = cycle.step_throw_and_measure(
-                plan, target, speed_scale, throw_index)
+                plan, target, speed_scale, throw_index, extrinsic)
 
             from run_closed_loop_throws import append_log, build_throw_record
             record = build_throw_record(
@@ -769,12 +903,18 @@ class SessionApp:
         self._safe_after(lambda: self._finish_throw_ok(record), "throw result")
 
     def _finish_throw_refused(self, why):
+        self._set_confirmed(False)   # belt-and-suspenders: on_throw already reset this
+                                      # before dispatching, but re-assert it here in case
+                                      # the operator re-checked the box while the worker
+                                      # was running (state.confirmed is the authority the
+                                      # NEXT on_throw() call reads -- see IMPORTANT 2).
         self._busy = False
         self._append(f"\n=== throw refused: {why} ===\n")
         self._set_status(f"REFUSED: {why}", "red")
         self._refresh_buttons()
 
     def _finish_throw_error(self, exc):
+        self._set_confirmed(False)   # see _finish_throw_refused
         self._busy = False
         self._append(f"\n=== throw cycle raised: {exc!r} ===\n")
         self._set_status(f"ERROR: {exc}", "red")
@@ -782,6 +922,9 @@ class SessionApp:
 
     def _finish_throw_ok(self, record):
         from tkinter import messagebox
+        self._set_confirmed(False)   # see _finish_throw_refused; record_throw() below
+                                      # also resets state.confirmed, this keeps the
+                                      # visible checkbox in sync with it too
         self.state.record_throw(record)
         self.throw_index += 1
         self._busy = False
