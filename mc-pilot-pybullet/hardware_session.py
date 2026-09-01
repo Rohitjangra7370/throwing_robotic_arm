@@ -310,6 +310,36 @@ def raw_ransac_points_from_capture(capture_file, R_bc, t_bc, rig=None):
     return pts, obs[inliers, 0]
 
 
+def reoptimize_policy(mc, out_dir, reinforce_kwargs):
+    """
+    Re-optimize the policy against the updated model, reusing the GP -- the
+    pattern adapt_policy_height.py already establishes.
+
+    `reinforce_kwargs` is forwarded to `mc.reinforce_policy(**kwargs)`
+    UNCHANGED. That call takes ~13 required arguments (T_control,
+    num_particles, trial_index, particles_initial_state_mean/var, the three
+    init flags and two bounds, opt_steps_list, lr_list, f_optimizer, ...), and
+    this function deliberately does not invent, default, or reshape any of
+    them: adapt_policy_height.py already owns how that set is built, and a
+    second opinion about it here is exactly the kind of duplicated logic this
+    repo has been bitten by. The caller assembles them the same way that script
+    does.
+
+    Writes a NEW checkpoint directory. The result is NOT thrown automatically:
+    its release state may differ from the one whose finger clearance the
+    operator visually verified, so it goes back through stage 0 and the
+    escalation ladder like any other checkpoint.
+    """
+    import os
+    if os.path.isdir(out_dir) and os.listdir(out_dir):
+        raise FileExistsError(
+            f"{out_dir} exists and is not empty -- this would overwrite a "
+            f"trained checkpoint; pass a new out_dir")
+    os.makedirs(out_dir, exist_ok=True)
+    mc.reinforce_policy(**reinforce_kwargs)
+    return out_dir
+
+
 class ThrowCycle:
     """
     One throw, as the sequence of gates HARDWARE_RUNBOOK.md Sec 2 describes.
@@ -1362,12 +1392,165 @@ class SessionApp:
         self._refresh_buttons()
 
     def on_reoptimize_policy(self):
+        """
+        Button 2 (Task 10). Re-optimizes the SAME in-memory `self._mc` that
+        `on_update_model` left behind -- its GP already has the real throws
+        folded in, which is the entire point of gating this button on
+        `can_reoptimize_policy()` (== `model_updated`): the operator sees what
+        the real throws did to the model before the policy moves.
+
+        `_do_reoptimize_policy` does the heavy work (torch, particle rollout)
+        off the main thread, same discipline as `on_update_model`/`on_throw`:
+        Tk reads happen here, only `_safe_after` may reach back into the GUI
+        from the worker.
+        """
+        if self._busy:
+            return
         from tkinter import messagebox
-        messagebox.showinfo(
-            "Not yet wired",
-            "This button unlocks only after 'Update model' has run once (see "
-            "SessionState.can_reoptimize_policy) -- the re-optimization logic itself "
-            "lands in a later step of this plan.")
+        if not self.state.can_reoptimize_policy():
+            messagebox.showwarning(
+                "Model not updated yet",
+                "Run 'Update model' first -- SessionState.can_reoptimize_policy() "
+                "is false until the model has been updated against real "
+                "throws (see the gate in on_update_model).")
+            return
+        if self._mc is None:
+            # Should be unreachable if can_reoptimize_policy() is true (both
+            # are set together in _finish_update_model_ok), but a stashed
+            # object going missing must not silently no-op or crash the
+            # worker thread with a confusing AttributeError.
+            messagebox.showerror(
+                "No updated model in memory",
+                "can_reoptimize_policy() is true but self._mc is None -- this "
+                "should not happen. Re-run 'Update model' before retrying.")
+            return
+
+        fields = self._read_shared_fields()      # Tk reads happen HERE, main thread only
+        self._busy = True
+        self.reopt_btn.configure(state="disabled")
+        self._set_status("re-optimizing policy against the updated model ...", "orange")
+        self._append("\n$ re-optimize policy\n")
+        threading.Thread(target=self._do_reoptimize_policy, args=(fields,),
+                         daemon=True).start()
+
+    def _do_reoptimize_policy(self, fields):
+        """
+        Worker thread. `fields` was already read on the main thread by
+        `on_reoptimize_policy` -- this function must never touch `self.*_var`
+        or a widget; only `self._safe_after()` may reach back into the GUI.
+
+        Re-optimizes `self._mc.control_policy` in place against the model
+        `on_update_model` already updated with real throws -- NOT a fresh
+        reload of the checkpoint from disk, so the newly ingested data
+        actually feeds the new policy (see the comment on `self._mc` in
+        `__init__`).
+
+        Builds the `reinforce_policy()` argument set the same way
+        `adapt_policy_height.py` does (T_control, num_particles, trial_index,
+        particle-init mean/var over a target domain, opt_steps_list/lr_list
+        indexed by trial, the dropout/convergence knobs, `policy_reinit_dict`)
+        -- see that script around line 223 for the proven call this mirrors.
+        Unlike that script this is not a height adaptation: there is no new
+        basket height, so the target domain (`lm`/`lM`/`gM`) and control
+        horizon (`T`) are read back from the checkpoint's OWN config_log.pkl
+        unchanged, not re-derived from a new flight band.
+
+        `reoptimize_policy()` (module-level, tested in
+        tests/test_hardware_session.py) owns the one load-bearing safety
+        property -- refuse to write into an existing, non-empty directory --
+        so a trained checkpoint can never be overwritten. This function then
+        persists config_log.pkl/log.pkl into that same new directory the way
+        adapt_policy_height.py does at its own tail: without that, "a NEW
+        checkpoint directory" would be an empty folder nothing downstream
+        (run_hardware_throw.py, load_mc_model_for_update, a future session)
+        could actually load.
+        """
+        import os
+        import pickle as pkl
+
+        import numpy as np
+        import torch
+
+        try:
+            mc = self._mc
+            log_path_in = fields["log_path"]
+            cfg = pkl.load(open(os.path.join(log_path_in, "config_log.pkl"), "rb"))
+            log = pkl.load(open(os.path.join(log_path_in, "log.pkl"), "rb"))
+            num_trained = len(log["parameters_trial_list"])
+
+            dtype, device = torch.float64, torch.device("cpu")
+            RELEASE_POS = np.array(cfg["release_pos"], dtype=float)
+            release_xy = RELEASE_POS[:2]
+            Ts, T, M, uM = cfg["Ts"], cfg["T"], cfg["M"], cfg["uM"]
+            lm, lM = cfg["lm"], cfg["lM"]
+
+            centre = np.array([release_xy[0] + 0.5 * (lm + lM), release_xy[1]])
+            initial_state = np.concatenate([RELEASE_POS, np.zeros(3), centre])
+            initial_state_var = np.concatenate(
+                [1e-4 * np.ones(6), (0.5 * (lM - lm)) ** 2 * np.ones(2)])
+
+            reinforce_kwargs = dict(
+                T_control=int(round(T / Ts)),
+                num_particles=M,
+                trial_index=num_trained - 1,
+                particles_initial_state_mean=torch.tensor(
+                    initial_state, dtype=dtype, device=device),
+                particles_initial_state_var=torch.tensor(
+                    initial_state_var, dtype=dtype, device=device),
+                flg_particles_init_uniform=False,
+                particles_init_up_bound=None, particles_init_low_bound=None,
+                flg_particles_init_multi_gauss=False,
+                # reinforce_policy indexes these by trial_index
+                opt_steps_list=[cfg.get("Nopt", 1500)] * num_trained,
+                lr_list=[0.01] * num_trained,
+                f_optimizer="lambda p, lr : torch.optim.Adam(p, lr)",
+                num_step_print=100, p_dropout_list=[0.25] * num_trained,
+                p_drop_reduction=0.25 / 2,
+                alpha_diff_cost=0.99, min_diff_cost=0.02, num_min_diff_cost=400,
+                min_step=400, lr_min=0.0025,
+                policy_reinit_dict={
+                    "lenghtscales_par": np.array(cfg["lengthscales_init"]),
+                    "centers_par": np.array([1.0, 1.0]), "weight_par": uM},
+            )
+
+            # A fresh, timestamped sibling of the checkpoint's own
+            # results_root -- reoptimize_policy() below is what actually
+            # refuses a collision, this just makes one vanishingly unlikely
+            # in the first place.
+            results_root = f"{cfg['results_root']}_reopt_{time.strftime('%Y%m%d_%H%M%S')}"
+            out_dir = os.path.join(results_root, str(cfg.get("seed", 1)))
+
+            reoptimize_policy(mc, out_dir, reinforce_kwargs)
+
+            adapted = dict(cfg)
+            adapted.update({"results_root": results_root,
+                            "reoptimized_from": log_path_in, "new_trials_used": 0})
+            pkl.dump(adapted, open(os.path.join(out_dir, "config_log.pkl"), "wb"))
+            out_log = {"parameters_trial_list": [mc.control_policy.state_dict()],
+                       "cost_trial_list": [],
+                       "reoptimized_from": log_path_in, "new_trials_used": 0}
+            pkl.dump(out_log, open(os.path.join(out_dir, "log.pkl"), "wb"))
+        except Exception as e:
+            self._safe_after(lambda: self._finish_reoptimize_policy_error(e),
+                             "reoptimize-policy error result")
+            return
+        self._safe_after(lambda: self._finish_reoptimize_policy_ok(out_dir),
+                         "reoptimize-policy result")
+
+    def _finish_reoptimize_policy_ok(self, out_dir):
+        self._busy = False
+        text = (f"New checkpoint written to `{out_dir}`. It has NOT been "
+               f"validated on hardware — re-run start-of-day against it "
+               f"and restart the escalation ladder at 0.15.")
+        self._append(f"\n=== policy re-optimization ===\n{text}\n")
+        self._set_status(f"NEW CHECKPOINT -- unvalidated, restart at 0.15: {out_dir}", "green")
+        self._refresh_buttons()
+
+    def _finish_reoptimize_policy_error(self, exc):
+        self._busy = False
+        self._append(f"\n=== policy re-optimization raised: {exc!r} ===\n")
+        self._set_status(f"ERROR: {exc}", "red")
+        self._refresh_buttons()
 
 
 def main(argv=None):

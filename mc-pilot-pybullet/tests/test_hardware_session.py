@@ -480,3 +480,57 @@ def test_capture_save_failure_still_logs_a_refused_record(monkeypatch, tmp_path)
     assert "capture save failed" in measurement["refusal_reason"]
     assert "disk full" in measurement["refusal_reason"]
     assert isinstance(exec_stats, dict)
+
+
+# -- Task 10: Button 2, policy re-optimization into a NEW checkpoint -------- #
+
+def test_reoptimize_refuses_to_overwrite_an_existing_checkpoint(tmp_path):
+    """Never overwrite a trained checkpoint -- it is the only copy."""
+    from hardware_session import reoptimize_policy
+    existing = tmp_path / "results_kinetic_chain_gen3_tcp" / "1"
+    existing.mkdir(parents=True)
+    (existing / "config_log.pkl").write_bytes(b"pretend checkpoint")
+
+    class FakeMC:
+        def reinforce_policy(self, **kw):
+            raise AssertionError("must refuse BEFORE touching the model")
+
+    with pytest.raises(FileExistsError, match="would overwrite"):
+        reoptimize_policy(FakeMC(), str(existing), {"T_control": 1})
+
+
+def test_reoptimize_passes_the_caller_s_kwargs_through_untouched(tmp_path):
+    """
+    reinforce_policy takes ~13 required arguments (T_control, num_particles,
+    trial_index, particle init means/vars/bounds, opt_steps_list, lr_list,
+    f_optimizer, ...). This function must NOT invent or reshape them -- it
+    forwards exactly what the caller built, so there is one place that owns
+    that argument set: adapt_policy_height.py's proven call.
+    """
+    from hardware_session import reoptimize_policy
+    seen = {}
+
+    class FakeMC:
+        def reinforce_policy(self, **kw):
+            seen.update(kw)
+            return [0.1], None, None, None
+
+    out = tmp_path / "new_ckpt"
+    kwargs = {"T_control": 40, "num_particles": 200, "trial_index": 3,
+              "opt_steps_list": [50], "lr_list": [0.01]}
+    assert reoptimize_policy(FakeMC(), str(out), kwargs) == str(out)
+    assert seen == kwargs
+    assert out.is_dir()
+
+
+def test_reoptimize_accepts_an_existing_but_empty_directory(tmp_path):
+    """Pre-creating the output path is normal; only a POPULATED dir is refused."""
+    from hardware_session import reoptimize_policy
+    out = tmp_path / "empty_ckpt"
+    out.mkdir()
+
+    class FakeMC:
+        def reinforce_policy(self, **kw):
+            return [0.1], None, None, None
+
+    assert reoptimize_policy(FakeMC(), str(out), {"T_control": 1}) == str(out)
