@@ -1446,7 +1446,7 @@ class SessionApp:
         `__init__`).
 
         Builds the `reinforce_policy()` argument set the same way
-        `adapt_policy_height.py` does (T_control, num_particles, trial_index,
+        `adapt_policy_height.py` does (num_particles, trial_index,
         particle-init mean/var over a target domain, opt_steps_list/lr_list
         indexed by trial, the dropout/convergence knobs, `policy_reinit_dict`)
         -- see that script around line 223 for the proven call this mirrors.
@@ -1454,6 +1454,23 @@ class SessionApp:
         basket height, so the target domain (`lm`/`lM`/`gM`) and control
         horizon (`T`) are read back from the checkpoint's OWN config_log.pkl
         unchanged, not re-derived from a new flight band.
+
+        EXCEPT `T_control`, deliberately NOT copied from adapt_policy_height.py
+        -- verified, not assumed: `MC_PILCO.reinforce_policy` (policy_learning/
+        MC_PILCO.py:411) does `control_horizon = int(T_control / self.T_sampling)`
+        internally, i.e. it expects `T_control` in SECONDS and does the
+        seconds-to-steps division itself. The normal training loop agrees:
+        train_mc_pilot_pb_arm.py:599 passes `"T_control": T` where `T` is
+        `args.T` in seconds (e.g. 0.62 -> int(0.62/0.02) = 31 steps).
+        `adapt_policy_height.py:224` instead passes `T_control=int(T_new / Ts)`
+        -- an ALREADY-divided step count (e.g. 31) -- which then gets divided
+        by `T_sampling` a second time inside `reinforce_policy`
+        (int(31/0.02) = 1550 steps, 50x too long). That script is not the
+        model to copy for this one parameter: it has a real unit bug, confirmed
+        against reinforce_policy's own division and the trainer's usage, not
+        just a style difference worth mirroring. So T_control below is passed
+        as raw seconds (`T`, unchanged from config_log.pkl), matching the
+        trainer's convention and reinforce_policy's actual contract.
 
         `reoptimize_policy()` (module-level, tested in
         tests/test_hardware_session.py) owns the one load-bearing safety
@@ -1481,7 +1498,7 @@ class SessionApp:
             dtype, device = torch.float64, torch.device("cpu")
             RELEASE_POS = np.array(cfg["release_pos"], dtype=float)
             release_xy = RELEASE_POS[:2]
-            Ts, T, M, uM = cfg["Ts"], cfg["T"], cfg["M"], cfg["uM"]
+            T, M, uM = cfg["T"], cfg["M"], cfg["uM"]
             lm, lM = cfg["lm"], cfg["lM"]
 
             centre = np.array([release_xy[0] + 0.5 * (lm + lM), release_xy[1]])
@@ -1490,7 +1507,10 @@ class SessionApp:
                 [1e-4 * np.ones(6), (0.5 * (lM - lm)) ** 2 * np.ones(2)])
 
             reinforce_kwargs = dict(
-                T_control=int(round(T / Ts)),
+                # SECONDS, not a pre-divided step count -- see the docstring
+                # note above (MC_PILCO.py:411 divides by T_sampling itself;
+                # train_mc_pilot_pb_arm.py:599 passes seconds the same way).
+                T_control=T,
                 num_particles=M,
                 trial_index=num_trained - 1,
                 particles_initial_state_mean=torch.tensor(
