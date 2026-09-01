@@ -194,6 +194,10 @@ def test_verdict_below_noise_text_includes_required_sample_count():
 
 
 def test_fit_release_model_recovers_a_known_gain_and_offset():
+    # speed_scale=1.0 on every record -- Defect 1 (2026-09-02): fit_release_model
+    # now excludes anything not at full speed, and a missing key does not
+    # default to qualifying. See test_fit_release_model_excludes_rehearsal_throws
+    # for the mixed-scale case this file did not previously cover.
     from hardware_learning import fit_release_model
     rng = np.random.default_rng(0)
     recs = []
@@ -201,28 +205,87 @@ def test_fit_release_model_recovers_a_known_gain_and_offset():
         actual = 0.90 * c + 0.05
         recs.append({"commanded_speed": float(c),
                      "measured_v0": [float(actual), 0.0, 0.0],
-                     "landing_xy": [0.7, 0.0]})
+                     "landing_xy": [0.7, 0.0], "speed_scale": 1.0})
     out = fit_release_model(recs)
     assert out["gain"] == pytest.approx(0.90, abs=1e-6)
     assert out["offset"] == pytest.approx(0.05, abs=1e-6)
     assert out["n"] == 12
+    assert out["n_excluded_rehearsal"] == 0
 
 
 def test_fit_release_model_skips_refused_throws():
-    """A throw with no measurement carries no release information."""
+    """A throw with no measurement carries no release information.
+    speed_scale=1.0 added to the measured records -- see the comment on
+    test_fit_release_model_recovers_a_known_gain_and_offset."""
     from hardware_learning import fit_release_model
-    recs = [{"commanded_speed": 1.4, "measured_v0": [1.31, 0, 0], "landing_xy": [0.7, 0]},
+    recs = [{"commanded_speed": 1.4, "measured_v0": [1.31, 0, 0], "landing_xy": [0.7, 0], "speed_scale": 1.0},
             {"commanded_speed": 1.5, "measured_v0": None, "landing_xy": None},
-            {"commanded_speed": 1.6, "measured_v0": [1.49, 0, 0], "landing_xy": [0.7, 0]},
-            {"commanded_speed": 1.5, "measured_v0": [1.40, 0, 0], "landing_xy": [0.7, 0]}]
+            {"commanded_speed": 1.6, "measured_v0": [1.49, 0, 0], "landing_xy": [0.7, 0], "speed_scale": 1.0},
+            {"commanded_speed": 1.5, "measured_v0": [1.40, 0, 0], "landing_xy": [0.7, 0], "speed_scale": 1.0}]
     assert fit_release_model(recs)["n"] == 3
 
 
 def test_fit_release_model_refuses_to_fit_too_few_points():
+    """Fewer than 3 measured throws at all -- the generic message, no mention
+    of rehearsals (that is a different failure, see
+    test_fit_release_model_all_rehearsals_raises_a_distinct_error)."""
     from hardware_learning import fit_release_model
-    recs = [{"commanded_speed": 1.4, "measured_v0": [1.3, 0, 0], "landing_xy": [0.7, 0]}]
-    with pytest.raises(ValueError, match="at least 3"):
+    recs = [{"commanded_speed": 1.4, "measured_v0": [1.3, 0, 0], "landing_xy": [0.7, 0], "speed_scale": 1.0}]
+    with pytest.raises(ValueError, match="at least 3") as exc_info:
         fit_release_model(recs)
+    assert "rehearsal" not in str(exc_info.value).lower()
+
+
+def test_fit_release_model_excludes_rehearsal_throws():
+    """Defect 1 (2026-09-02): only speed_scale==1.0 throws feed the fit. Mix
+    3 rehearsal-speed throws (a plausible fit if wrongly included -- they sit
+    right on the same line) with 4 full-speed ones; the fit must recover the
+    full-speed gain/offset exactly and report the exclusion."""
+    from hardware_learning import fit_release_model
+    recs = []
+    for c, scale in [(1.2, 0.15), (1.4, 0.30), (1.6, 0.60)]:
+        # Rehearsal: measured value follows a DIFFERENT (also linear) relation,
+        # so if these leak into the fit the recovered gain/offset will be wrong.
+        recs.append({"commanded_speed": c, "measured_v0": [0.15 * c, 0.0, 0.0],
+                     "landing_xy": [0.1, 0.0], "speed_scale": scale})
+    for c in np.linspace(1.2, 1.8, 4):
+        actual = 0.90 * c + 0.05
+        recs.append({"commanded_speed": float(c), "measured_v0": [float(actual), 0.0, 0.0],
+                     "landing_xy": [0.7, 0.0], "speed_scale": 1.0})
+    out = fit_release_model(recs)
+    assert out["n"] == 4
+    assert out["n_excluded_rehearsal"] == 3
+    assert out["gain"] == pytest.approx(0.90, abs=1e-6)
+    assert out["offset"] == pytest.approx(0.05, abs=1e-6)
+    assert "excluded 3 rehearsal throws" in out["text"]
+    assert "speed_scale < 1.0" in out["text"]
+
+
+def test_fit_release_model_all_rehearsals_raises_a_distinct_error():
+    """3 measured throws logged, but all rehearsals -- this needs a different
+    operator action (throw at full speed) than "fewer than 3 measured at
+    all" (throw more, period), so the message must say so."""
+    from hardware_learning import fit_release_model
+    recs = [{"commanded_speed": c, "measured_v0": [0.15 * c, 0.0, 0.0],
+            "landing_xy": [0.1, 0.0], "speed_scale": 0.15}
+           for c in (1.2, 1.4, 1.6)]
+    with pytest.raises(ValueError) as exc_info:
+        fit_release_model(recs)
+    msg = str(exc_info.value).lower()
+    assert "3 measured" in msg or "3 measured throws" in msg
+    assert "rehearsal" in msg
+    assert "full speed" in msg
+
+
+def test_fit_release_model_missing_speed_scale_key_is_non_qualifying():
+    """A record with no speed_scale key at all must NOT be silently assumed
+    to be full-speed data -- it is excluded exactly like an explicit < 1.0."""
+    from hardware_learning import fit_release_model
+    recs = [{"commanded_speed": c, "measured_v0": [0.9 * c, 0.0, 0.0], "landing_xy": [0.7, 0.0]}
+           for c in (1.2, 1.4, 1.6)]   # no speed_scale key anywhere
+    with pytest.raises(ValueError) as exc_info:
+        fit_release_model(recs)
+    assert "rehearsal" in str(exc_info.value).lower()
 
 
 def test_pure_parabola_teaches_the_gp_nothing():
@@ -257,17 +320,19 @@ def test_fit_release_model_skips_malformed_measured_v0():
     """Zero-magnitude, non-finite, empty, non-3-vector measured_v0 must be
     skipped cleanly. A single bad record can corrupt the fit (observed: [0,0,0]
     among two good records produced gain=-6.5, offset=+10.65 — physically
-    impossible, returned with no error). Guards tightly against silent corruption."""
+    impossible, returned with no error). Guards tightly against silent corruption.
+    speed_scale=1.0 added throughout -- see the comment on
+    test_fit_release_model_recovers_a_known_gain_and_offset."""
     from hardware_learning import fit_release_model
     recs = [
-        {"commanded_speed": 1.4, "measured_v0": [1.26, 0, 0], "landing_xy": [0.7, 0]},
-        {"commanded_speed": 1.5, "measured_v0": [0.0, 0.0, 0.0], "landing_xy": [0.7, 0]},  # zero vector — skip
-        {"commanded_speed": 1.6, "measured_v0": [1.44, 0, 0], "landing_xy": [0.7, 0]},
-        {"commanded_speed": 1.7, "measured_v0": [float('nan'), 0, 0], "landing_xy": [0.7, 0]},  # non-finite — skip
-        {"commanded_speed": 1.8, "measured_v0": [1.62, 0, 0], "landing_xy": [0.7, 0]},
-        {"commanded_speed": 1.9, "measured_v0": [], "landing_xy": [0.7, 0]},  # empty — skip
-        {"commanded_speed": 1.95, "measured_v0": 5.0, "landing_xy": [0.7, 0]},  # scalar, not 3-vector — skip
-        {"commanded_speed": 2.0, "measured_v0": [1.80, 0, 0], "landing_xy": [0.7, 0]}
+        {"commanded_speed": 1.4, "measured_v0": [1.26, 0, 0], "landing_xy": [0.7, 0], "speed_scale": 1.0},
+        {"commanded_speed": 1.5, "measured_v0": [0.0, 0.0, 0.0], "landing_xy": [0.7, 0], "speed_scale": 1.0},  # zero vector — skip
+        {"commanded_speed": 1.6, "measured_v0": [1.44, 0, 0], "landing_xy": [0.7, 0], "speed_scale": 1.0},
+        {"commanded_speed": 1.7, "measured_v0": [float('nan'), 0, 0], "landing_xy": [0.7, 0], "speed_scale": 1.0},  # non-finite — skip
+        {"commanded_speed": 1.8, "measured_v0": [1.62, 0, 0], "landing_xy": [0.7, 0], "speed_scale": 1.0},
+        {"commanded_speed": 1.9, "measured_v0": [], "landing_xy": [0.7, 0], "speed_scale": 1.0},  # empty — skip
+        {"commanded_speed": 1.95, "measured_v0": 5.0, "landing_xy": [0.7, 0], "speed_scale": 1.0},  # scalar, not 3-vector — skip
+        {"commanded_speed": 2.0, "measured_v0": [1.80, 0, 0], "landing_xy": [0.7, 0], "speed_scale": 1.0}
     ]
     result = fit_release_model(recs)
     # Should have skipped zero, NaN, empty, and scalar records; left with 4 good ones
@@ -282,13 +347,14 @@ def test_fit_release_model_direction_spread_is_maximum_pairwise_angle():
     that often cancels to near-zero; normalizing that unstable vector produced
     spurious results (on this exact input: ~180° from opposite-side residual).
     This test must enforce the correct 120° ± 1°, not just > 100° which would
-    pass the old broken code's spurious 180° output."""
+    pass the old broken code's spurious 180° output. speed_scale=1.0 added --
+    see the comment on test_fit_release_model_recovers_a_known_gain_and_offset."""
     from hardware_learning import fit_release_model
     # Three release directions 120° apart in a plane: should report ~120°
     recs = [
-        {"commanded_speed": 1.0, "measured_v0": [1.0, 0.0, 0.0], "landing_xy": [0.7, 0]},
-        {"commanded_speed": 1.1, "measured_v0": [-0.5, 0.866, 0.0], "landing_xy": [0.7, 0]},  # 120° from first
-        {"commanded_speed": 1.2, "measured_v0": [-0.5, -0.866, 0.0], "landing_xy": [0.7, 0]},  # 120° from first, 120° from second
+        {"commanded_speed": 1.0, "measured_v0": [1.0, 0.0, 0.0], "landing_xy": [0.7, 0], "speed_scale": 1.0},
+        {"commanded_speed": 1.1, "measured_v0": [-0.5, 0.866, 0.0], "landing_xy": [0.7, 0], "speed_scale": 1.0},  # 120° from first
+        {"commanded_speed": 1.2, "measured_v0": [-0.5, -0.866, 0.0], "landing_xy": [0.7, 0], "speed_scale": 1.0},  # 120° from first, 120° from second
     ]
     result = fit_release_model(recs)
     # Must be within 1° of 120°. A looser bound like > 100° would pass the old

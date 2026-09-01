@@ -231,19 +231,48 @@ def deviation_verdict(dv_learned, sigma_v=None, k=2.0):
     }
 
 
+SPEED_SCALE_TOL = 1e-6
+FULL_SPEED = 1.0
+
+
 def fit_release_model(records):
     """
-    Commanded release speed -> measured release speed, over the logged throws.
+    Commanded release speed -> measured release speed, over the logged throws
+    -- but ONLY over throws executed at FULL SPEED (speed_scale == 1.0).
 
-    This is the term worth fitting. At this speed the flight is ballistic to
+    This is the term worth fitting. At full speed the flight is ballistic to
     within ~5 mm while the release carries 2.9-3.7 cm of command quantisation
     plus ~1 cm of gripper-latency residual, so the discrepancy between what the
     policy asked for and what the ball actually left with is both large and
     directly observable in `measured_v0`.
 
+    A logged throw at speed_scale < 1.0 is a REHEARSAL, required by
+    HARDWARE_RUNBOOK.md's escalation ladder (0.15 -> 0.30 -> 0.60 -> 1.00)
+    ahead of any full-speed throw. `speed_scale` is a time-stretch on the
+    streamed joint speeds (`qd_cmd = qd * ds_dwall` in kinova_hardware.py), so
+    a 0.15 throw really does release at roughly 0.15x speed -- it is not the
+    same throw measured noisily, it is a physically slower throw. Fitting it
+    as if it were data drags the gain toward the rehearsal ratio (observed
+    failure mode: gain ~0.15 instead of ~0.9) while still reporting a
+    confident-looking residual sigma beside it -- worse than refusing, because
+    it *looks* trustworthy.
+
+    A record with NO `speed_scale` key is treated as NON-QUALIFYING, the same
+    as a sub-1.0 one -- it is deliberately NOT assumed to be a full-speed
+    throw. Defaulting a missing field to "counts as data" would be exactly
+    the kind of silent corruption this function already guards
+    `measured_v0` against.
+
     Refused throws (no measurement) are skipped, not imputed.
+
+    Returns a dict with an additional `n_excluded_rehearsal` key: throws that
+    had a valid measurement but were excluded for being below full speed (or
+    missing `speed_scale`). That count is also named in `text` whenever it is
+    nonzero -- silently dropping rows is its own hazard in this codebase.
     """
     cmd, meas, dirs = [], [], []
+    n_measured_total = 0
+    n_excluded_rehearsal = 0
     for r in records:
         v0 = r.get("measured_v0")
         if v0 is None or r.get("commanded_speed") is None:
@@ -258,12 +287,37 @@ def fit_release_model(records):
                 continue
         except (ValueError, TypeError):
             continue
+        n_measured_total += 1
+
+        scale = r.get("speed_scale")
+        try:
+            is_full_speed = (scale is not None
+                             and abs(float(scale) - FULL_SPEED) < SPEED_SCALE_TOL)
+        except (TypeError, ValueError):
+            is_full_speed = False
+        if not is_full_speed:
+            n_excluded_rehearsal += 1
+            continue
+
         cmd.append(float(r["commanded_speed"]))
         meas.append(float(np.linalg.norm(v)))
         dirs.append(v / np.linalg.norm(v))
+
     if len(cmd) < 3:
-        raise ValueError(f"need at least 3 measured throws to fit a release "
-                         f"model, have {len(cmd)}")
+        if n_measured_total >= 3:
+            # "3 measured but all rehearsals" -- a different operator action
+            # (run full-speed throws) than "fewer than 3 measured at all"
+            # (run more throws, period). Kept as two distinct messages.
+            raise ValueError(
+                f"{n_measured_total} measured throws logged, but only "
+                f"{len(cmd)} at full speed (speed_scale == 1.0) -- "
+                f"{n_excluded_rehearsal} were rehearsal-speed (or missing "
+                f"speed_scale) and excluded. Need at least 3 measured throws "
+                f"AT FULL SPEED to fit a release model -- run more "
+                f"full-speed throws, not more rehearsals.")
+        raise ValueError(
+            f"need at least 3 measured throws to fit a release model, have "
+            f"{n_measured_total} measured total ({len(cmd)} at full speed)")
     # Why 3 is the floor: a line through 2 points fits exactly, yielding
     # residual_sigma = 0 with zero degrees of freedom. This reads as a perfect
     # model even for noisy data. The operator uses residual_sigma to decide
@@ -288,9 +342,12 @@ def fit_release_model(records):
             angle = np.degrees(np.arccos(np.clip(np.dot(d[i], d[j]), -1, 1)))
             spread = max(spread, angle)
 
+    excl_text = (f"; excluded {n_excluded_rehearsal} rehearsal throws at "
+                f"speed_scale < 1.0" if n_excluded_rehearsal else "")
     return {"gain": float(gain), "offset": float(offset),
             "residual_sigma": sigma, "n": int(len(c)),
+            "n_excluded_rehearsal": int(n_excluded_rehearsal),
             "direction_error_deg": float(spread),
             "text": (f"measured |v0| = {gain:.4f} * commanded + {offset:+.4f} m/s, "
-                     f"residual sigma {sigma:.4f} m/s over {len(c)} throws; "
-                     f"release direction spread {spread:.2f} deg")}
+                     f"residual sigma {sigma:.4f} m/s over {len(c)} full-speed "
+                     f"throws{excl_text}; release direction spread {spread:.2f} deg")}

@@ -15,6 +15,146 @@ Everything runs from `mc-pilot-pybullet/` with `python3`. Bench evidence 2026-08
 | Speed cap | `--u_cap 1.60` on every command | Table's kinematic max 1.628 m/s is **not follow-through recoverable**. Policy asks 1.17–1.55, so the cap rarely binds — pass it anyway. |
 | Motion duration | **8.53 s** @ `speed_scale=1.0`, **56.9 s** @ 0.15 | Release fires at **s = 4.93 s** (58% in). The remaining ~3.6 s is *commanded* follow-through deceleration. **Do not abort after the ball leaves** — that is the arm braking itself. |
 
+### 0.1 — TCP-offset checkpoint, current preferred config (added 2026-08-27)
+
+The table above describes the checkpoint used through 2026-08-22. Since then the release solver
+was fixed to account for the real Robotiq 2F-85's TCP offset (firmware `GetToolConfiguration`:
+`tool_transform=(0,0,0.12)m` — see `CLAUDE.md`'s gripper-TCP-offset blocker), which the sim, the
+LP, and `find_throw_pose.py`'s search had all always ignored (0.39 m/s / 12 cm error at the trained
+release state, quantified 2026-08-22, fixed 2026-08-27). **A checkpoint trained under the old,
+uncorrected physics is not safe to reinterpret under the new solver without retraining** — the
+release *direction* changes (5.0° → 15° elevation is a re-optimization under corrected physics,
+not a small correction), so a stale checkpoint's speed commands would launch on a different
+trajectory shape than it was trained for.
+
+| Thing | Value | Why it matters |
+|---|---|---|
+| Checkpoint | `results_kinetic_chain_gen3_tcp/1` | Retrained under TCP-correct physics (ball welded at the real 12cm offset in sim, not the flange). Fresh-seed eval (seed 24681012, never used in training): **mean 1.90cm, max 4.20cm** — beats the old checkpoint's best-of-3 (2.84cm/5.43cm). Seed 2 also trained (2.10cm/4.58cm, worse); seed 3 was interrupted mid-run and is not usable. |
+| Pose table | `throw_pose_table_tcp.npy` | Re-searched with `--tool_offset_z 0.12 --floor_z -0.433`. Stamped with both `floor_z` and `tool_offset` — `run_hardware_throw.py`/`eval_adapted_height.py` refuse a mismatched `--tool_offset_z` against this stamp, mirroring the existing `floor_z` refusal pattern. |
+| Required flags | `--opt_pose throw_pose_table_tcp.npy --tool_offset_z 0.12 --base_height 0.433` | All three needed together — the checkpoint's `config_log.pkl` self-describes `opt_pose` and `base_height` but **not** `tool_offset_z` (not recorded by the trainer), so it must always be passed explicitly or the run is refused (fail-closed, not silently wrong). |
+| Speed cap | `--u_cap 2.00` recommended | New table's kinematic max is 2.07 m/s (all azimuths corner-solution-saturated at `qd_max`, same character as the old table's 1.628). Policy asks ~1.3–1.5 m/s in practice — cap rarely binds, pass it anyway. Trained with `--uMin 0.5 --uM 2.0`. |
+| PRECHECK swept | 9 points across the full `[0.68,0.74]×[-0.25,+0.25]` band at `speed_scale=1.0`: all PASS, peak `|qd|` up to 99% at the ±0.25 extremes (not saturated), peak `|tau|` ≤ 36% everywhere. Not yet re-verified with `--wrist_roll_offset_deg` values other than 0/90 — the release posture changed substantially (different elevation/corner-solution), so the finger-clearance angle that worked for the old 5° throw **must be re-checked visually on the arm**, not assumed. |
+| New tooling | `run_closed_loop_throws.py` (CLI, one throw per invocation: dashboard → confirm → throw → append a structured JSONL record — `throw_index`, `ball_id`, `q_release`/`qd_release`, `exec_stats`, `capture_file`, `landing_xy`). **Decoupled by default** — `landing_xy` stays `null`, filled in by a separate offline `measure_landing.py` pass matched by `throw_index`, matching that script's own "offline half of the vision pipeline" design. Pass `--measure --extrinsic <file>` to opt into polling `throws_dir` for `throw_capture.py`'s recording and filling `capture_file`/`landing_xy` immediately instead. `closed_loop_gui.py` wraps it in the same shape as `throw_gui.py` (pickup → grasp-verify → lift → throw → log, confirm checkbox resets every run, auto-incrementing `throw_index`). Neither duplicates `run_hardware_throw.py`'s planning/execution — both import and call it directly. |
+| Sim sanity video | 3-throw render (`make_trained_kinetic_chain_video.py --tool_offset_z 0.12`), errors 0.6/1.6/1.8cm, ball visibly lands in the bin — visually confirmed, not just the numbers (this project's own rule, given past corkscrew/zero-amplitude-windup regressions that only showed up on frames). |
+
+**DONE 2026-08-31 — `calib/T_B_C.npz` now exists.** Calibrated against the overhead mount with the
+board on the floor: board recovered to **1.2 cm** of the real floor plane, PnP-vs-depth agreement
+**0.8 cm**, wrist/D435i reprojection 0.20/0.15 px. See §0.2 — run `start_of_day.py`, which produces
+it. `run_closed_loop_throws.py`'s `load_extrinsic_any()` reads either the `.npz` or the `.json`, so
+`--extrinsic calib/T_B_C.npz` works directly and `--measure` is no longer blocked.
+
+## 0.2 — START HERE on a run day: `start_of_day.py` (added 2026-08-31)
+
+One command, one GO/NO-GO. Put the ChArUco board flat on the floor where the overhead D435i sees it,
+jog the arm so its **wrist camera sees the same board**, leave it there, and run:
+
+```bash
+/usr/bin/python3 start_of_day.py --ip 192.168.1.101
+#   -> env, arm (hw_readonly_check 42/42), cameras, calibration, gates, plan
+#   -> writes calib/T_B_C.npz (+ timestamped archive and an audit .json)
+#   -> last line is GO or NO-GO; it refuses to write the extrinsic if a gate fails
+```
+
+**Use `/usr/bin/python3` explicitly.** Bare `python3` on this machine resolves to a Conda base env
+(3.14, no cv2/torch/pyrealsense2) — every tool on this page will fail with `ModuleNotFoundError`
+that has nothing to do with the tool.
+
+Gates, and why reprojection error is not one of them: a planar PnP absorbs a wrong principal point,
+a wrong Euler convention, or a mis-scaled printout into the *pose* and still reports a fraction of a
+pixel — the 12 cm tool-frame bug below reprojected at 0.18 px. So the gates are facts from outside
+the model:
+
+| Gate | What it is | Measured 2026-08-31 |
+|---|---|---|
+| FLOOR | board is on the floor and we know where the floor is, so its calibrated height + tilt must agree — catches the whole arm-side chain | −1.2 cm, 0.9° tilt |
+| SCALE | the D435i's own depth measures board distance independently of intrinsics **and of the printed square size** — the only thing here that catches a "fit to page" printout | PnP 1.606 m vs depth 1.614 m (+0.8 cm) |
+| REPEAT | 5 frame pairs solved separately; the spread *is* the measurement noise | **1.8 cm, 0.56°** |
+| DRIFT | vs the stored extrinsic — a knocked mount | 0.2 cm, 0.1° |
+| THROW | `run_hardware_throw.py plan`, reading **both** the `PRECHECK:` and `release pos in safe box:` lines | PASS / True |
+
+**The REPEAT number is the honest accuracy bound on any landing measurement: ~1.8 cm**, not the
+0.15 px reprojection error and not the sub-millimetre synthetic figures in §6. It is the same order
+as the checkpoint's own 1.90 cm sim accuracy, so a single real landing cannot currently resolve a
+sim-vs-real gap smaller than that. Averaging more frames does not fix it (the noise is not zero-mean
+across a static scene); a bigger board, a closer camera, or multiple arm poses would.
+
+## 0.3 — The training-session app: `hardware_session.py` (added 2026-09-01/02)
+
+One Tk window for the whole run-day flow, instead of one CLI invocation per throw. §7's
+`run_closed_loop_throws.py` / `closed_loop_gui.py` still work and are unaffected — this is a
+different, more complete tool that wraps start-of-day, N throws, and the model update in one place,
+calling the exact same planner/executor as §1/§2/§7 (`run_hardware_throw.py`, `pickup_and_lift.py`,
+`HardwareThrowExecutor`) rather than a second implementation of any of it.
+
+```bash
+/usr/bin/python3 hardware_session.py --ip 192.168.1.101 --robot kinova_gen3_dyn \
+    --log_path results_kinetic_chain_gen3_tcp/1 --opt_pose throw_pose_table_tcp.npy \
+    --tool_offset_z 0.12 --base_height 0.433
+#   --dry_run forces args.arm=False, but ONLY for the throw cycle's plan/execute path --
+#   step_pickup() always calls the real pickup_and_lift(), which always moves the real
+#   arm and grasps for real, regardless of this flag. Read --help before trusting it.
+```
+
+**Four buttons, four separate gates.** `SessionState` (`hardware_session.py`) is the actual
+authority — read it, not this table, if the two ever disagree:
+
+| Button | Enabled when | What it does |
+|---|---|---|
+| **Run start-of-day** | Always (only greys out while its own worker is mid-run) | Runs `start_of_day.py`'s stages verbatim (§0.2) — env, arm read-only check, calibration, throw-readiness plan. GO → `CALIBRATED`, then the camera thread's own confirm brings the stage to `READY`. NO-GO → `BLOCKED`; every throw-gated button stays disabled until start-of-day is re-run clean. |
+| **Pick up & throw** | Stage is `READY` or `MODEL_UPDATED` (`can_throw()`) | Runs one `ThrowCycle` — see the per-throw sequence below. |
+| **Update model** | ≥ `--min_throws_for_update` (default **5**) *qualifying* throws logged (`can_update_model()`) | Fits the release model from this session's own logged throws. **Qualifying means full-speed only** — see the new rule below; `n_throws`/`n_measured` (the throws table, "how many landings") still count every throw, rehearsals included. |
+| **Re-optimize policy** | Only after "Update model" has actually run once this session (`can_reoptimize_policy()`) | Locked at session start no matter how many throws are logged — there is no path to this button that skips a model update. |
+
+**Per-throw sequence** (`ThrowCycle`, `hardware_session.py`):
+
+1. Place a ball at the recorded pickup pose.
+2. Click **Pick up & throw** → `step_pickup()`. Grasp is verified, not assumed: **58–59% closed on
+   a real ball** (position and velocity both stall) vs **99–100% closing on nothing**
+   (`pickup_and_lift.py`, §2's R3). A false grasp refuses right here, before any throw motion —
+   reload the ball and retry.
+3. **Plan** (`step_plan()`) → read **two separate lines**, the same trap §1/§2/§7 already warn
+   about: `PRECHECK: PASS/FAIL` (trajectory feasibility only) and `release pos in safe box:
+   True/False` (a different check — `PRECHECK: PASS` alone does not mean throw). Both must be true.
+4. **Escalation gate** (`check_scale()` / `hardware_learning.scale_allowed`) — the requested
+   `speed_scale` needs a clean logged run at the rung below it first (0.15 → 0.30 → 0.60 → 1.00).
+   Refuses outright; it does not silently clamp to a lower rung for you.
+5. **Re-tick the confirm checkbox.** It clears after every single throw, on purpose — "confirmed
+   once" is not a safety property this app offers. If you don't see it checked, it is not checked.
+6. **Throw.** 8.5 s total at `speed_scale=1.0`; release fires at **4.93 s (58% in)**. **The
+   remaining ~3.6 s is commanded braking — do not abort on it.** That is the arm decelerating
+   exactly as planned, not a fault.
+7. **Measure** — `measure_landing.py` against the dual-IR track the camera thread captured,
+   triggered off the `on_release` timestamp.
+8. **Log.** A row is written no matter what happens past this point — including a refused
+   measurement, or an exception raised anywhere in the execution block itself (`set_gripper`,
+   `home`, `rehearse_or_throw`) — as long as the ball has physically left the hand:
+   `landing_xy: None` plus a `refusal_reason`, never a silently dropped throw.
+9. Reload — place the next ball, go back to step 2.
+
+**New rule (2026-09-02): ladder throws are rehearsals, not data.** `speed_scale` is a time-stretch
+on the streamed joint speeds (`qd_cmd = qd * ds_dwall`, `kinova_hardware.py`) — a throw logged at
+0.15 really did release at roughly 0.15× speed, physically, not "the same throw measured noisily."
+**Only throws logged at `speed_scale == 1.0` count** toward "Update model"'s threshold
+(`SessionState.n_measured_full_speed`) and only they are used by
+`hardware_learning.fit_release_model` — everything else is excluded, and the exclusion is *reported*
+(`n_excluded_rehearsal`, named directly in the fit's own `text`), never silently dropped. A record
+missing `speed_scale` entirely does not default to counting, either. Fitting a rehearsal as if it
+were a full-speed throw pulls the release gain toward ~0.15 instead of ~0.9 — with a
+confident-looking residual sigma sitting right next to the wrong number.
+
+**A refused measurement means RE-THROW.** Same rule as §6: never loosen a threshold to force a
+number out of a bad recording. A refusal is itself logged (step 8 above) — it is evidence about
+the rig, not a gap you patch over in the dataset.
+
+**Why this batches instead of updating after every trial, the way the paper does.** MC-PILOT's own
+loop (`policy_learning/MC_PILCO.py`) updates the model and re-optimizes the policy after *every*
+single trial — that is the algorithm. This app deliberately does not: policy re-optimization takes
+minutes, and the operator should be able to see what the real throws actually did to the model —
+gain, offset, residual sigma, release-direction spread — before the policy moves and changes what
+the next throw even targets. **"Update model" reports and stops, by design.** It does not chain
+into "Re-optimize policy" automatically, even once both are fully wired end to end. Read the
+report; decide whether to re-optimize.
+
 ## 1. Bench sanity checks — do these before the arm is powered (~10 min)
 
 Run each; do not proceed on a failure. All four passed on 2026-08-05:
@@ -135,6 +275,21 @@ real motion bugs three separate times.
   Read paths are now exercised on the real arm (`hw_readonly_check.py`, 38/38). Two calls are
   UNSUPPORTED on this firmware — `GetControlMode` and the `*SoftLimitation` pair — neither is
   used by the throw. **No write path has ever run**: stage 2 is still the first one.
+- **R8 — `GetMeasuredCartesianPose` reports the TOOL frame, not the flange. FIXED 2026-08-31.**
+  This arm has `tool_transform = (0, 0, 0.12) m` configured for the Robotiq 2F-85, so that call
+  returns a pose 12 cm beyond `end_effector_link`. Both calibration scripts composed the URDF's
+  **flange**→camera offset onto it, putting the wrist camera 12 cm out of place and feeding the error
+  straight into `T_B_C`. Caught by putting the board on the floor and noticing the calibration placed
+  it 14.0 cm *underground*. Verified against PyBullet FK on the same URDF the planner uses: the
+  reported pose sits `[-0.0035, -0.0052, +0.1251]` m from the flange in the flange frame, versus the
+  firmware's own `0.120` — same vector. **The fix is not to subtract the tool transform** but to skip
+  that call entirely: `perception/wrist_chain.base_to_wrist_camera` goes from measured *joint angles*
+  through FK to `camera_color_frame`, which also retires the never-verified assumption that
+  `theta_x/y/z` are intrinsic-XYZ degrees. Board error after the fix: **1.2 cm**. Regression:
+  `tests/test_wrist_chain.py::test_tool_frame_pose_is_not_the_flange_pose`.
+  This is the **third** time the 2F-85's 12 cm has cost this project something (release speed, then
+  the release box, now the extrinsic). When a frame is off by ~0.12 m here, suspect it first.
+
 - **R5 — headroom is thin at full speed.** At `speed_scale=1.0` peak commanded velocity is **93%
   of `qd_max`** (torque is comfortable at 22%). Any joint that clamps means the ball lands short
   with nothing in the log — precheck fails closed on this, so a `VELOCITY CLAMPING ACTIVE` report
@@ -151,6 +306,12 @@ largest known term in the error budget, so it has to be measured per throw, not 
 
 Once ~10 real throws are logged, that is the input to the real MC-PILOT model update
 (`HARDWARE_SETUP.md` §"close the loop") — the ICRA-relevant result.
+
+**`run_closed_loop_throws.py` automates this whole row** — target, commanded speed, `speed_scale`,
+`q_release`/`qd_release`, tick timing, `ball_id`, and (with `--measure`) landing (x,y) and the
+recording filename — appended as one JSON line per throw to `closed_loop_throw_log.jsonl`. See
+§0.1. Manual recording as described above still applies if running `run_hardware_throw.py throw`
+directly instead.
 
 ## 5. Environment gotcha
 
@@ -207,3 +368,89 @@ and a re-measured `T_B_C`): on throws where the ball does not bounce far, compar
 centimetres is expected; a systematic offset in one direction implicates `T_B_C`, not the
 fitter, since both paths share the extrinsic. Record both numbers and their difference — do not
 adjust anything to make them agree.
+
+## 7. Closed-loop throw session (added 2026-08-26) — TCP-offset checkpoint + camera, per-throw structure
+
+**Context.** The gripper TCP-offset blocker (`CLAUDE.md`) is fixed at the code level: `release_solver.py`,
+`find_throw_pose.py`, and `model_pybullet.py` all accept a `tool_offset` and default to zero (every prior
+checkpoint/table/test is unaffected). Measured at the trained release state: the offset is 99.98% vertical
+(no aim/collision issue) but the wrist's rotation at release couples into a **+0.39 m/s / +26% speed**
+effect the old checkpoint never modeled (`ω × r_offset`, confirmed both analytically and by real PyBullet
+constraint physics — see `tests/test_tool_offset.py`). Decision made: retrain from scratch with the ball
+physically welded at the TCP (`--tool_offset_z 0.12`), rather than hand-correcting the old checkpoint —
+a changed release geometry needs a policy trained on it, not a runtime patch.
+
+**Sequence for this checkpoint, in order:**
+1. `find_throw_pose.py --tool_offset_z 0.12 --floor_z -0.433 --out throw_pose_table_tcp.npy` — done
+   2026-08-26 (~30 min). Table re-optimizes under the corrected physics: elevation 5.0°→15°, kinematic max
+   1.628→2.07 m/s. **This table is only valid for training a NEW checkpoint, never for planning through the
+   OLD `results_kinetic_chain_gen3` checkpoint** — different release geometry, incompatible policy mapping.
+2. `train_mc_pilot_pb_arm.py --robot kinova_gen3_dyn --opt_pose throw_pose_table_tcp.npy --tool_offset_z 0.12
+   --base_height 0.433 --flight_targets --uMin 0.30 --uM 2.00 --lm 0.30 --lM 0.90 --results_root
+   results_kinetic_chain_gen3_tcp` — the old profile-default speed bounds (0.30–0.60 m/s) don't reach this
+   table's much faster release; `--uM`/`--lm`/`--lM` had to be re-derived for the new geometry (the trainer's
+   own reachable-band check catches a bad guess before wasting compute — read its error, don't skip it).
+3. `eval_adapted_height.py --log_path results_kinetic_chain_gen3_tcp/1 --opt_pose throw_pose_table_tcp.npy
+   --tool_offset_z 0.12 --num_throws 30 --seed <fresh, unused>` — compare against the old checkpoint's
+   ~2.84 cm / 5.43 cm baseline before touching hardware. **Never skip this** — training cost is not accuracy
+   (see "Things that will bite you" in `CLAUDE.md`).
+4. Re-run the bench sanity checks (§1 above) against the new checkpoint/table before any arm motion.
+5. Only then: hardware bring-up staging (§2) against the new checkpoint, starting again at `speed_scale=0.15`
+   even though the arm itself was already bring-up-verified on 2026-08-22 — the release state changed, torque/
+   velocity margins have to be re-read for real, not assumed carried over.
+
+**Per-throw execution: `run_closed_loop_throws.py`.** One throw per invocation (matches this project's
+"never skip a stage, e-stop in hand for every run" culture — no batch-confirm-once mode). Wraps
+`run_hardware_throw.py`'s plan/precheck/throw path unchanged; adds a live console dashboard (target,
+commanded speed, `PRECHECK: PASS/FAIL` **and** `release pos in safe box: True/False` as two separate lines,
+per the R2-style trap this doc has already warned about once) and a structured append-only log
+(`closed_loop_throw_log.jsonl` by default — one JSON object per throw: index, timestamp, target, commanded
+speed, `speed_scale`, `q_release`/`qd_release`, precheck result, `ex.last_exec_stats`, `ball_id`,
+`capture_file`, `landing_xy`).
+
+```bash
+python3 run_closed_loop_throws.py --log_path results_kinetic_chain_gen3_tcp/1 \
+    --opt_pose throw_pose_table_tcp.npy --tool_offset_z 0.12 \
+    --target 0.75 0.05 --throw_index 0 --ball_id tennis-01 \
+    --arm --speed_scale 0.15 --confirm     # escalate 0.15 -> 0.30 -> 0.60 -> 1.00, same as §2
+```
+
+**Data flow — two decoupled streams, correlated offline, not live.** This mirrors `measure_landing.py`'s own
+stated design ("a changed fitter can be re-run against a real throw from weeks ago"):
+
+```
+ARM side (this script)              CAMERA side (separate, already running)
+  plan -> precheck -> confirm         throw_capture.py --out throws/ ...
+  -> throw -> exec_stats                (ring-buffer, auto- or manually-triggered,
+  -> append JSONL record                 one throw_XXX.npz per detected event)
+        |                                        |
+        `------------------.    .----------------'
+                             v  v
+              operator matches throw_index <-> throw_XXX.npz by time/order
+                             |
+              measure_landing.py --recording throws/throw_XXX.npz
+                             --extrinsic calib/T_B_C.npz    (offline, anytime after)
+                             |
+              landing (x,y) written back into that throw's JSONL record
+                             |
+              ~10 throws with landing_xy filled in = the closed-loop dataset
+              (HARDWARE_SETUP.md "close the loop" — feeds the real MC-PILOT
+              model-learning update; **that ingestion/update script does not
+              exist in this repo yet** — the dataset this pipeline produces is
+              the input it will need, not the update itself)
+```
+
+**Camera readiness, as of 2026-08-31:** `throw_capture.py` (dual-IR ring-buffer recorder) works and the
+2D-detect/stereo-triangulate stages are real-frame-validated (20 throws captured 2026-08-26,
+`throw_003.npz` visually confirmed). **`calib/T_B_C.npz` now exists** (2026-08-31, via
+`start_of_day.py` — see §0.2), so `measure_landing.py` and `landing_xy` are unblocked and
+`--extrinsic calib/T_B_C.npz` can be passed for real. What has still never run on real data is
+`perception/trajectory.py`'s `ransac_track`/`fit_ballistic`/`solve_impact` — i.e. the second half of
+`measure_landing.py`. That is now purely a matter of pointing it at one of the existing recordings;
+nothing blocks it.
+
+**A calibration produced before 2026-08-31 is wrong by ~12 cm and must not be reused.** Both
+calibration scripts built the chain off `GetMeasuredCartesianPose`, which reports the TOOL frame
+(0.12 m out, the 2F-85's `tool_transform`), and composed the URDF's *flange*→camera offset onto it —
+see §3 R8. Any `camera_extrinsics*.json` on disk from before that date carries the error. Re-run
+`start_of_day.py`.
