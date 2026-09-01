@@ -65,21 +65,42 @@ def test_a_refused_measurement_still_counts_as_a_logged_throw():
 
 
 def test_model_update_needs_enough_measured_throws():
+    # speed_scale=1.0 (not 0.15) since Defect 1 (2026-09-02): can_update_model
+    # now gates on FULL-SPEED measured throws only -- see
+    # test_model_update_ignores_rehearsal_only_throws below for the
+    # rehearsal-exclusion case this test used to (incorrectly) exercise.
     s = SessionState(min_throws_for_update=3)
     s.record_startup(go=True, failures=[])
     s.camera_ready()
     for _ in range(2):
-        s.record_throw({"speed_scale": 0.15, "landing_xy": [0.7, 0.0]})
+        s.record_throw({"speed_scale": 1.0, "landing_xy": [0.7, 0.0]})
     assert not s.can_update_model()
-    s.record_throw({"speed_scale": 0.15, "landing_xy": [0.7, 0.0]})
+    s.record_throw({"speed_scale": 1.0, "landing_xy": [0.7, 0.0]})
     assert s.can_update_model()
 
 
+def test_model_update_ignores_rehearsal_only_throws():
+    """Defect 1 (2026-09-02): a session with plenty of landed ladder throws
+    (speed_scale < 1.0) but zero full-speed throws must NOT unlock
+    "Update model" -- rehearsals are evidence about the rig, not data for
+    the release-model fit. n_throws/n_measured (the "how many landings"
+    displays) still count them; only can_update_model must stay False."""
+    s = SessionState(min_throws_for_update=3)
+    s.record_startup(go=True, failures=[])
+    s.camera_ready()
+    for scale in (0.15, 0.30, 0.60, 0.60, 0.60):
+        s.record_throw({"speed_scale": scale, "landing_xy": [0.7, 0.0]})
+    assert s.n_measured == 5
+    assert s.n_measured_full_speed == 0
+    assert not s.can_update_model()
+
+
 def test_policy_button_is_locked_until_the_model_is_updated():
+    # speed_scale=1.0 -- see the comment on test_model_update_needs_enough_measured_throws.
     s = SessionState(min_throws_for_update=1)
     s.record_startup(go=True, failures=[])
     s.camera_ready()
-    s.record_throw({"speed_scale": 0.15, "landing_xy": [0.7, 0.0]})
+    s.record_throw({"speed_scale": 1.0, "landing_xy": [0.7, 0.0]})
     assert not s.can_reoptimize_policy()
     s.record_model_update()
     assert s.can_reoptimize_policy()
@@ -273,3 +294,84 @@ def test_measurement_failure_that_is_not_a_runtimeerror_still_logs_a_record(monk
     assert landing_xy is None
     assert "bogus calibration" in measurement["refusal_reason"]
     assert isinstance(exec_stats, dict)
+
+
+# ---------------------------------------------------------------------------
+# Regression (Task 8 review, IMPORTANT 1's RESIDUAL note, closed 2026-09-02):
+# an exception raised inside the execution block itself (set_gripper, home,
+# rehearse_or_throw -- not just the measure_landing() call below it) must
+# ALSO still produce a logged record once release has occurred. Simulated
+# here by making the camera's mark_release() raise: _on_release sets its
+# "release occurred" flag BEFORE calling mark_release, so this reproduces
+# exactly "an exception raised from the execution path after the release
+# callback has fired", the case the brief asks to test.
+# ---------------------------------------------------------------------------
+class _FakeCameraThatRaisesOnRelease:
+    """mark_release raises -- simulating an execution-path failure that
+    happens strictly after release. pop_event must never be reached: the
+    exception should short-circuit step_throw_and_measure before measurement
+    is attempted at all."""
+
+    def mark_release(self, t):
+        raise RuntimeError("camera thread died handling the release timestamp")
+
+    def pop_event(self, timeout=None):
+        raise AssertionError(
+            "must not reach measurement -- the execution-path exception "
+            "should have already produced a refusal result")
+
+
+def test_exception_after_release_in_execution_block_still_logs_a_record():
+    state = SessionState()
+    camera = _FakeCameraThatRaisesOnRelease()
+    args = argparse.Namespace(duration=0.1, measure_timeout=1.0,
+                              base_height=0.433, ball_radius=0.0327)
+    cycle = ThrowCycle(state, camera, args)
+
+    plan = {"ex": _dry_run_executor(), "arm": _FakeArmForThrow(),
+           "profile": _FakeProfile(),
+           "coeffs": {"t_w": 0.0, "t_r": 0.05, "T": 0.10}}
+    extrinsic = (np.eye(3), np.zeros(3))
+
+    landing_xy, measurement, exec_stats = cycle.step_throw_and_measure(
+        plan, target=[0.7, 0.0], speed_scale=1.0, throw_index=0, extrinsic=extrinsic)
+
+    # This is the invariant the brief states directly: once the ball has
+    # physically left the hand, a record is written no matter what fails
+    # afterwards -- even when the failure is in the execution block, not
+    # the measurement step.
+    assert landing_xy is None
+    assert "camera thread died" in measurement["refusal_reason"]
+    assert isinstance(exec_stats, dict)
+
+
+def test_exception_before_release_still_propagates():
+    """The flip side, unchanged from before: nothing physical happened yet,
+    so a pre-release failure is allowed to propagate to the caller (_do_throw
+    turns it into _finish_throw_error) rather than being papered over as a
+    refused-but-executed throw. get_setpoint() is called once per tick from
+    the very start of rehearse_or_throw's loop (s=0), strictly before the
+    s >= s_fire release check, so raising there is a clean pre-release
+    failure -- release never fires and _FakeCameraThatRaisesOnRelease's
+    mark_release is never reached."""
+    class _FakeArmThatFailsBeforeRelease:
+        _q_lo = np.array([-6.1, -6.1])
+        _q_hi = np.array([6.1, 6.1])
+
+        def get_setpoint(self, coeffs, s, with_accel=True):
+            raise RuntimeError("trajectory evaluation failed before any release")
+
+    state = SessionState()
+    camera = _FakeCameraThatRaisesOnRelease()   # mark_release must never be called
+    args = argparse.Namespace(duration=0.1, measure_timeout=1.0,
+                              base_height=0.433, ball_radius=0.0327)
+    cycle = ThrowCycle(state, camera, args)
+
+    plan = {"ex": _dry_run_executor(), "arm": _FakeArmThatFailsBeforeRelease(),
+           "profile": _FakeProfile(),
+           "coeffs": {"t_w": 0.0, "t_r": 0.05, "T": 0.10}}
+    extrinsic = (np.eye(3), np.zeros(3))
+
+    with pytest.raises(RuntimeError, match="trajectory evaluation failed"):
+        cycle.step_throw_and_measure(
+            plan, target=[0.7, 0.0], speed_scale=1.0, throw_index=0, extrinsic=extrinsic)

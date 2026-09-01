@@ -60,6 +60,29 @@ class SessionState:
         return sum(1 for t in self.throws if t.get("landing_xy") is not None)
 
     @property
+    def n_measured_full_speed(self):
+        """
+        Measured throws that ALSO qualify as data for `fit_release_model`
+        (hardware_learning.py): landed AND speed_scale == 1.0. `n_measured`
+        keeps its existing meaning (any measured throw, rehearsal or not --
+        it is what the throws table and "how many landings do we have"
+        displays report, and several existing tests pin that meaning), so
+        `can_update_model` gates on this separate property instead of
+        redefining `n_measured`. A missing `speed_scale` key does not
+        qualify either -- same non-qualifying-by-default rule as
+        `fit_release_model` uses, kept consistent on purpose.
+        """
+        full_speed_tol = 1e-6
+        out = 0
+        for t in self.throws:
+            if t.get("landing_xy") is None:
+                continue
+            scale = t.get("speed_scale")
+            if scale is not None and abs(float(scale) - 1.0) < full_speed_tol:
+                out += 1
+        return out
+
+    @property
     def logged_scales(self):
         # Built ONLY from this session's own record_throw history -- see the
         # module-level note above. Never seeded from a file on disk: a prior
@@ -88,7 +111,10 @@ class SessionState:
         self.confirmed = False        # re-affirm every single time
 
     def can_update_model(self):
-        return self.n_measured >= self.min_throws_for_update
+        # Gated on full-speed measured throws only -- a session with plenty
+        # of rehearsal-only landings must not unlock this button (Defect 1:
+        # rehearsals are evidence about the rig, not data for the model).
+        return self.n_measured_full_speed >= self.min_throws_for_update
 
     def record_model_update(self):
         self.model_updated = True
@@ -171,6 +197,22 @@ class ThrowCycle:
         every handler and silently drop an already-executed throw from the
         dataset, contradicting `build_throw_record`'s own documented invariant
         that a refused throw is still logged.
+
+        Also guarantees a record-worthy return -- never a bare exception --
+        for ANY failure once the ball has physically left the hand, not just
+        a measurement failure (Task 8 review IMPORTANT 1's residual note,
+        closed here). Release is tracked two ways: `_on_release` (fired
+        inside `rehearse_or_throw`'s streaming loop, right after the gripper
+        OPEN command) sets a flag before doing anything else that could
+        itself raise, and `rehearse_or_throw`'s own `released` return value
+        is OR'd in as a second, independent confirmation on the normal-return
+        path. If `set_gripper`, `home`, `rehearse_or_throw`, or
+        `backend.close_realtime_feedback` raises AFTER that flag is set, this
+        method still returns the same (None, {"refusal_reason": ...},
+        exec_stats) shape the measurement except-clause below returns,
+        instead of letting the exception escape to `_do_throw`'s outer
+        handler and drop the throw. A failure BEFORE release (nothing
+        physical lost yet) still propagates, unchanged from before.
         """
         import time
         import numpy as np
@@ -178,18 +220,33 @@ class ThrowCycle:
 
         ex, arm, profile = plan["ex"], plan["arm"], plan["profile"]
 
+        released_occurred = False
+
         def _on_release():
+            nonlocal released_occurred
+            released_occurred = True   # set BEFORE anything that could itself raise
             self.camera.mark_release(time.time())
 
-        with ex:
-            ex.set_gripper(closed=True)
-            ex.home(arm, np.array(profile.q_neutral, float), duration=self.args.duration)
-            ex.backend.open_realtime_feedback()
-            try:
-                ex.rehearse_or_throw(plan["coeffs"], arm, track=None,
-                                     on_release=_on_release)
-            finally:
-                ex.backend.close_realtime_feedback()
+        try:
+            with ex:
+                ex.set_gripper(closed=True)
+                ex.home(arm, np.array(profile.q_neutral, float), duration=self.args.duration)
+                ex.backend.open_realtime_feedback()
+                try:
+                    released = ex.rehearse_or_throw(plan["coeffs"], arm, track=None,
+                                                    on_release=_on_release)
+                    released_occurred = released_occurred or bool(released)
+                finally:
+                    ex.backend.close_realtime_feedback()
+        except Exception as e:
+            if released_occurred:
+                # The ball is already gone -- same situation the measurement
+                # except-clause below handles, just triggered earlier in the
+                # cycle. A refusal, never a dropped throw.
+                exec_stats = dict(getattr(ex, "last_exec_stats", {}) or {})
+                return None, {"refusal_reason": str(e)}, exec_stats
+            raise   # nothing physical happened yet -- unchanged pre-release behavior
+
         exec_stats = dict(getattr(ex, "last_exec_stats", {}) or {})
 
         event = self.camera.pop_event(timeout=self.args.measure_timeout)
