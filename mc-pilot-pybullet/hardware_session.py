@@ -136,6 +136,180 @@ def run_stage_zero(args):
     return ok, [m for _, lvl, m in rep.rows if lvl == sod.FAIL], rep
 
 
+def load_mc_model_for_update(log_path, opt_pose=None, seed=1):
+    """
+    Rebuild the MC_PILOT object a checkpoint was trained with and load its
+    trained GP -- the SAME reuse-the-model pattern adapt_policy_height.py
+    already establishes for height adaptation (mc.load_model_from_log(...),
+    set_eval_mode(), then re-detach pretrain_gp so a later reinforce_model()
+    call does not try to backprop through the cached solve a second time).
+
+    Stops right there: no policy re-optimization, no target sampling, no
+    particle rollout. `throwing_system` is still constructed, because
+    MC_PILOT.__init__ requires one, but it is never rolled out here --
+    PyBulletThrowingSystem only connects to PyBullet lazily inside
+    .rollout(), which this path never calls, so this needs neither a
+    display nor a real arm to run.
+
+    `opt_pose` overrides the table path -- same escape hatch
+    adapt_policy_height.py's own --opt_pose provides for a checkpoint that
+    predates opt_pose being recorded in config_log. None uses the
+    checkpoint's own recorded table. The table's own `tool_offset` stamp
+    (not a GUI field) is used to reconstruct the throwing system, so this
+    always matches what the checkpoint actually trained against.
+
+    Returns (mc, cfg, model_optimization_opt_list) -- the last one is what
+    mc.model_learning.reinforce_model(optimization_opt_list=...) needs; it
+    is built with the same optimizer/epoch settings
+    train_mc_pilot_pb_arm.py trains with.
+    """
+    import os
+    import pickle as pkl
+
+    import numpy as np
+    import torch
+
+    import gpr_lib.Likelihood.Gaussian_likelihood as Likelihood
+    import model_learning.Model_learning as ML
+    import policy_learning.Cost_function as Cost_function
+    import policy_learning.MC_PILCO as MC_PILCO_module
+    import policy_learning.Policy as Policy
+    from robot_arm.robot_profiles import get_robot_profile
+    from simulation_class.model_pybullet import PyBulletThrowingSystem
+
+    cfg = pkl.load(open(os.path.join(log_path, "config_log.pkl"), "rb"))
+    log = pkl.load(open(os.path.join(log_path, "log.pkl"), "rb"))
+    num_trained = len(log["parameters_trial_list"])
+
+    torch.manual_seed(seed)
+    dtype, device = torch.float64, torch.device("cpu")
+
+    STATE_DIM, INPUT_DIM, BALL_DIM, TARGET_DIM = 8, 1, 6, 2
+    profile = get_robot_profile(cfg["robot_name"])
+    RELEASE_POS = np.array(cfg["release_pos"], dtype=float)
+    Ts, uM = cfg["Ts"], cfg["uM"]
+
+    table_path = opt_pose or cfg.get("opt_pose")
+    if table_path is None:
+        raise ValueError(
+            f"{log_path}'s config has no 'opt_pose' and none was supplied -- "
+            f"cannot reconstruct the throwing system this checkpoint "
+            f"trained against")
+    table = list(np.load(table_path, allow_pickle=True))
+    e0 = min(table, key=lambda e: abs(e["azimuth_deg"]))
+    tool_offset = e0.get("tool_offset", [0.0, 0.0, 0.0])
+
+    throwing_system = PyBulletThrowingSystem(
+        mass=cfg["ball_mass"], radius=cfg["ball_radius"],
+        launch_angle_deg=cfg.get("opt_launch_deg", float(e0["elev_deg"])),
+        arm_noise=None, t_w=cfg["T_W"], t_r=cfg["T_R"],
+        robot_name=profile.name, target_height=cfg.get("target_height", 0.0),
+        base_height=float(cfg.get("base_height", 0.0)),
+        opt_posture_table=table, opt_launch_deg=float(e0["elev_deg"]),
+        tool_offset=tool_offset,
+    )
+
+    init_dict_RBF = {
+        "active_dims": np.arange(0, BALL_DIM),
+        "lengthscales_init": np.ones(BALL_DIM),
+        "flg_train_lengthscales": True,
+        "lambda_init": np.ones(1), "flg_train_lambda": False,
+        "sigma_n_init": 1 * np.ones(1), "flg_train_sigma_n": True,
+        "sigma_n_num": None, "dtype": dtype, "device": device,
+    }
+    model_learning_par = {
+        "num_gp": 3, "T_sampling": Ts, "approximation_mode": "SOD",
+        "approximation_dict": {"SOD_threshold_mode": "relative",
+                               "SOD_threshold": 0.5,
+                               "flg_SOD_permutation": False},
+        "init_dict_list": [init_dict_RBF] * 3, "dtype": dtype, "device": device,
+    }
+    # Warm-start values only -- MC_PILOT.__init__ requires a control policy to
+    # construct, but on_update_model never touches it (that is a separate,
+    # later-gated button). Loading the trained weights instead of a random
+    # init just avoids constructing something nonsensical for no reason.
+    st = log["parameters_trial_list"][-1]
+    control_policy_par = {
+        "full_state_dim": STATE_DIM, "target_dim": TARGET_DIM,
+        "num_basis": st["centers"].shape[0], "u_max": uM,
+        "lengthscales_init": st["log_lengthscales"].exp().numpy()[0],
+        "centers_init": st["centers"].numpy(),
+        "weight_init": st["f_linear.weight"].numpy(),
+        "flg_drop": False, "dtype": dtype, "device": device,
+    }
+    rand_exploration_policy_par = {
+        "full_state_dim": STATE_DIM, "u_max": uM, "u_min": cfg["uMin"],
+        "n_strata": cfg["Nexp"], "dtype": dtype, "device": device,
+    }
+    cost_function_par = {
+        "position_indices": [0, 1], "target_indices": [6, 7],
+        "lengthscale": cfg["lc"], "dtype": dtype, "device": device,
+    }
+
+    mc = MC_PILCO_module.MC_PILOT(
+        # Never called: this path runs neither exploration nor reinforce()'s
+        # trial loop, the only two callers of target_sampler.
+        target_sampler=lambda: np.zeros(TARGET_DIM),
+        release_position=RELEASE_POS,
+        throwing_system=throwing_system,
+        T_sampling=Ts, state_dim=STATE_DIM, input_dim=INPUT_DIM,
+        std_meas_noise=1e-3 * np.ones(STATE_DIM),
+        f_model_learning=ML.Ballistic_Model_learning_RBF,
+        model_learning_par=model_learning_par,
+        f_rand_exploration_policy=Policy.Stratified_Throwing_Exploration,
+        rand_exploration_policy_par=rand_exploration_policy_par,
+        f_control_policy=Policy.Throwing_Policy,
+        control_policy_par=control_policy_par,
+        f_cost_function=Cost_function.Throwing_Cost,
+        cost_function_par=cost_function_par,
+        log_path=None, dtype=dtype, device=device,
+        target_height=cfg.get("target_height", 0.0),
+        Na=cfg.get("Na", 0),
+    )
+
+    mc.load_model_from_log(num_trial=num_trained - 1, folder=log_path.rstrip("/") + "/")
+    mc.model_learning.set_eval_mode()
+    with torch.no_grad():
+        for k in range(mc.model_learning.num_gp):
+            mc.model_learning.pretrain_gp(k)
+
+    model_optimization_opt_dict = {
+        "f_optimizer": "lambda p : torch.optim.Adam(p, lr = 0.01)",
+        "criterion": Likelihood.Marginal_log_likelihood,
+        "N_epoch": 1001, "N_epoch_print": 500,
+    }
+    model_optimization_opt_list = [model_optimization_opt_dict] * mc.model_learning.num_gp
+
+    return mc, cfg, model_optimization_opt_list
+
+
+def raw_ransac_points_from_capture(capture_file, R_bc, t_bc, rig=None):
+    """
+    Re-run the RAW triangulation + RANSAC stage (perception/trajectory.py) on
+    one throw's saved dual-IR recording -- the track_getter callback
+    hardware_learning.ingest_throws needs.
+
+    Returns (points_base (N,3), times (N,)): the RAW RANSAC-inlier
+    triangulated points, obtained the same way fit_ballistic's own init does
+    (`rig.triangulate` per inlier, then `R_bc @ p_c + t_bc`) -- NEVER
+    fit_ballistic's resampled (p0, v0) output. See
+    hardware_learning.ingest_throws / track_to_state_samples for why feeding
+    the fitted parabola back would be a tautology, not evidence.
+    """
+    import numpy as np
+
+    from measure_landing import build_observations, default_rig
+    from perception.ir_capture import load_recording
+    from perception.trajectory import ransac_track
+
+    rec = load_recording(capture_file)
+    obs, _max_frac = build_observations(rec)
+    rig = rig or default_rig()
+    inliers, _fit = ransac_track(obs, rig, R_bc, t_bc)
+    pts = np.array([R_bc @ rig.triangulate(*obs[i, 1:]) + t_bc for i in inliers])
+    return pts, obs[inliers, 0]
+
+
 class ThrowCycle:
     """
     One throw, as the sequence of gates HARDWARE_RUNBOOK.md Sec 2 describes.
@@ -465,6 +639,12 @@ class SessionApp:
         self.camera = None
         self.throw_index = 0
         self._busy = False
+        # Set by on_update_model once "Update model" has run: the SAME
+        # in-memory MC_PILOT object, with the real throws already appended
+        # to its GP -- not a fresh reload of the checkpoint from disk. The
+        # (later-gated) "Re-optimize policy" button needs exactly this
+        # object so the newly ingested data actually feeds the new policy.
+        self._mc = None
         self.log_q = queue.Queue()
         self.targets = propose_targets(int(args.n_targets), seed=int(args.target_seed))
 
@@ -999,15 +1179,111 @@ class SessionApp:
         messagebox.showinfo("Reload", "Place the next ball at the pickup pose, then "
                                       "re-check confirm before the next throw.")
 
-    # -- Update model / Re-optimize policy (gated here, wired in later tasks) - #
+    # -- Update model (Re-optimize policy is gated here, wired in a later task) #
     def on_update_model(self):
+        if self._busy:
+            return
         from tkinter import messagebox
-        messagebox.showinfo(
-            "Not yet wired",
-            "This button unlocks once "
-            f"{self.state.min_throws_for_update} measured throws are logged (see the gate "
-            "in SessionState.can_update_model) -- the model-update logic itself "
-            "(hardware_learning.ingest_throws) lands in a later step of this plan.")
+        if not self.state.can_update_model():
+            messagebox.showwarning(
+                "Not enough data",
+                f"Need {self.state.min_throws_for_update} measured throws logged "
+                "at FULL SPEED (speed_scale == 1.0) before the model can be "
+                "updated -- see the gate in SessionState.can_update_model. "
+                "Rehearsal-speed landings do not count (see "
+                "n_measured_full_speed).")
+            return
+
+        fields = self._read_shared_fields()      # Tk reads happen HERE, main thread only
+        throws = list(self.state.throws)         # snapshot -- the worker must not
+                                                  # depend on self.state.throws still
+                                                  # meaning the same thing if the
+                                                  # operator logs another throw
+                                                  # before this finishes
+        self._busy = True
+        self.update_btn.configure(state="disabled")
+        self._set_status("loading checkpoint and re-analyzing real throws ...", "orange")
+        self._append("\n$ update model\n")
+        threading.Thread(target=self._do_update_model, args=(fields, throws), daemon=True).start()
+
+    def _do_update_model(self, fields, throws):
+        """
+        Worker thread. `fields`/`throws` were already read/snapshotted on the
+        main thread by on_update_model -- this function, and everything it
+        calls, must never touch `self.*_var` or a widget; only
+        `self._safe_after()` may reach back into the GUI.
+
+        Loads the trained checkpoint's GP (load_mc_model_for_update, the
+        adapt_policy_height.py pattern), re-triangulates each qualifying real
+        throw's RAW RANSAC-inlier points from its stored recording, appends
+        them to the GP via hardware_learning.ingest_throws, reinforces the
+        GP on the combined data, and reports. Deliberately never touches
+        mc.control_policy or calls reinforce_policy -- policy re-optimization
+        is a separate, later-gated button (on_reoptimize_policy), so the
+        operator sees what the real throws did to the MODEL before the
+        policy moves.
+
+        A throw's recording can only be re-triangulated if it was saved to
+        disk (`record["capture_file"]` set) AND a camera extrinsic exists on
+        disk right now -- neither is guaranteed for every session (this
+        session's own live throw cycle does not currently persist a
+        capture_file; see step_throw_and_measure). Both failure modes are
+        refusals, not crashes: ingest_throws reports the affected throws as
+        skipped rather than raising, and the release-model fit (built from
+        each throw's already-computed measured_v0, not a re-triangulation)
+        is unaffected either way.
+        """
+        try:
+            from hardware_learning import ingest_throws
+            from perception import base_frame
+
+            mc, cfg, opt_list = load_mc_model_for_update(
+                fields["log_path"], opt_pose=(fields["opt_pose"] or None))
+
+            try:
+                R_bc, t_bc = base_frame.load_extrinsic()
+                extrinsic_note = ""
+            except (FileNotFoundError, ValueError) as e:
+                R_bc = t_bc = None
+                extrinsic_note = (
+                    f"\nNOTE: no camera extrinsic on disk ({e}) -- the flight "
+                    f"GP cannot re-triangulate any recording without one, so "
+                    f"every throw with a capture_file is reported as skipped "
+                    f"above; the release model (fit from each throw's "
+                    f"already-measured v0, not a re-triangulation) is "
+                    f"unaffected.")
+
+            def track_getter(record):
+                path = record.get("capture_file")
+                if not path or R_bc is None:
+                    return None
+                try:
+                    return raw_ransac_points_from_capture(path, R_bc, t_bc)
+                except (RuntimeError, ValueError, OSError) as e:
+                    return None
+
+            out = ingest_throws(mc, throws, track_getter, na=int(cfg.get("Na", 0)))
+            mc.model_learning.reinforce_model(optimization_opt_list=opt_list)
+        except Exception as e:
+            self._safe_after(lambda: self._finish_update_model_error(e),
+                             "update-model error result")
+            return
+        self._safe_after(lambda: self._finish_update_model_ok(mc, out, extrinsic_note),
+                         "update-model result")
+
+    def _finish_update_model_ok(self, mc, out, extrinsic_note):
+        self._busy = False
+        self._mc = mc   # for the (later-gated) Re-optimize policy button
+        self._append(f"\n=== model update ===\n{out['text']}{extrinsic_note}\n")
+        self.state.record_model_update()
+        self._set_status("MODEL UPDATED -- see report above", "green")
+        self._refresh_buttons()
+
+    def _finish_update_model_error(self, exc):
+        self._busy = False
+        self._append(f"\n=== model update raised: {exc!r} ===\n")
+        self._set_status(f"ERROR: {exc}", "red")
+        self._refresh_buttons()
 
     def on_reoptimize_policy(self):
         from tkinter import messagebox

@@ -351,3 +351,87 @@ def fit_release_model(records):
             "text": (f"measured |v0| = {gain:.4f} * commanded + {offset:+.4f} m/s, "
                      f"residual sigma {sigma:.4f} m/s over {len(c)} full-speed "
                      f"throws{excl_text}; release direction spread {spread:.2f} deg")}
+
+
+G_BASE_VEC = np.array([0.0, 0.0, -9.81])
+
+
+def ingest_throws(mc, records, track_getter, na=0, ts=TS_DEFAULT):
+    """
+    Append real flights to the model exactly as the simulated loop does, and
+    report what that changed.
+
+    `track_getter(record)` returns `(points_base (N,3), times (N,))` -- the RAW
+    RANSAC-inlier triangulated points for that throw. It is a callback so the
+    caller owns file loading and this stays testable.
+
+    Rotation augmentation (`na`) mirrors MC_PILOT.get_data_from_system, which
+    applies the paper's Na augmentation to every trial it collects.
+
+    Only throws executed at speed_scale == 1.0 may be ingested (amendment,
+    2026-09-02, matching the rule `fit_release_model` above already
+    implements). speed_scale is a time-stretch on the streamed joint speeds
+    (`qd_cmd = qd * ds_dwall` in kinova_hardware.py), so a rehearsal at, say,
+    0.15 releases the ball at ~0.15x the commanded speed --
+    `track_to_state_samples` writes `commanded_speed` into
+    `input_samples[0, 0]`, and for a rehearsal that number does not
+    correspond to what the ball actually did. Feeding it in would teach the
+    GP a false input->outcome mapping. A record with NO `speed_scale` key is
+    treated as NON-QUALIFYING, the same rule `fit_release_model` uses --
+    never default a missing field to "counts as data". Excluded throws are
+    counted in `n_excluded_rehearsal` and named in `text` whenever nonzero,
+    never silently dropped.
+    """
+    n_in = n_skip = n_excl = 0
+    deviations = []
+    for r in records:
+        if r.get("landing_xy") is None:
+            n_skip += 1
+            continue
+
+        scale = r.get("speed_scale")
+        try:
+            is_full_speed = (scale is not None
+                             and abs(float(scale) - FULL_SPEED) < SPEED_SCALE_TOL)
+        except (TypeError, ValueError):
+            is_full_speed = False
+        if not is_full_speed:
+            n_excl += 1
+            continue
+
+        track = track_getter(r)
+        if track is None:
+            n_skip += 1
+            continue
+        pts, times = track
+        states, inputs = track_to_state_samples(
+            pts, times, r["target"], r["commanded_speed"], ts=ts)
+        mc.model_learning.add_data(new_state_samples=states, new_input_samples=inputs)
+        for _ in range(na):
+            ang = np.random.uniform(0.0, 2.0 * np.pi)
+            c, s = np.cos(ang), np.sin(ang)
+            rot = states.copy()
+            for sl in (slice(0, 2), slice(3, 5), slice(6, 8)):
+                x, y = states[:, sl].T
+                rot[:, sl] = np.stack([c * x - s * y, s * x + c * y], axis=1)
+            mc.model_learning.add_data(new_state_samples=rot, new_input_samples=inputs)
+
+        dv = np.diff(states[:, 3:6], axis=0)
+        deviations.append(dv - np.tile(G_BASE_VEC * ts, (dv.shape[0], 1)))
+        n_in += 1
+
+    verdict = deviation_verdict(np.concatenate(deviations)) if deviations else \
+        {"text": "no throws ingested", "above_noise": False, "n_samples": 0,
+         "rms_deviation": 0.0, "rms_sigma": 0.0, "ratio": 0.0}
+    try:
+        release = fit_release_model(records)
+    except ValueError as e:
+        release = {"text": f"release model not fitted: {e}", "n": 0}
+
+    excl_text = (f", excluded {n_excl} rehearsal throws at speed_scale < 1.0"
+                if n_excl else "")
+    return {"n_ingested": n_in, "n_skipped": n_skip, "n_excluded_rehearsal": n_excl,
+            "verdict": verdict, "release_model": release,
+            "text": (f"ingested {n_in} throws, skipped {n_skip}{excl_text}\n"
+                     f"flight GP: {verdict['text']}\n"
+                     f"release:   {release['text']}")}

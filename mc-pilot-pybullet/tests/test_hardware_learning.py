@@ -362,6 +362,90 @@ def test_fit_release_model_direction_spread_is_maximum_pairwise_angle():
     assert abs(result["direction_error_deg"] - 120.0) < 1.0
 
 
+def test_ingest_throws_skips_refused_records_and_counts_what_it_used():
+    """A fake model records what add_data was called with -- no torch needed.
+
+    speed_scale=1.0 added to the clean record -- amendment (2026-09-02):
+    ingest_throws now excludes anything not at full speed, and a missing key
+    does not default to qualifying (same rule as fit_release_model). See
+    test_ingest_throws_excludes_rehearsal_speed_records for the mixed-scale
+    case this test does not cover.
+    """
+    from hardware_learning import ingest_throws
+
+    class FakeModel:
+        def __init__(self):
+            self.calls = []
+
+        def add_data(self, new_state_samples, new_input_samples):
+            self.calls.append((new_state_samples.shape, new_input_samples.shape))
+
+    class FakeMC:
+        def __init__(self):
+            self.model_learning = FakeModel()
+
+    t = np.arange(0.0, 0.50, 1 / 90.0)
+    pts = np.stack([0.3 + 1.39 * t, 0 * t, 0.02 + 0.37 * t - 4.905 * t ** 2], axis=1)
+    recs = [
+        {"commanded_speed": 1.44, "target": [0.71, 0.0], "landing_xy": [0.71, 0.0],
+         "measured_v0": [1.39, 0.0, 0.37], "speed_scale": 1.0, "_track": (pts, t)},
+        {"commanded_speed": 1.44, "target": [0.71, 0.0], "landing_xy": None,
+         "measured_v0": None, "refusal_reason": "inlier fraction 0.49"},
+    ]
+    mc = FakeMC()
+    out = ingest_throws(mc, recs, track_getter=lambda r: r.get("_track"))
+    assert out["n_ingested"] == 1 and out["n_skipped"] == 1
+    assert out["n_excluded_rehearsal"] == 0
+    assert mc.model_learning.calls[0][0][1] == 8      # (n, 8) states
+    assert mc.model_learning.calls[0][1][1] == 1      # (n, 1) inputs
+    assert "BELOW NOISE" in out["verdict"]["text"]    # a clean parabola, as expected
+
+
+def test_ingest_throws_excludes_rehearsal_speed_records():
+    """Amendment (2026-09-02): speed_scale is a time-stretch, so a rehearsal's
+    commanded_speed does not correspond to what the ball actually did -- only
+    speed_scale == 1.0 throws may teach the GP. A missing speed_scale key is
+    non-qualifying too, same rule fit_release_model already uses. A mixed set
+    of rehearsal and full-speed records must ingest only the full-speed ones,
+    and the returned text must name how many were excluded."""
+    from hardware_learning import ingest_throws
+
+    class FakeModel:
+        def __init__(self):
+            self.calls = []
+
+        def add_data(self, new_state_samples, new_input_samples):
+            self.calls.append((new_state_samples.shape, new_input_samples.shape))
+
+    class FakeMC:
+        def __init__(self):
+            self.model_learning = FakeModel()
+
+    t = np.arange(0.0, 0.50, 1 / 90.0)
+    pts = np.stack([0.3 + 1.39 * t, 0 * t, 0.02 + 0.37 * t - 4.905 * t ** 2], axis=1)
+    recs = [
+        # Full speed -- must be ingested.
+        {"commanded_speed": 1.44, "target": [0.71, 0.0], "landing_xy": [0.71, 0.0],
+         "measured_v0": [1.39, 0.0, 0.37], "speed_scale": 1.0, "_track": (pts, t)},
+        # Rehearsal (0.15) -- landed and has a track, but must be excluded.
+        {"commanded_speed": 1.44, "target": [0.71, 0.0], "landing_xy": [0.10, 0.0],
+         "measured_v0": [0.21, 0.0, 0.06], "speed_scale": 0.15, "_track": (pts, t)},
+        # Missing speed_scale key entirely -- must ALSO be excluded, not
+        # assumed full-speed.
+        {"commanded_speed": 1.44, "target": [0.71, 0.0], "landing_xy": [0.20, 0.0],
+         "measured_v0": [0.40, 0.0, 0.10], "_track": (pts, t)},
+    ]
+    mc = FakeMC()
+    out = ingest_throws(mc, recs, track_getter=lambda r: r.get("_track"))
+    assert out["n_ingested"] == 1
+    assert out["n_excluded_rehearsal"] == 2
+    assert out["n_skipped"] == 0          # these were measured, not refused --
+                                          # a distinct count from n_skipped
+    assert len(mc.model_learning.calls) == 1
+    assert "excluded 2" in out["text"]
+    assert "speed_scale < 1.0" in out["text"]
+
+
 def test_production_path_can_report_above_noise():
     """The real pipeline (track_to_state_samples → deviation_verdict at defaults)
     must be capable of returning ABOVE NOISE, not just negative verdicts. This test
