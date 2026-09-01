@@ -1,5 +1,6 @@
 """State-machine and safety-gate tests. No Tk window, arm, or camera is created."""
 import argparse
+import os
 import threading
 import time
 
@@ -8,6 +9,7 @@ import pytest
 
 from hardware_session import (SessionState, Stage, ThrowCycle, build_argparser,
                               build_cycle_args, build_stage_zero_args)
+from perception.ir_capture import load_recording
 from robot_arm.kinova_hardware import HardwareThrowExecutor, SafetyLimits
 
 
@@ -266,7 +268,7 @@ class _FakeCamera:
         return self._event
 
 
-def test_measurement_failure_that_is_not_a_runtimeerror_still_logs_a_record(monkeypatch):
+def test_measurement_failure_that_is_not_a_runtimeerror_still_logs_a_record(monkeypatch, tmp_path):
     def _raise_non_runtime_error(*a, **kw):
         raise ValueError("bogus calibration -- deliberately NOT a RuntimeError")
 
@@ -274,9 +276,11 @@ def test_measurement_failure_that_is_not_a_runtimeerror_still_logs_a_record(monk
 
     state = SessionState()
     camera = _FakeCamera({"t_release": 0.0, "rec": {
-        "t": np.zeros(1), "ir1": np.zeros((1, 1, 1)), "ir2": np.zeros((1, 1, 1))}})
+        "t": np.zeros(1), "ir1": np.zeros((1, 1, 1), np.uint8), "ir2": np.zeros((1, 1, 1), np.uint8)}})
     args = argparse.Namespace(duration=0.1, measure_timeout=1.0,
-                              base_height=0.433, ball_radius=0.0327)
+                              base_height=0.433, ball_radius=0.0327,
+                              throws_dir=str(tmp_path), camera_fps=90,
+                              exposure_us=2000, no_emitter=False)
     cycle = ThrowCycle(state, camera, args)
 
     plan = {"ex": _dry_run_executor(), "arm": _FakeArmForThrow(),
@@ -284,7 +288,7 @@ def test_measurement_failure_that_is_not_a_runtimeerror_still_logs_a_record(monk
            "coeffs": {"t_w": 0.0, "t_r": 0.05, "T": 0.10}}
     extrinsic = (np.eye(3), np.zeros(3))   # already "loaded" by the caller, per the fix
 
-    landing_xy, measurement, exec_stats = cycle.step_throw_and_measure(
+    landing_xy, measurement, exec_stats, capture_file = cycle.step_throw_and_measure(
         plan, target=[0.7, 0.0], speed_scale=0.15, throw_index=0, extrinsic=extrinsic)
 
     # The throw physically executed (rehearse_or_throw ran, on_release fired) --
@@ -294,6 +298,13 @@ def test_measurement_failure_that_is_not_a_runtimeerror_still_logs_a_record(monk
     assert landing_xy is None
     assert "bogus calibration" in measurement["refusal_reason"]
     assert isinstance(exec_stats, dict)
+    # The raw recording is saved BEFORE measure_landing runs, so a measurement
+    # failure must not erase it -- capture_file still points at a real file,
+    # which is the whole point of saving first (see step_throw_and_measure's
+    # capture-save comment): a future, improved fitter can be re-run against
+    # this exact recording even though this fit failed.
+    assert capture_file == os.path.join(str(tmp_path), "throw_000.npz")
+    assert os.path.isfile(capture_file)
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +344,7 @@ def test_exception_after_release_in_execution_block_still_logs_a_record():
            "coeffs": {"t_w": 0.0, "t_r": 0.05, "T": 0.10}}
     extrinsic = (np.eye(3), np.zeros(3))
 
-    landing_xy, measurement, exec_stats = cycle.step_throw_and_measure(
+    landing_xy, measurement, exec_stats, capture_file = cycle.step_throw_and_measure(
         plan, target=[0.7, 0.0], speed_scale=1.0, throw_index=0, extrinsic=extrinsic)
 
     # This is the invariant the brief states directly: once the ball has
@@ -343,6 +354,10 @@ def test_exception_after_release_in_execution_block_still_logs_a_record():
     assert landing_xy is None
     assert "camera thread died" in measurement["refusal_reason"]
     assert isinstance(exec_stats, dict)
+    # mark_release raised BEFORE pop_event/the capture-save block was ever
+    # reached (see _FakeCameraThatRaisesOnRelease's docstring) -- no window
+    # was ever captured, so there is nothing to have saved.
+    assert capture_file is None
 
 
 def test_exception_before_release_still_propagates():
@@ -375,3 +390,93 @@ def test_exception_before_release_still_propagates():
     with pytest.raises(RuntimeError, match="trajectory evaluation failed"):
         cycle.step_throw_and_measure(
             plan, target=[0.7, 0.0], speed_scale=1.0, throw_index=0, extrinsic=extrinsic)
+
+
+# ---------------------------------------------------------------------------
+# Regression: the raw dual-IR recording of every real throw was being thrown
+# away (_do_throw always logged capture_file=None) -- Task 9's flight-GP
+# ingestion (track_getter) degrades gracefully to "0 ingested" without one,
+# but the bigger cost is that the raw frames a session's own throws produce
+# can never be re-derived from later, contradicting HARDWARE_RUNBOOK.md's
+# "keep every recording, it is a permanent regression fixture" rule. These
+# tests cover: a successful cycle writes a real file and reports its path;
+# that file round-trips through perception.ir_capture.load_recording with the
+# same frame count/shapes (the property that makes it a usable fixture); and
+# that a save failure still produces a logged (refused) record rather than
+# losing the throw -- "saving must never cost a throw".
+# ---------------------------------------------------------------------------
+def test_successful_cycle_saves_recording_and_reports_capture_file(monkeypatch, tmp_path):
+    def _fake_measure_landing(rec, R, t, z_floor, ball_radius):
+        return {"x": 0.71, "y": 0.02, "sigma_xy_m": 0.01, "n_frames": 3,
+               "n_inliers": 3, "rms_px": 0.2,
+               "p0": [0.0, 0.0, 0.0], "v0": [1.0, 0.0, 0.0]}
+
+    monkeypatch.setattr("measure_landing.measure_landing", _fake_measure_landing)
+
+    state = SessionState()
+    ir1 = np.arange(3 * 4 * 5, dtype=np.uint8).reshape(3, 4, 5)
+    ir2 = (ir1 + 1).astype(np.uint8)
+    camera = _FakeCamera({"t_release": 1.23,
+                          "rec": {"t": np.array([0.0, 0.01, 0.02]), "ir1": ir1, "ir2": ir2}})
+    args = argparse.Namespace(duration=0.1, measure_timeout=1.0,
+                              base_height=0.433, ball_radius=0.0327,
+                              throws_dir=str(tmp_path), camera_fps=90,
+                              exposure_us=2000, no_emitter=False)
+    cycle = ThrowCycle(state, camera, args)
+
+    plan = {"ex": _dry_run_executor(), "arm": _FakeArmForThrow(),
+           "profile": _FakeProfile(),
+           "coeffs": {"t_w": 0.0, "t_r": 0.05, "T": 0.10}}
+    extrinsic = (np.eye(3), np.zeros(3))
+
+    landing_xy, measurement, exec_stats, capture_file = cycle.step_throw_and_measure(
+        plan, target=[0.7, 0.0], speed_scale=1.0, throw_index=7, extrinsic=extrinsic)
+
+    assert landing_xy == [pytest.approx(0.71), pytest.approx(0.02)]
+    assert capture_file == os.path.join(str(tmp_path), "throw_007.npz")
+    assert os.path.isfile(capture_file)
+
+    loaded = load_recording(capture_file)
+    assert loaded["ir1"].shape == ir1.shape
+    assert loaded["ir2"].shape == ir2.shape
+    assert loaded["t"].shape == (3,)
+    np.testing.assert_array_equal(loaded["ir1"], ir1)
+    np.testing.assert_array_equal(loaded["ir2"], ir2)
+    assert loaded["meta"]["n_frames"] == 3
+    assert loaded["meta"]["width"] == 5
+    assert loaded["meta"]["height"] == 4
+    assert loaded["meta"]["throw_index"] == 7
+
+
+def test_capture_save_failure_still_logs_a_refused_record(monkeypatch, tmp_path):
+    def _raise_on_save(path, rec):
+        raise OSError("disk full (simulated)")
+
+    monkeypatch.setattr("perception.ir_capture.save_recording", _raise_on_save)
+
+    state = SessionState()
+    camera = _FakeCamera({"t_release": 0.0, "rec": {
+        "t": np.zeros(1), "ir1": np.zeros((1, 1, 1), np.uint8), "ir2": np.zeros((1, 1, 1), np.uint8)}})
+    args = argparse.Namespace(duration=0.1, measure_timeout=1.0,
+                              base_height=0.433, ball_radius=0.0327,
+                              throws_dir=str(tmp_path), camera_fps=90,
+                              exposure_us=2000, no_emitter=False)
+    cycle = ThrowCycle(state, camera, args)
+
+    plan = {"ex": _dry_run_executor(), "arm": _FakeArmForThrow(),
+           "profile": _FakeProfile(),
+           "coeffs": {"t_w": 0.0, "t_r": 0.05, "T": 0.10}}
+    extrinsic = (np.eye(3), np.zeros(3))
+
+    landing_xy, measurement, exec_stats, capture_file = cycle.step_throw_and_measure(
+        plan, target=[0.7, 0.0], speed_scale=1.0, throw_index=0, extrinsic=extrinsic)
+
+    # The ball physically left the hand (on_release fired) -- a disk write
+    # failure past that point must still come back as a refused-but-logged
+    # result, never a bare exception that would drop the throw.
+    assert camera.release_calls, "on_release must have fired -- the arm did move"
+    assert landing_xy is None
+    assert capture_file is None
+    assert "capture save failed" in measurement["refusal_reason"]
+    assert "disk full" in measurement["refusal_reason"]
+    assert isinstance(exec_stats, dict)

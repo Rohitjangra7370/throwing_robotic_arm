@@ -383,14 +383,23 @@ class ThrowCycle:
         path. If `set_gripper`, `home`, `rehearse_or_throw`, or
         `backend.close_realtime_feedback` raises AFTER that flag is set, this
         method still returns the same (None, {"refusal_reason": ...},
-        exec_stats) shape the measurement except-clause below returns,
+        exec_stats, None) shape the measurement except-clause below returns,
         instead of letting the exception escape to `_do_throw`'s outer
         handler and drop the throw. A failure BEFORE release (nothing
         physical lost yet) still propagates, unchanged from before.
+
+        Returns (landing_xy, measurement, exec_stats, capture_file) -- a
+        4-tuple, extended from the original 3-tuple to carry the path of the
+        raw dual-IR recording saved to disk (or None if no window was ever
+        captured, or the save itself failed). See the capture-save block
+        below for why persistence happens BEFORE measure_landing runs.
         """
+        import os
         import time
+
         import numpy as np
         from measure_landing import measure_landing
+        from perception.ir_capture import save_recording
 
         ex, arm, profile = plan["ex"], plan["arm"], plan["profile"]
 
@@ -416,30 +425,86 @@ class ThrowCycle:
             if released_occurred:
                 # The ball is already gone -- same situation the measurement
                 # except-clause below handles, just triggered earlier in the
-                # cycle. A refusal, never a dropped throw.
+                # cycle. A refusal, never a dropped throw. No capture window
+                # was ever obtained on this path, so there is nothing to save.
                 exec_stats = dict(getattr(ex, "last_exec_stats", {}) or {})
-                return None, {"refusal_reason": str(e)}, exec_stats
+                return None, {"refusal_reason": str(e)}, exec_stats, None
             raise   # nothing physical happened yet -- unchanged pre-release behavior
 
         exec_stats = dict(getattr(ex, "last_exec_stats", {}) or {})
 
         event = self.camera.pop_event(timeout=self.args.measure_timeout)
         if event is None or "error" in event:
-            return None, {"refusal_reason": (event or {}).get("error", "no capture window")}, exec_stats
+            return (None, {"refusal_reason": (event or {}).get("error", "no capture window")},
+                    exec_stats, None)
+
+        # Persist the raw dual-IR window to disk BEFORE calling measure_landing,
+        # not after. The entire reason measure_landing is split from capture is
+        # so an improved fitter or a better camera calibration can be re-run
+        # against the SAME raw frames weeks later (HARDWARE_RUNBOOK.md: "keep
+        # every recording, it is a permanent regression fixture, not a scratch
+        # file"). Saving first means the raw data survives even if
+        # measure_landing itself crashes or refuses on this throw -- the
+        # alternative (measure first, save after) would get the operator their
+        # number a few seconds sooner but risks losing the only copy of a real
+        # throw's raw frames to exactly the kind of failure this block exists to
+        # survive. A few seconds' delay is cheap; that loss is not.
+        #
+        # `RingBuffer.window()` (session_camera.py) returns only {"t","ir1",
+        # "ir2"} -- save_recording requires a "meta" key too, so it is built
+        # here from the actual saved arrays (frame count/dimensions -- these
+        # are what make the file self-describing on load) plus the camera's
+        # REQUESTED config off `self.args` (fps/exposure/emitter -- "if
+        # reachable": a bare test Namespace may omit them, hence getattr with a
+        # default rather than a hard attribute error) and the throw index.
+        capture_file = None
+        try:
+            rec = event["rec"]
+            n_frames, height, width = rec["ir1"].shape
+            meta = {
+                "throw_index": int(throw_index),
+                "n_frames": int(n_frames),
+                "width": int(width),
+                "height": int(height),
+                "fps": int(getattr(self.args, "camera_fps", 0) or 0),
+                "exposure_us": int(getattr(self.args, "exposure_us", 0) or 0),
+                "emitter": not bool(getattr(self.args, "no_emitter", False)),
+                "t_release": float(event.get("t_release", 0.0)),
+            }
+            os.makedirs(self.args.throws_dir, exist_ok=True)
+            path = os.path.join(self.args.throws_dir, f"throw_{int(throw_index):03d}.npz")
+            save_recording(path, {**rec, "meta": meta})
+            capture_file = path
+        except Exception as e:
+            # Saving must never cost a throw. These are ~100 MB uint8 arrays --
+            # if the write fails (disk full, permissions, whatever) or is slow
+            # enough to raise, treat it exactly like a measurement refusal: a
+            # record is still logged, with a refusal_reason naming the save
+            # failure, rather than the throw silently vanishing. Measurement is
+            # deliberately NOT attempted on data that could not be persisted --
+            # this keeps the failure mode simple and matches "treat a save
+            # failure like a measurement refusal" (i.e. landing_xy=None,
+            # refusal_reason set) rather than a third, partially-successful
+            # record shape.
+            return None, {"refusal_reason": f"capture save failed: {e}"}, exec_stats, None
 
         R, t = extrinsic
         try:
             meas = measure_landing(event["rec"], R, t, z_floor=-self.args.base_height,
                                    ball_radius=self.args.ball_radius)
-            return [float(meas["x"]), float(meas["y"])], meas, exec_stats
+            return [float(meas["x"]), float(meas["y"])], meas, exec_stats, capture_file
         except Exception as e:
             # Broad on purpose, not just RuntimeError: the ball has ALREADY LEFT
             # THE HAND by this point (rehearse_or_throw already ran, above), so
             # any failure past this line -- whatever type it raises -- must still
             # yield a record with landing_xy=None and a refusal_reason, never
             # escape and drop the throw from the dataset. A refusal means
-            # re-throw. Never loosen a threshold to force a number.
-            return None, {"refusal_reason": str(e)}, exec_stats
+            # re-throw. Never loosen a threshold to force a number. The
+            # recording is already safely on disk at this point (capture_file
+            # is not None) even though the fit itself failed -- that is exactly
+            # the case persistence-before-measurement exists for: a future,
+            # improved fitter can still be re-run against this exact file.
+            return None, {"refusal_reason": str(e)}, exec_stats, capture_file
 
 
 # --------------------------------------------------------------------------- #
@@ -535,6 +600,13 @@ def build_argparser():
     g.add_argument("--measure_timeout", type=float, default=30.0)
     g.add_argument("--min_throws_for_update", type=int, default=5)
     g.add_argument("--out_log", default="hardware_session_log.jsonl")
+    g.add_argument("--throws_dir", default="throws/",
+                   help="directory the raw dual-IR recording of every throw is saved "
+                        "to (throw_<index:03d>.npz, same naming as throw_capture.py) "
+                        "BEFORE measure_landing runs -- gitignored, ~100MB/throw. This "
+                        "is the permanent regression fixture HARDWARE_RUNBOOK.md's rule "
+                        "\"keep every recording\" refers to; capture_file in the session "
+                        "log points here.")
     g.add_argument("--auto_targets", dest="auto_targets", action="store_true",
                    default=True,
                    help="auto-fill the per-throw target from hardware_learning."
@@ -1114,7 +1186,7 @@ class SessionApp:
                                  "plan refusal")
                 return
 
-            landing_xy, measurement, exec_stats = cycle.step_throw_and_measure(
+            landing_xy, measurement, exec_stats, capture_file = cycle.step_throw_and_measure(
                 plan, target, speed_scale, throw_index, extrinsic)
 
             from run_closed_loop_throws import append_log, build_throw_record
@@ -1123,7 +1195,7 @@ class SessionApp:
                 commanded_speed=plan["speed"], speed_scale=speed_scale,
                 q_release=plan["q_rel"], qd_release=plan["qd_rel"],
                 precheck_ok=plan["precheck_ok"], exec_stats=exec_stats,
-                ball_id=ball_id, capture_file=None,
+                ball_id=ball_id, capture_file=capture_file,
                 landing_xy=landing_xy, measurement=measurement,
                 release_in_box=plan["release_box_ok"])
             append_log(record, cycle_args.out_log)
@@ -1225,13 +1297,17 @@ class SessionApp:
 
         A throw's recording can only be re-triangulated if it was saved to
         disk (`record["capture_file"]` set) AND a camera extrinsic exists on
-        disk right now -- neither is guaranteed for every session (this
-        session's own live throw cycle does not currently persist a
-        capture_file; see step_throw_and_measure). Both failure modes are
-        refusals, not crashes: ingest_throws reports the affected throws as
-        skipped rather than raising, and the release-model fit (built from
-        each throw's already-computed measured_v0, not a re-triangulation)
-        is unaffected either way.
+        disk right now. As of the capture-persistence fix in
+        step_throw_and_measure, a normal live throw DOES get a real
+        capture_file (saved before measure_landing runs, in --throws_dir) --
+        the remaining gap is just the extrinsic: `capture_file` can still be
+        None for a throw whose own capture save failed (see that method's
+        "saving must never cost a throw" comment), and no camera extrinsic
+        exists on disk yet as of this writing (see CLAUDE.md). Both failure
+        modes are refusals, not crashes: ingest_throws reports the affected
+        throws as skipped rather than raising, and the release-model fit
+        (built from each throw's already-computed measured_v0, not a
+        re-triangulation) is unaffected either way.
         """
         try:
             from hardware_learning import ingest_throws
