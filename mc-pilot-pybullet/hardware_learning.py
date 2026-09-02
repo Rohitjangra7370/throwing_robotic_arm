@@ -8,6 +8,7 @@ See docs/superpowers/specs/2026-08-31-hardware-session-design.md.
 from __future__ import annotations
 
 import numpy as np
+from scipy.stats import chi2, norm
 
 SCALE_LADDER = (0.15, 0.30, 0.60, 1.00)
 TRAINED_BAND = ((0.68, 0.74), (-0.25, 0.25))
@@ -164,22 +165,51 @@ def deviation_verdict(dv_learned, sigma_v=None, k=2.0):
 
     `dv_learned` is the GP's predicted delta-v minus the pure-gravity delta-v,
     i.e. only the part that is not already assumed. Uses an ensemble test:
-    mean_dev > k * SE AND mean_dev > systematic_floor. Both must be true for
-    ABOVE NOISE. The first condition checks random-noise threshold, the second
-    checks whether the result could be aliased extrinsic rotation error.
+    mean_dev > se_multiplier * SE AND mean_dev > systematic_floor. Both must
+    be true for ABOVE NOISE. The first condition checks the random-noise
+    threshold, the second checks whether the result could be aliased extrinsic
+    rotation error.
+
+    `mean_d` (below) is the norm of a 3-component mean vector -- dv_learned
+    has one row per sample and 3 velocity-difference axes (x/y/z) -- NOT a
+    1-D scalar. Under the null hypothesis (pure isotropic noise, zero true
+    signal -- the case the project's own physics predicts is actually true
+    for this rig, see systematic_dv_floor's docstring), mean_d is distributed
+    as SE * chi(3), a chi distribution with 3 degrees of freedom whose own
+    mean is ~1.5957*SE, not 0. Comparing it directly to a bare k*SE threshold
+    (as an earlier version of this function did) therefore accepts far more
+    false "ABOVE NOISE" verdicts than the k-sigma normal-test intuition behind
+    `k` suggests: at k=2.0 that gave a ~26% false-positive rate, independent
+    of n (two independent 20000-trial Monte Carlo runs measured 25.6%/25.7%,
+    matching the theoretical chi-squared(3) prediction of 26.1% closely) --
+    a bias in the test statistic's calibration, not a variance problem, so
+    more samples never fix it.
+
+    The fix: `k` keeps meaning "as strict as a one-sided k-sigma normal
+    test" -- convert it to the one-sided normal tail probability it always
+    represented, then find the chi-squared(3) critical value for that SAME
+    tail probability and take its square root. That is the correct
+    multiplier on SE (k=2.0 -> se_multiplier ~= 3.0912, not 2.0; empirically
+    drives the false-positive rate to ~2.3%, matching the ~2.28% target).
+    `k`'s default (2.0) and the function's signature are unchanged -- only
+    its interpretation is corrected internally.
 
     Returns dict with keys: rms_deviation, rms_sigma, ratio, mean_deviation,
-    standard_error, systematic_floor, above_noise, n_samples, text. When the
-    verdict is BELOW NOISE and only the random-noise threshold is the blocker
-    (systematic floor is cleared), the text includes the sample count that would
-    be needed to resolve the measured signal. When the systematic floor is the
-    blocker, the text explains that it is a hard limit requiring better calibration.
+    standard_error, se_multiplier, systematic_floor, above_noise, n_samples,
+    text. When the verdict is BELOW NOISE and only the random-noise threshold
+    is the blocker (systematic floor is cleared), the text includes the
+    sample count that would be needed to resolve the measured signal. When
+    the systematic floor is the blocker, the text explains that it is a hard
+    limit requiring better calibration.
     """
     d = np.asarray(dv_learned, float)
     sigma_v = velocity_noise_sigma() if sigma_v is None else float(sigma_v)
     n = d.shape[0]
 
-    # Per-sample diagnostics (kept for inspection, not the verdict)
+    # Per-sample diagnostics (kept for inspection, not the verdict). This is
+    # a different quantity from the ensemble threshold below (per-sample RMS
+    # vs. the mean-vector norm), so it is deliberately left as the plain
+    # k*sigma_v scale it always used -- untouched by the ensemble-test fix.
     rms_d = float(np.sqrt(np.mean(d ** 2)))
     denom_per_sample = k * sigma_v
     ratio = rms_d / denom_per_sample if denom_per_sample > 0 else 0.0
@@ -189,32 +219,39 @@ def deviation_verdict(dv_learned, sigma_v=None, k=2.0):
     se = sigma_v / np.sqrt(n) if n > 0 else np.inf
     sys_floor = systematic_dv_floor()
 
+    # Single source of truth for the random-noise threshold -- see the
+    # docstring above. Every place that used to write `k*se` (the boolean
+    # decision AND every piece of report text) now reads `se_threshold`.
+    one_sided_alpha = 1.0 - norm.cdf(k)
+    se_multiplier = float(np.sqrt(chi2.ppf(1.0 - one_sided_alpha, df=3)))
+    se_threshold = se_multiplier * se
+
     # Both conditions required for ABOVE NOISE
-    above_se = mean_d > k * se
+    above_se = mean_d > se_threshold
     above_sys = mean_d > sys_floor
     above = above_se and above_sys
 
     condition_text = ""
     remedy_text = ""
     if above:
-        condition_text = f"Exceeds both {k:g}*SE={k*se:.4f} m/s and systematic floor {sys_floor:.4f} m/s."
+        condition_text = f"Exceeds both {se_multiplier:.4f}*SE={se_threshold:.4f} m/s and systematic floor {sys_floor:.4f} m/s."
     elif above_se and not above_sys:
         # SE cleared, but systematic floor is the blocker
-        condition_text = f"Exceeds random-noise threshold ({k:g}*SE={k*se:.4f}) but NOT systematic floor ({sys_floor:.4f} m/s)."
+        condition_text = f"Exceeds random-noise threshold ({se_multiplier:.4f}*SE={se_threshold:.4f}) but NOT systematic floor ({sys_floor:.4f} m/s)."
         remedy_text = f"The systematic floor is a hard limit from extrinsic rotation error ({sys_floor:.4f} m/s); more samples cannot resolve it — the remedy is better calibration."
     elif above_sys and not above_se:
         # Systematic floor cleared, SE is the blocker
-        condition_text = f"Exceeds systematic floor ({sys_floor:.4f} m/s) but NOT random-noise threshold ({k:g}*SE={k*se:.4f})."
+        condition_text = f"Exceeds systematic floor ({sys_floor:.4f} m/s) but NOT random-noise threshold ({se_multiplier:.4f}*SE={se_threshold:.4f})."
         if mean_d > 1e-12:
-            n_required = int(np.ceil((k * sigma_v / mean_d) ** 2))
+            n_required = int(np.ceil((se_multiplier * sigma_v / mean_d) ** 2))
             remedy_text = f"To resolve this mean deviation above the noise threshold would require ~{n_required} samples at this effect size."
     else:
         # Both conditions fail
-        condition_text = f"Below both: {k:g}*SE={k*se:.4f} m/s, systematic floor {sys_floor:.4f} m/s."
+        condition_text = f"Below both: {se_multiplier:.4f}*SE={se_threshold:.4f} m/s, systematic floor {sys_floor:.4f} m/s."
         remedy_text = "The systematic floor (extrinsic rotation error) is the binding constraint. Sampling cannot resolve this — a better calibration is required."
 
     text = (f"{'ABOVE NOISE' if above else 'BELOW NOISE'}: "
-            f"mean deviation {mean_d:.4f} m/s vs {k:g}*SE {k*se:.4f} m/s "
+            f"mean deviation {mean_d:.4f} m/s vs {se_multiplier:.4f}*SE {se_threshold:.4f} m/s "
             f"over {n} samples. {condition_text} "
             + (remedy_text if remedy_text else ""))
 
@@ -224,6 +261,7 @@ def deviation_verdict(dv_learned, sigma_v=None, k=2.0):
         "ratio": ratio,
         "mean_deviation": mean_d,
         "standard_error": float(se),
+        "se_multiplier": se_multiplier,
         "systematic_floor": sys_floor,
         "above_noise": bool(above),
         "n_samples": int(n),
