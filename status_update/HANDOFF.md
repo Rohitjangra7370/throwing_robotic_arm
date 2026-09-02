@@ -1,5 +1,110 @@
 # Session Handoff — MC-PILOT Throwing Arm
 
+_Last updated: **2026-09-02**. This session = **the hardware throw-session app**: one Tk GUI
+(`hardware_session.py` / `hardware_learning.py`) taking the rig from cold to a real MC-PILOT model
+update — start-of-day checks, camera calibration, a live gated throw cycle, and two model-update
+buttons. Built via `superpowers:subagent-driven-development`: 10 plan tasks + a final whole-branch
+review, 27 commits, test suite 174 → **274**. Extends directly from the 2026-08-31 session's
+extrinsic-calibration work (below). Arm and camera were both live for parts of this session; **no
+throw was ever executed** — every hardware-touching step here is read-only, a planner call, or a
+verified refusal path (arm went offline mid-session; came back before the session ended)._
+
+## 0. READ FIRST — REAL vs ASSIGNED vs NOT-WORKING (this session)
+
+| Claim / artifact | Status |
+|---|---|
+| `hardware_session.py` — the whole app | **REAL, 274 tests, GO/BLOCKED paths both exercised.** The BLOCKED path (arm offline → all three throw buttons disabled) was verified against a real `mainloop()`, matching `start_of_day.py` line-for-line. **The GO path — a live camera view, a real throw cycle — has never run.** That needs an operator at the arm; nothing here should be read as more than that. |
+| Data-integrity invariant: "once the ball leaves the hand, a record is always written" | **REAL, hardened in 4 separate places across the session**, the last one found by the final review one call-frame above where the first three had already fixed it (extrinsic-load timing → broad exception handling → save-failure-as-refusal → the outer `_do_throw` wrapper itself). All four are tested. |
+| Only `speed_scale==1.0` throws are training data | **REAL, found by the user asking "how does the flow actually work on the arm."** `speed_scale` is a time-stretch; a 0.15 rehearsal releases at ~0.15× commanded speed but would have been logged and fitted as if real, dragging the release-model gain toward 0.15 instead of ~0.9. Fixed in both `fit_release_model` and `ingest_throws`; both report the exclusion count. |
+| Every real throw's raw recording persisted to disk | **REAL, found because a task's own implementer reported its feature was a silent no-op rather than shipping it quietly.** The throw cycle was measuring from an in-memory buffer and discarding the dual-IR frames — a session of 10 real throws would have left 10 numbers and nothing to ever re-derive them from, contradicting this repo's own "keep every recording" rule. Fixed: saved before measuring, a save failure degrades to a logged refusal. |
+| `deviation_verdict`'s noise-verdict math (the flight-GP "did it learn anything real" instrument) | **A real statistics bug, found by the final review, independently verified 3 times (mine, the reviewer's, the re-reviewer's, across different `n`/`σ`/`k`).** Comparing a 3-axis vector norm to a scalar `k·SE` threshold gave a **~26% false "ABOVE NOISE" rate at any sample count** — the exact failure this instrument exists to prevent. Fixed with a χ²(3)-corrected threshold; empirically restores the ~2.3% target rate. |
+| `adapt_policy_height.py`'s `T_control` units | **PRE-EXISTING BUG, found while building this app, NOT fixed — needs the user's decision.** `reinforce_policy` divides `T_control` by `T_sampling` internally; the trainer passes seconds (correct), `adapt_policy_height.py:224` passes an already-divided step count (wrong) — every height-adaptation policy re-optimization it has ever run used a control horizon ~50× too long. Whether this materially changed the published height-generalization numbers is unknown; deliberately not silently changed. |
+| `--wrist_roll_offset_deg` visual re-verification, `tune_ir_exposure.py` | **STILL NOT DONE — unchanged from before this session, and still the two items standing between "code is ready" and "safe to throw a real ball."** Both are physical/procedural, not code. |
+| 4 source files + 2 data artifacts the app's own defaults depend on (`find_throw_pose.py`, `robot_arm/arm_controller.py`, `simulation_class/{model_pybullet,release_solver}.py`, `throw_pose_table_tcp.npy`, `results_kinetic_chain_gen3_tcp/`) | **Work correctly on this machine right now (verified: a real GO ran through them this session) but are UNCOMMITTED — pre-existing from the 2026-08-27 TCP-offset session, not touched by this one.** Only bites on a fresh clone or `git clean`. Left uncommitted deliberately — not this session's work to commit on the user's behalf. |
+
+## 0a. Open items (priority)
+
+1. **Run `tune_ir_exposure.py`** once, camera-only, before the first real throw of a session — `HARDWARE_RUNBOOK.md` §6's table is still blank.
+2. **Re-verify `--wrist_roll_offset_deg` visually** on the arm at `speed_scale=0.15`, empty gripper, before loading a ball — the current checkpoint's 15° release posture has never been checked against the 90° default tuned for the old 5° checkpoint.
+3. **The GO path is entirely unverified.** First real session should be exactly the procedure in `HARDWARE_RUNBOOK.md` §0.3: dry-run launch → start-of-day → empty-gripper ladder (wrist-roll check at 0.15) → ball ladder → ~10 throws at 1.0 → Update model → read the report → decide on Re-optimize policy.
+4. **Decide on `adapt_policy_height.py`'s `T_control` bug** (see table above) — worth quantifying whether it moved the height-generalization results before treating them as final, if not already done elsewhere.
+5. **Commit the 4+2 pre-existing TCP-offset files** (see table above) once convenient, separately from this session's work.
+6. This SDD execution's working ledger (every ruling, every fix round, every review) lives at `.superpowers/sdd/2026-08-31-hardware-session/progress.md` — gitignored, not part of the permanent record; this HANDOFF entry is the durable summary.
+
+## 0b. New files this session
+
+`mc-pilot-pybullet/hardware_learning.py` (target spread, escalation ladder, flight-track resampling,
+noise verdict, release-model fit, GP ingestion — all pure, all tested independent of hardware),
+`mc-pilot-pybullet/hardware_session.py` (the Tk app: `SessionState`, `ThrowCycle`, the GUI),
+`mc-pilot-pybullet/session_camera.py` (camera thread + ring buffer + release-window extraction —
+found and fixed a real frame-pool-exhaustion bug on real hardware, see below),
+`mc-pilot-pybullet/session_overlay.py` (live annotated dual-IR overlay renderer), plus
+`tests/test_hardware_learning.py`, `tests/test_hardware_session.py`, `tests/test_session_camera.py`,
+`tests/test_session_overlay.py` (100 new tests total). Modified: `perception/ir_capture.py` (added
+`stream()`, `record()` now consumes it, behaviour-preserving), `run_closed_loop_throws.py` (extended
+`build_throw_record` with measured release state + refusal reason), `robot_arm/kinova_hardware.py`
+(additive `on_release=None` callback on `rehearse_or_throw`, default no-op).
+
+## 0c. A hardware bug found and fixed mid-session, worth remembering
+
+`RingBuffer.append()` (in `session_camera.py`) initially stored the zero-copy numpy views
+`IRRecorder.stream()` yields — live references into the RealSense SDK's own frame buffer. Retaining
+~270 of them simultaneously (the ring buffer's default capacity) exhausted the SDK's frame pool and
+stalled capture at exactly 16 frames, every time, reproducibly. Passes every unit test (synthetic
+fixtures own their memory); only fails against the real camera. Found by the implementer via paired
+A/B hardware runs, fixed by copying at the retention boundary. The same defect class was then found
+one call *not* originally covered (`_latest`, the single-slot display handoff) by the next review
+round and fixed there too.
+
+---
+
+_Last updated: **2026-08-31** (supersedes the 2026-08-27 handoff, kept below the divider). This
+session = **the camera-to-base extrinsic is finally real and on
+disk**, plus the discovery that the two scripts meant to produce it had a silent 12 cm frame error.
+Arm and D435i were both live all session. No arm motion was commanded at any point — every step
+here is read-only or a planner._
+
+## 0. READ FIRST — REAL vs ASSIGNED vs NOT-WORKING (this session)
+
+| Claim / artifact | Status |
+|---|---|
+| `calib/T_B_C.npz` | **REAL, ON DISK, GATED.** First extrinsic this project has ever saved to the canonical path. Board recovered to **1.2 cm** of the true floor plane, PnP-vs-depth **0.8 cm**, reprojection 0.20 px (wrist) / 0.15 px (D435i). Produced by `start_of_day.py`, which refuses to write it if a gate fails. |
+| The 12 cm tool-frame bug | **REAL, FOUND AND FIXED.** `Base.GetMeasuredCartesianPose()` reports the **TOOL** frame (this arm: `tool_transform = (0,0,0.12)` for the 2F-85), and both calibration scripts composed the URDF's *flange*→camera offset onto it. Confirmed against PyBullet FK on the planner's own URDF: reported pose sits `[-0.0035, -0.0052, +0.1251]` m from the flange, in the flange frame. Chained, it put the board **14.0 cm below the floor it was physically lying on**. Third time the 2F-85's 12 cm has cost this project something. |
+| The duplicate-marker-id bug | **REAL, FOUND AND FIXED.** `CharucoDetector.detectBoard` returns **zero** corners if any marker id appears twice in frame — surfacing as "board not visible", not "ambiguous id". The overhead D435i saw the board *plus* a loose check-point marker duplicating a board id: 15 markers, 0 corners. After filtering: 17 corners, 0.13 px. |
+| Extrinsic **accuracy** | **MEASURED, and it is the binding constraint: ~1.8 cm / 0.56°** (REPEAT gate: 5 frame pairs solved independently, stationary rig). NOT the 0.15 px reprojection error and NOT the sub-mm synthetic figures. Same order as the checkpoint's own 1.90 cm sim accuracy, so a single real landing cannot resolve a sim-vs-real gap below ~2 cm. Needs a physical fix (bigger board / closer camera / multiple arm poses), not more frames. |
+| `perception/wrist_chain.py` + `start_of_day.py` | **REAL, run end-to-end on live hardware, GO verdict** (27 checks, 0 FAIL, 0 WARN). Suite 174 → **190 passing**. |
+| `calibrate_via_wrist_camera.py`, `scripts/calibrate_marker_tf.py` | **FIXED and re-verified live.** Both now import the shared chain; their duplicated geometry is deleted, not left dead. The board script re-run on the arm agrees with `start_of_day.py` to the millimetre. |
+| `perception/trajectory.py` (`ransac_track`/`fit_ballistic`/`solve_impact`), `measure_landing.py` full path | **RUN ON REAL DATA for the first time — and it correctly REFUSED all 20 recordings.** Best inlier fraction 0.49 (`throw_003`), gate needs 0.60. Root-caused, decisively: fitting acceleration *freely* in the camera frame (where the extrinsic cannot enter) gives **\|a\| = 0.16–2.54 m/s² over 1.4–1.7 s spans**, against 9.81 for free flight. `throw_001` fits a straight line to 0.9 cm median residual over 128 points. **The 2026-08-26 clips are a hand-carried or rolling ball, not a throw** — detection and triangulation are excellent, the motion simply is not ballistic. The fitter is not what is untested any more; it has no ballistic data to be tested on. |
+| Any `camera_extrinsics*.json` predating 2026-08-31 | **WRONG by ~12 cm. Do not reuse.** Re-run `start_of_day.py`. |
+| Anything involving a ball leaving the hand | **STILL NOT DONE.** No throw was executed this session. `--wrist_roll_offset_deg` is still unverified for the 15° release posture. |
+
+## 0a. Open items (priority)
+
+1. **Record an actual free-flight ball and run `measure_landing.py` on it.** Done this session:
+   all 20 existing recordings were run and all were correctly refused — they are not ballistic
+   (see the table above). Nothing in the pipeline blocks this any more; what is needed is a
+   recording of a ball that is genuinely in the air, which means either an arm throw or a
+   deliberate hand toss with `throw_capture.py` running. A hand toss is enough to close out the
+   fitter, and needs no arm motion.
+2. **Run `tune_ir_exposure.py`** — still never run; needs a human waving a ball through frame.
+   `HARDWARE_RUNBOOK.md` §6's table is still blank. Do this before recording throws for real.
+3. **Re-verify `--wrist_roll_offset_deg` visually on the arm** for the new 15° release posture.
+   Passing the numeric precheck is feasibility, not finger clearance.
+4. **Improve the ~1.8 cm extrinsic repeatability** if landing measurement needs to resolve better
+   than the checkpoint's own 1.90 cm. A larger printed board is the cheapest lever.
+5. Then, and only then, throws with a ball + `run_closed_loop_throws.py --measure`.
+
+## 0b. New files this session
+
+`mc-pilot-pybullet/perception/wrist_chain.py` (the one implementation of the calibration chain:
+FK → board detect with duplicate-id filtering → compose → floor/scale/drift/repeat gates),
+`mc-pilot-pybullet/start_of_day.py` (run-day GO/NO-GO), `mc-pilot-pybullet/tests/test_wrist_chain.py`
+(16 tests), `mc-pilot-pybullet/calib/` (`T_B_C.npz` + timestamped archives and audit JSONs).
+
+---
+
+# Session Handoff — MC-PILOT Throwing Arm
+
 _Last updated: **2026-08-26** (supersedes the same-day documentation-only handoff below,
 kept below the divider). This session = **first real camera frames through `perception/`**,
 plus new tooling: a one-command record+annotate CLI, a single-ArUco-marker calibration script,
