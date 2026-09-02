@@ -1,5 +1,6 @@
 """State-machine and safety-gate tests. No Tk window, arm, or camera is created."""
 import argparse
+import json
 import os
 import threading
 import time
@@ -8,7 +9,8 @@ import numpy as np
 import pytest
 
 from hardware_session import (SessionState, Stage, ThrowCycle, build_argparser,
-                              build_cycle_args, build_stage_zero_args)
+                              build_cycle_args, build_stage_zero_args,
+                              finalize_throw_record)
 from perception.ir_capture import load_recording
 from robot_arm.kinova_hardware import HardwareThrowExecutor, SafetyLimits
 
@@ -534,3 +536,163 @@ def test_reoptimize_accepts_an_existing_but_empty_directory(tmp_path):
             return [0.1], None, None, None
 
     assert reoptimize_policy(FakeMC(), str(out), {"T_control": 1}) == str(out)
+
+
+# ---------------------------------------------------------------------------
+# Regression (final whole-branch review, FIX 1): a throw that has ALREADY
+# physically executed -- step_throw_and_measure returned successfully, so
+# release has happened -- must never vanish from the dataset just because
+# build_throw_record/append_log itself fails afterwards (disk-full,
+# permission error, an unexpected bug in build_throw_record). Before this
+# fix, _do_throw called build_throw_record/append_log inline, inside the
+# SAME outer `try` that funnels any exception to `_finish_throw_error` --
+# and that handler never calls `state.record_throw`, so a failure here
+# silently dropped an already-executed throw from both the JSONL log and
+# SessionState.throws, and with it the escalation ladder / update-model
+# count.
+#
+# finalize_throw_record (module-level, Tk-free, same extraction pattern as
+# build_stage_zero_args/build_cycle_args/reoptimize_policy above) is what
+# _do_throw now calls right after step_throw_and_measure returns. These
+# tests exercise it directly -- no Tk/SessionApp needed -- following this
+# file's convention of stubbing at the ThrowCycle/step_throw_and_measure
+# return-value level rather than spinning up a real GUI.
+# ---------------------------------------------------------------------------
+def _fake_plan(speed=1.63, q_rel=(0.1, 0.2), qd_rel=(0.3, 0.4),
+              precheck_ok=True, release_box_ok=True):
+    return {"speed": speed, "q_rel": list(q_rel), "qd_rel": list(qd_rel),
+           "precheck_ok": precheck_ok, "release_box_ok": release_box_ok}
+
+
+def test_finalize_throw_record_normal_path(tmp_path):
+    """Happy path: no failure anywhere -- a real record comes back, no
+    warning, and it lands on disk exactly once."""
+    out_log = str(tmp_path / "hardware_session_log.jsonl")
+    measurement = {"x": 0.71, "y": 0.02, "sigma_xy_m": 0.01, "n_frames": 3,
+                   "n_inliers": 3, "rms_px": 0.2,
+                   "p0": [0.0, 0.0, 0.0], "v0": [1.0, 0.0, 0.0]}
+
+    record, warning = finalize_throw_record(
+        landing_xy=[0.71, 0.02], measurement=measurement, exec_stats={"ticks": 40},
+        capture_file=str(tmp_path / "throw_000.npz"),
+        throw_index=0, target=[0.7, 0.0], plan=_fake_plan(), speed_scale=1.0,
+        ball_id="ball-1", out_log=out_log)
+
+    assert warning is None
+    assert record["throw_index"] == 0
+    assert record["landing_xy"] == [0.71, 0.02]
+    assert record["refusal_reason"] is None
+
+    with open(out_log) as f:
+        lines = f.readlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["throw_index"] == 0
+
+
+def test_append_log_failure_after_a_successful_measurement_still_returns_a_record(
+        monkeypatch, tmp_path):
+    """
+    The scenario the brief asks for directly: step_throw_and_measure already
+    returned a clean, successful measurement (the ball landed and was
+    tracked) -- but append_log then raises OSError (simulating disk-full).
+    The throw must not be lost: finalize_throw_record must still return a
+    record (so the caller's state.record_throw keeps the throw counted) and
+    a non-None warning to surface in the GUI/log pane.
+    """
+    def _raise_disk_full(record, log_path):
+        raise OSError("disk full (simulated)")
+
+    monkeypatch.setattr("run_closed_loop_throws.append_log", _raise_disk_full)
+
+    state = SessionState()
+    state.record_startup(go=True, failures=[])
+    state.camera_ready()
+
+    measurement = {"x": 0.71, "y": 0.02, "sigma_xy_m": 0.01, "n_frames": 3,
+                   "n_inliers": 3, "rms_px": 0.2,
+                   "p0": [0.0, 0.0, 0.0], "v0": [1.0, 0.0, 0.0]}
+    out_log = str(tmp_path / "hardware_session_log.jsonl")
+
+    record, warning = finalize_throw_record(
+        landing_xy=[0.71, 0.02], measurement=measurement, exec_stats={"ticks": 40},
+        capture_file=str(tmp_path / "throw_000.npz"),
+        throw_index=0, target=[0.7, 0.0], plan=_fake_plan(), speed_scale=1.0,
+        ball_id="ball-1", out_log=out_log)
+
+    # This is the fix: a record always comes back, never a bare exception.
+    assert record is not None
+    assert warning is not None and "post-release logging failed" in warning
+    assert "disk full" in record["refusal_reason"]
+    assert record["throw_index"] == 0
+    # The already-measured landing survives into the degraded record too --
+    # the failure was in LOGGING, not in the throw/measurement itself.
+    assert record["landing_xy"] == [0.71, 0.02]
+    assert record["q_release"] == [0.1, 0.2]
+
+    # What _do_throw's normal success path does next -- proving the throw
+    # is not silently lost from the in-session dataset (escalation ladder /
+    # update-model count) even though nothing could be written to disk.
+    state.record_throw(record)
+    assert len(state.throws) == 1
+    assert state.throws[0] is record
+    assert state.n_measured == 1   # landing_xy survived -> still counts as measured
+
+
+def test_build_throw_record_failure_still_persists_a_degraded_record_to_disk(
+        monkeypatch, tmp_path):
+    """
+    Same invariant, but the failure lives in build_throw_record itself (an
+    unexpected bug, not a disk error) -- append_log is untouched, so the
+    degraded fallback record's own re-log attempt succeeds and DOES make it
+    to the JSONL file, not just SessionState's in-memory list.
+    """
+    def _raise_build_error(**kw):
+        raise TypeError("simulated build_throw_record bug")
+
+    monkeypatch.setattr("run_closed_loop_throws.build_throw_record", _raise_build_error)
+
+    out_log = str(tmp_path / "hardware_session_log.jsonl")
+
+    record, warning = finalize_throw_record(
+        landing_xy=[0.71, 0.02], measurement={"x": 0.71, "y": 0.02},
+        exec_stats={"ticks": 40}, capture_file=None,
+        throw_index=3, target=[0.7, 0.0], plan=_fake_plan(), speed_scale=0.30,
+        ball_id="ball-2", out_log=out_log)
+
+    assert warning is not None
+    assert "simulated build_throw_record bug" in record["refusal_reason"]
+    assert record["throw_index"] == 3
+    assert record["q_release"] == [0.1, 0.2]
+
+    assert os.path.isfile(out_log)
+    with open(out_log) as f:
+        lines = f.readlines()
+    assert len(lines) == 1
+    logged = json.loads(lines[0])
+    assert logged["throw_index"] == 3
+    assert "simulated build_throw_record bug" in logged["refusal_reason"]
+
+
+def test_finalize_throw_record_never_raises_even_when_everything_fails(monkeypatch, tmp_path):
+    """Belt-and-suspenders: both build_throw_record AND every append_log call
+    fail. finalize_throw_record must still return a usable (record, warning)
+    pair rather than letting the second failure escape uncaught -- that
+    would reopen exactly the hole this fix closes."""
+    def _raise_build_error(**kw):
+        raise TypeError("simulated build_throw_record bug")
+
+    def _raise_disk_full(record, log_path):
+        raise OSError("disk full (simulated)")
+
+    monkeypatch.setattr("run_closed_loop_throws.build_throw_record", _raise_build_error)
+    monkeypatch.setattr("run_closed_loop_throws.append_log", _raise_disk_full)
+
+    record, warning = finalize_throw_record(
+        landing_xy=None, measurement={"refusal_reason": "no track"},
+        exec_stats={}, capture_file=None,
+        throw_index=5, target=[0.7, 0.0], plan=_fake_plan(), speed_scale=0.15,
+        ball_id="ball-3", out_log=str(tmp_path / "hardware_session_log.jsonl"))
+
+    assert record is not None
+    assert record["throw_index"] == 5
+    assert warning is not None

@@ -717,6 +717,107 @@ def build_cycle_args(base_args, fields):
     return ns
 
 
+def _degraded_throw_record(exc, landing_xy, measurement, exec_stats, capture_file,
+                           throw_index, target, plan, speed_scale, ball_id):
+    """
+    Built ONLY when build_throw_record/append_log itself failed (see
+    finalize_throw_record below) -- reuses whatever survived in `plan` and
+    step_throw_and_measure's own return values, all already known-good at
+    this point (step_throw_and_measure already returned successfully). Does
+    NOT call build_throw_record again -- that is the thing that just failed,
+    and re-calling it risks the exact same exception. `_get` guards every
+    field read individually so one missing/odd key can't take the rest of
+    the record down with it -- this function must not itself raise.
+    """
+    import datetime
+
+    def _get(container, key, default=None):
+        try:
+            return container.get(key, default)
+        except Exception:
+            return default
+
+    m = measurement or {}
+    return {
+        "throw_index": int(throw_index),
+        "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+        "target": list(target),
+        "commanded_speed": _get(plan, "speed"),
+        "speed_scale": speed_scale,
+        "q_release": _get(plan, "q_rel"),
+        "qd_release": _get(plan, "qd_rel"),
+        "precheck_ok": _get(plan, "precheck_ok"),
+        "release_in_box": _get(plan, "release_box_ok"),
+        "exec_stats": exec_stats,
+        "ball_id": ball_id,
+        "capture_file": capture_file,
+        "landing_xy": landing_xy,
+        "sigma_xy_m": _get(m, "sigma_xy_m"),
+        "n_frames": _get(m, "n_frames"),
+        "n_inliers": _get(m, "n_inliers"),
+        "rms_px": _get(m, "rms_px"),
+        "measured_p0": _get(m, "p0"),
+        "measured_v0": _get(m, "v0"),
+        "refusal_reason": f"post-release logging failed: {exc}",
+    }
+
+
+def finalize_throw_record(landing_xy, measurement, exec_stats, capture_file,
+                          throw_index, target, plan, speed_scale, ball_id, out_log):
+    """
+    Called by _do_throw immediately after step_throw_and_measure returns --
+    i.e. AFTER the ball has already physically left the hand. This is the
+    same "once release has happened, a record is always produced" invariant
+    step_throw_and_measure itself enforces (see its own docstring), one call
+    frame up: build_throw_record/append_log can themselves fail (disk-full,
+    permission error, an unexpected bug in build_throw_record), and before
+    this function existed that failure propagated to _do_throw's outer
+    `except Exception` and was routed to `_finish_throw_error`, which never
+    calls `state.record_throw` -- silently dropping an already-executed
+    throw from both the JSONL file AND the in-session throw list, and with
+    it the escalation ladder / update-model count (final whole-branch
+    review, Task 8/9 follow-up).
+
+    Deliberately module-level and Tk-free, matching build_stage_zero_args /
+    build_cycle_args above -- unit-testable with no SessionApp/Tk display.
+
+    Returns (record, warning). `warning` is None on the normal path, or a
+    string the caller should surface loudly (GUI log pane) when the
+    degraded fallback below had to be used. This function never raises: the
+    degraded branch is itself wrapped so a second failure (e.g. append_log
+    failing again on the very same disk-full condition) still returns an
+    in-memory record for the caller to hand to `state.record_throw` -- the
+    last line of defense that keeps the throw count / escalation ladder
+    correct even when nothing further can be written to disk.
+    """
+    from run_closed_loop_throws import append_log, build_throw_record
+    try:
+        record = build_throw_record(
+            throw_index=throw_index, target=target,
+            commanded_speed=plan["speed"], speed_scale=speed_scale,
+            q_release=plan["q_rel"], qd_release=plan["qd_rel"],
+            precheck_ok=plan["precheck_ok"], exec_stats=exec_stats,
+            ball_id=ball_id, capture_file=capture_file,
+            landing_xy=landing_xy, measurement=measurement,
+            release_in_box=plan["release_box_ok"])
+        append_log(record, out_log)
+        return record, None
+    except Exception as e:
+        record = _degraded_throw_record(
+            e, landing_xy, measurement, exec_stats, capture_file,
+            throw_index, target, plan, speed_scale, ball_id)
+        warning = (f"post-release logging failed for throw {throw_index}: {e!r} -- "
+                  f"a degraded record was recovered instead of losing the throw; "
+                  f"verify {out_log}")
+        try:
+            append_log(record, out_log)
+        except Exception:
+            pass   # already surfaced via `warning`; the caller's state.record_throw
+                   # (in-memory) is the last line of defense, and still runs even
+                   # if disk logging is completely unavailable right now
+        return record, warning
+
+
 class SessionApp:
     """
     Thin Tk shell over SessionState / ThrowCycle -- same shape as
@@ -1219,16 +1320,16 @@ class SessionApp:
             landing_xy, measurement, exec_stats, capture_file = cycle.step_throw_and_measure(
                 plan, target, speed_scale, throw_index, extrinsic)
 
-            from run_closed_loop_throws import append_log, build_throw_record
-            record = build_throw_record(
-                throw_index=throw_index, target=target,
-                commanded_speed=plan["speed"], speed_scale=speed_scale,
-                q_release=plan["q_rel"], qd_release=plan["qd_rel"],
-                precheck_ok=plan["precheck_ok"], exec_stats=exec_stats,
-                ball_id=ball_id, capture_file=capture_file,
-                landing_xy=landing_xy, measurement=measurement,
-                release_in_box=plan["release_box_ok"])
-            append_log(record, cycle_args.out_log)
+            # From here on the ball has already left the hand -- see
+            # finalize_throw_record's docstring for why building/logging the
+            # record itself must not be allowed to drop the throw the same
+            # way step_throw_and_measure's own body no longer can.
+            record, warning = finalize_throw_record(
+                landing_xy, measurement, exec_stats, capture_file,
+                throw_index, target, plan, speed_scale, ball_id, cycle_args.out_log)
+            if warning:
+                self._safe_after(lambda w=warning: self._append(f"\n=== WARNING: {w} ===\n"),
+                                 "degraded record warning")
         except Exception as e:
             self._safe_after(lambda: self._finish_throw_error(e), "throw error result")
             return

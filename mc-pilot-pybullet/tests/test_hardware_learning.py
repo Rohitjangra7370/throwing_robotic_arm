@@ -1,6 +1,7 @@
 """Tests for the pure decision + learning logic behind the hardware session."""
 import numpy as np
 import pytest
+from scipy.stats import norm
 
 from hardware_learning import next_allowed_scale, propose_targets, scale_allowed
 
@@ -130,27 +131,91 @@ def test_verdict_is_below_noise_when_the_signal_is_smaller_than_sigma():
 
 def test_verdict_ensemble_threshold_re_pinned_to_se():
     """Boundary test re-pinned to ensemble SE, not per-sample RMS. With n=40,
-    sigma_v=0.5, k=2.0: SE = 0.0791, k*SE = 0.1581. Systematic floor is ~0.0019.
-    Mean deviation 0.15 is below k*SE; 0.17 is above. Both are way above the
-    systematic floor, so the second condition is not the limiting one here."""
+    sigma_v=0.5, k=2.0: SE = 0.0791. mean_d is the norm of a 3-component mean
+    vector, so under the null it is SE*chi(3) (mean ~1.5957*SE), not the bare
+    k*SE=0.1581 an earlier version of this function compared it to -- that
+    gave a ~26% false-positive rate at any n (see deviation_verdict's
+    docstring). The corrected threshold is se_multiplier*SE, where
+    se_multiplier = sqrt(chi2.ppf(1 - (1 - norm.cdf(k)), df=3)) ~= 3.0912 at
+    k=2.0, i.e. threshold ~= 0.2444, not 0.1581. Mean deviation 0.24 is below
+    that; 0.25 is above. Both are way above the systematic floor (~0.0019),
+    so the second condition is not the limiting one here."""
     from hardware_learning import deviation_verdict
-    just_under = deviation_verdict(np.full((40, 1), 0.15), sigma_v=0.5, k=2.0)
-    just_over = deviation_verdict(np.full((40, 1), 0.17), sigma_v=0.5, k=2.0)
+    just_under = deviation_verdict(np.full((40, 1), 0.24), sigma_v=0.5, k=2.0)
+    just_over = deviation_verdict(np.full((40, 1), 0.25), sigma_v=0.5, k=2.0)
     assert not just_under["above_noise"]
     assert just_over["above_noise"]
     assert "ABOVE NOISE" in just_over["text"]
 
 
+def test_verdict_false_positive_rate_matches_the_corrected_chi_squared_threshold():
+    """
+    THE test that actually proves the se_multiplier fix (final whole-branch
+    review, FIX 2). Every OTHER test in this file that feeds deviation_verdict
+    a "pure noise" case uses np.full(...) -- a deterministic CONSTANT array,
+    which is not a draw from the noise distribution at all, so none of them
+    could ever have caught this bug. This one generates real, independent
+    zero-mean Gaussian noise realizations (rng.normal, not np.full) and checks
+    the empirical false-positive rate directly.
+
+    Why the bug existed: mean_d = ||mean(dv_learned, axis=0)|| is the norm of
+    a 3-component mean vector. Under the null (zero true mean, isotropic
+    noise -- exactly what this test constructs), mean_d ~ SE*chi(3), whose own
+    mean is ~1.5957*SE, not 0. The old code compared mean_d to a bare k*SE
+    threshold, which is the correct test for a 1-D SCALAR statistic, not a
+    3-D vector norm -- so it accepted far too many false "ABOVE NOISE"
+    verdicts. At k=2.0 the true one-sided false-positive rate implied by k is
+    1 - norm.cdf(2.0) ~= 2.28%; the old bare-k*SE code actually delivered
+    ~26% (matching two independent 20000-trial Monte Carlo runs: 25.6% and
+    25.7%, and the theoretical chi-squared(3) prediction of 26.1%) -- and this
+    does NOT shrink with n, since it's a bias in the test statistic's
+    calibration, not a variance problem.
+
+    n=250, sigma_v=0.5 and the 20000-trial count mirror the review's own
+    verification run. Seed and trial count are both fixed so this test is
+    deterministic. The bound (< 0.08) is set well below the OLD ~26% rate
+    (so the old bug, if reintroduced, fails this test hard) but with
+    generous headroom above the correct ~2.3% target (so ordinary Monte
+    Carlo sampling noise at this trial count -- empirically ~2.3% here --
+    never makes this test flaky). A lower bound guards the opposite failure
+    mode: a threshold computed so large that above_se can never fire.
+    """
+    from hardware_learning import deviation_verdict
+
+    rng = np.random.default_rng(20260901)
+    sigma_v = 0.5
+    n = 250
+    trials = 20000
+
+    n_above = 0
+    for _ in range(trials):
+        d = rng.normal(0.0, sigma_v, size=(n, 3))   # real noise draw, zero true mean --
+                                                     # NOT np.full's constant-array shortcut
+        v = deviation_verdict(d, sigma_v=sigma_v, k=2.0)
+        if v["above_noise"]:
+            n_above += 1
+
+    false_positive_rate = n_above / trials
+    assert 0.005 < false_positive_rate < 0.08, (
+        f"false-positive rate {false_positive_rate:.4f} is outside the expected "
+        f"band -- target ~{1.0 - norm.cdf(2.0):.4f} (se_multiplier-corrected), "
+        f"old buggy behavior was ~0.26")
+
+
 def test_verdict_includes_both_conditions_and_names_failure():
-    """RE-PINNED to verify the AND gate is actually checked. Exceeding k*SE is
-    not enough if the result could be aliased extrinsic rotation. This test
-    creates a case where above_se=True but above_sys=False, so removing the
-    systematic-floor condition would flip the verdict. Previous version used
-    dv=0.002, sigma_v=0.5, n=40 which gave above_se=False, above_sys=True
-    (opposite of the docstring claim), so it passed for the wrong reason.
+    """RE-PINNED to verify the AND gate is actually checked. Exceeding the
+    random-noise (SE) threshold is not enough if the result could be aliased
+    extrinsic rotation. This test creates a case where above_se=True but
+    above_sys=False, so removing the systematic-floor condition would flip
+    the verdict. Previous version used dv=0.002, sigma_v=0.5, n=40 which gave
+    above_se=False, above_sys=True (opposite of the docstring claim), so it
+    passed for the wrong reason.
 
     Correct case: dv_learned=0.0015, sigma_v=0.001, n=250, k=2.0 yields:
-    - k*SE = 0.000126 (cleared by 0.0015)
+    - se_multiplier*SE = 3.0912*0.0000633 ~= 0.0001955 (cleared by 0.0015;
+      the OLD, wrong k*SE=0.000126 was also cleared here, so this case's
+      above_se/above_sys split is unaffected by the se_multiplier fix --
+      only the boundary tests above needed new numbers)
     - systematic_floor = 0.0019176 (NOT cleared by 0.0015)
     - Verdict: above_noise=False because the systematic floor fails."""
     from hardware_learning import deviation_verdict, systematic_dv_floor
@@ -160,7 +225,11 @@ def test_verdict_includes_both_conditions_and_names_failure():
     # Case: mean_dev clears SE threshold but NOT systematic floor
     above_se_below_sys = deviation_verdict(np.full((250, 1), 0.0015), sigma_v=0.001, k=2.0)
     assert not above_se_below_sys["above_noise"], "Systematic floor not cleared; should be below-noise"
-    assert above_se_below_sys["mean_deviation"] > 2.0 * above_se_below_sys["standard_error"], \
+    # Uses the ACTUAL corrected threshold (se_multiplier*SE), not the stale
+    # bare k*SE=2.0*SE an earlier version of this assertion checked against --
+    # see deviation_verdict's docstring for why se_multiplier != k.
+    se_threshold = above_se_below_sys["se_multiplier"] * above_se_below_sys["standard_error"]
+    assert above_se_below_sys["mean_deviation"] > se_threshold, \
         "SE threshold cleared but systematic floor is not"
     assert "systematic floor" in above_se_below_sys["text"].lower()
     assert "calibration" in above_se_below_sys["text"].lower()
@@ -458,11 +527,17 @@ def test_production_path_can_report_above_noise():
     p0 = np.array([0.3, 0.0, 0.02])
     v0 = np.array([1.39, 0.0, 0.37])
     g = np.array([0, 0, -9.81])
-    # Extra acceleration: 10.0 m/s² is obviously super-threshold. With Ts=0.02,
-    # this produces Δv = 0.2 m/s per step, ~3000× the drag signal. The noise floor
-    # from stereo is ~0.22 m/s; this is way above it. With ~24 samples, this
-    # clears both the random-noise threshold (2*SE) and systematic floor.
-    a_extra = np.array([0.0, 0.0, 10.0])
+    # Extra acceleration: 15.0 m/s² is obviously super-threshold. With Ts=0.02,
+    # this produces Δv = 0.3 m/s per step, ~4500× the drag signal. With ~24
+    # samples, SE = sigma_v/sqrt(24) ~= 0.0722, and the corrected random-noise
+    # threshold is se_multiplier*SE ~= 3.0912*0.0722 ~= 0.223 m/s (see
+    # deviation_verdict's docstring for why se_multiplier != k) -- 0.2998
+    # clears that as well as the ~0.0019 m/s systematic floor. (10.0 m/s²,
+    # used before the se_multiplier fix, only reached mean_deviation ~0.200
+    # m/s -- comfortably above the OLD, wrong 2*SE~0.144 threshold but just
+    # under the corrected one, so it no longer proves the verdict CAN return
+    # True; 15.0 keeps that margin real.)
+    a_extra = np.array([0.0, 0.0, 15.0])
     pts = p0 + np.outer(t, v0) + 0.5 * np.outer(t ** 2, (g + a_extra))
 
     s, _ = track_to_state_samples(pts, t, (0.71, 0.0), 1.44)
