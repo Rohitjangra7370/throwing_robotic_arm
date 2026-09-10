@@ -10,7 +10,8 @@ import numpy as np
 import pytest
 
 from perception.ball_track import (Candidate, detect_candidates,
-                                   frame_diagnostics, median_background)
+                                   frame_diagnostics, median_background,
+                                   reject_static_candidates)
 
 H, W = 480, 848
 
@@ -88,3 +89,46 @@ def test_candidate_is_a_plain_tuple_of_floats_for_pairing():
     assert isinstance(c.as_uv_area(), tuple)
     assert len(c.as_uv_area()) == 3
     assert all(isinstance(x, float) for x in c.as_uv_area())
+
+
+def _cand(u, v, area=100.0):
+    return Candidate(u=u, v=v, area_px=area, radius_px=7.0, circularity=0.9)
+
+
+def test_reject_static_candidates_drops_an_unmoving_blob():
+    """
+    A permanently-mounted board (found 2026-09-02, real recordings) produces a
+    candidate at ~the same (u, v) every frame. A real ball's (u, v) changes
+    every frame. The filter must tell these apart using only recurrence, with
+    no knowledge of which one is "the board".
+    """
+    n = 20
+    per_frame = []
+    for k in range(n):
+        static = _cand(423.0 + 0.3 * (k % 2), 217.0)   # board: jitters <1px, every frame
+        moving = _cand(100.0 + 15.0 * k, 200.0)          # ball: moves 15px/frame
+        per_frame.append([static, moving])
+
+    out = reject_static_candidates(per_frame)
+    for k, cands in enumerate(out):
+        assert len(cands) == 1, f"frame {k}: expected only the moving candidate to survive"
+        assert cands[0].u == pytest.approx(100.0 + 15.0 * k)
+
+
+def test_reject_static_candidates_is_a_noop_on_a_ball_only_recording():
+    """The filter must not eat a real track just because it is the only thing present."""
+    per_frame = [[_cand(100.0 + 15.0 * k, 200.0)] for k in range(20)]
+    out = reject_static_candidates(per_frame)
+    assert sum(len(c) for c in out) == 20
+
+
+def test_reject_static_candidates_ignores_a_brief_coincidence():
+    """
+    Two different moving objects passing through the same bin on different
+    frames must not be flagged -- persistence is about ONE bin recurring
+    across many frames, not about how many candidates a bin sees in total.
+    """
+    per_frame = [[_cand(100.0 + 15.0 * k, 200.0)] for k in range(20)]
+    per_frame[5].append(_cand(250.0, 300.0))   # unrelated, single-frame coincidence
+    out = reject_static_candidates(per_frame)
+    assert sum(len(c) for c in out) == 21

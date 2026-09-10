@@ -122,7 +122,8 @@ def test_rotation_built_table_aims_every_azimuth_and_is_uniform():
     real trap -- this URDF's base measures opposite world-z, verified 1e-6),
     and speed/elevation must be exactly uniform (the whole point: no
     azimuth discontinuities)."""
-    from find_throw_pose import build_table_by_rotation, _fkj, aimed_speed
+    from find_throw_pose import (build_table_by_rotation, _fkj, aimed_speed,
+                                 base_rotation_sign)
     cid = p.connect(p.DIRECT)
     p.setGravity(0, 0, -9.81)
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
@@ -134,8 +135,14 @@ def test_rotation_built_table_aims_every_azimuth_and_is_uniform():
     d0 = np.array([np.cos(elev), 0.0, np.sin(elev)])
     s0, qd0 = aimed_speed(J0, d0, QD, freeze_roll=True)
     assert qd0 is not None and s0 > 0.3          # the fast wide-grid posture
+    # The base-rotation sign is MEASURED, never assumed from the axis field --
+    # build_table_by_rotation refuses an unstamped e0 rather than guessing.
+    # Gen3 is -1 (its base measures opposite world-z); a UR is +1, and getting
+    # it backwards aims the throw the wrong way round without any error.
+    bs = base_rotation_sign(arm, q0)
+    assert bs == -1.0
     e0 = {"range": 0.239, "q": q0, "qd": qd0, "elev_deg": 15.0,
-          "speed": s0, "azimuth_deg": 0.0}
+          "speed": s0, "azimuth_deg": 0.0, "base_sign": bs}
 
     table = build_table_by_rotation(e0)
     assert len(table) == 23                       # full -33..+33 wedge, no gaps
