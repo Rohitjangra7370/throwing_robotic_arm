@@ -135,19 +135,51 @@ GRIPPER_RELEASE_LATENCY_S = 0.0679
 #
 # Measured travel achieved (STATIC, no ball, no throw inertia) for a pause
 # starting right when the command is sent: 100ms -> 83.8% closed (was 99%),
-# 150ms -> 76.0%, 200ms -> 69.0%, 300ms -> 51.5%. A real throw has centrifugal/
-# inertial assistance ejecting the ball well before "fully open" is needed, so
-# this is a conservative choice, not a tight one.
+# 150ms -> 76.0%, 200ms -> 69.0%, 300ms -> 51.5%.
+#
+# 0.20 WAS NOT CONSERVATIVE. That was the belief -- "a real throw has
+# centrifugal/inertial assistance ejecting the ball well before fully open is
+# needed" -- and it is WRONG. Measured on the arm 2026-09-09, with the gripper
+# position recorded at 1 kHz through a real throw for the first time:
+#
+#   * the fingers do not move AT ALL until the pause begins. They first moved
+#     +25 ms after t_r, i.e. 93 ms after the OPEN command, against a 67.9 ms
+#     bench onset with the stream idle. GRIPPER_RELEASE_LATENCY_S's 68 ms lead
+#     is therefore INERT: it fires the command into a window where the arm
+#     refuses to act on it.
+#   * when the stream resumes the fingers FREEZE. Measured max |velocity|
+#     after resume = 0.00, held for the remaining 3.40 s of trajectory. Empty
+#     gripper ended at 75.44% (from 99.56%); with a ball, 9.21% (from 32.89%).
+#   * open rate during the pause is 137 pct-pts/s, so 0.20 s buys 20.6
+#     pct-points and nothing more, ever.
+#   * the tennis ball is held in an ENCOMPASSING grip (fingertips wrapped past
+#     its equator) and stays caged until ~8.33%. From a 32.89% grasp that needs
+#     24.6 pct-pts = 179 ms of finger motion, against 175 ms available. The
+#     ball was freed with a FOUR MILLISECOND margin -- and the observed result
+#     was a ball that dribbled off the gripper body instead of being thrown.
+#
+# 0.35 gives 0.325 s of motion = 44 pct-points, which fully opens the hand from
+# any grasp this rig uses. NOTE what this does and does not fix: the pause
+# controls whether the cage opens AT ALL, not WHEN -- the ball still reaches its
+# escape point ~204 ms after t_r, which is a separate defect (the release state
+# the ball actually leaves with is not the one the policy planned).
 #
 # SAFETY: during the pause, JointSpeeds "hold until superseded" (see
 # HIGH_LEVEL_MAX_HZ), so the arm coasts at the exact release-instant velocity
 # -- not accelerating further, but also not running the planned follow-through
-# deceleration -- for this whole window. Checked against joint limits at the
-# real release state (q_release, qd_release, results_kinetic_chain_gen3/2):
-# worst-case margin at 300ms is 76.4 deg, so 200ms leaves an enormous safety
-# margin. Re-check this margin for any different checkpoint/pose table --
-# it is a property of THIS release configuration, not a general law.
-GRIPPER_RELEASE_PAUSE_S = 0.20
+# deceleration -- for this whole window. Re-checked 2026-09-09 against the
+# CURRENT checkpoint (results_kinetic_chain_gen3_tcp/1, wrist_roll 90 deg):
+# worst-case joint margin is 89.3 deg at 300ms and 84.5 deg at 400ms (joint 5),
+# and the TCP stays 1.49-1.66 m above the floor at radial 0.08-0.61 m against
+# the arm's 0.891 m reach. Re-check this margin for any different checkpoint or
+# pose table -- it is a property of THAT release configuration, not a general
+# law.
+GRIPPER_RELEASE_PAUSE_S = 0.35
+
+
+# Default fraction of qd_max used by home(). See that method for why this is a
+# bring-up choice rather than a physical limit, and what it costs per cycle.
+HOME_SPEED_FRAC = 0.25
 
 
 # --------------------------------------------------------------------------- #
@@ -246,6 +278,11 @@ class _DryRunBackend:
     def send_gripper(self, pos):
         self.gripper_pos = float(pos)
 
+    def send_gripper_force(self, force):
+        # Dry-run cannot model a stall against an object; treat any nonzero
+        # force as "closed", and say so rather than inventing a stall position.
+        self.gripper_pos = 1.0 if float(force) > 0 else 0.0
+
     def open_realtime_feedback(self):
         print("[DRY-RUN] would open 1 kHz UDP feedback (no network I/O)")
 
@@ -257,6 +294,11 @@ class _DryRunBackend:
         # plumbing but can never measure a latency. Any number this produces is
         # zero by construction, and the tool says so rather than reporting it.
         return self.gripper_pos * 100.0, 0.0
+
+    def read_feedback(self):
+        q, qd = self.read_joint_state()
+        gp, gv = self.read_gripper()
+        return q, qd, gp, gv
 
     def stop(self):
         self.commands.append(("stop", 0.0))
@@ -419,6 +461,26 @@ class _KortexBackend:
         qd = np.array([np.deg2rad(a.velocity) for a in fb.actuators[: self.n_dofs]])
         return q, qd
 
+    def read_feedback(self):
+        """
+        Joint state AND gripper state from a SINGLE feedback frame.
+
+        `read_joint_state()` and `read_gripper()` each call `RefreshFeedback()`,
+        so sampling both inside the 40 Hz control loop would cost two round
+        trips and, worse, return two DIFFERENT instants -- which is exactly the
+        wrong property when the question is "where was the gripper at the moment
+        the arm was in this state". One call, one timestamp.
+        """
+        cyclic = getattr(self, "_rt_cyclic", None) or self._base_cyclic
+        fb = cyclic.RefreshFeedback()
+        pos = np.array([np.deg2rad(a.position) for a in fb.actuators[: self.n_dofs]])
+        q = np.arctan2(np.sin(pos), np.cos(pos))
+        qd = np.array([np.deg2rad(a.velocity) for a in fb.actuators[: self.n_dofs]])
+        motors = fb.interconnect.gripper_feedback.motor
+        if not len(motors):
+            return q, qd, float("nan"), float("nan")
+        return q, qd, float(motors[0].position), float(motors[0].velocity)
+
     def send_joint_velocities(self, qd):
         """High-level joint speed command (deg/s). Onboard controller enforces
         its own hard limits -- a second independent safety net beneath ours."""
@@ -430,6 +492,29 @@ class _KortexBackend:
             js.value = float(np.rad2deg(w))
             js.duration = 0
         self._base.SendJointSpeedsCommand(cmd)
+
+    def send_gripper_force(self, force):
+        """
+        Close under FORCE control instead of position. `force` in [0,1].
+
+        GRIPPER_POSITION always closes to a target and lets the motor stall
+        against whatever is in the way, at full effort. Force mode caps that
+        effort. Relevant here because the ball's release is limited by how far
+        and how freely the fingers can move once the OPEN command lands, and a
+        hard-squeezed encompassing grip is the worst case for both.
+
+        UNVERIFIED ON THIS ARM as of 2026-09-09: unlike GRIPPER_POSITION, this
+        has no measured behaviour on this rig -- in particular it is not known
+        whether the fingers settle at the object or keep creeping. Callers must
+        watch `read_gripper()` and stop if the position keeps advancing.
+        """
+        from kortex_api.autogen.messages import Base_pb2
+        cmd = Base_pb2.GripperCommand()
+        cmd.mode = Base_pb2.GRIPPER_FORCE
+        finger = cmd.gripper.finger.add()
+        finger.finger_identifier = 1
+        finger.value = float(np.clip(force, 0.0, 1.0))
+        self._base.SendGripperCommand(cmd)
 
     def send_gripper(self, pos):
         """
@@ -784,14 +869,32 @@ class HardwareThrowExecutor:
                 "Refusing to plan from a pose the model cannot represent."
             )
 
-    def home(self, arm, q_neutral, duration=4.0):
-        """Slow, capped move to the neutral pose using proportional joint-speed
-        servoing. Deliberately gentle -- this is the safe way to reach start."""
+    def home(self, arm, q_neutral, duration=4.0, speed_frac=HOME_SPEED_FRAC):
+        """
+        Capped move to a target pose using proportional joint-speed servoing.
+
+        `speed_frac` scales qd_max. The 0.25 default is a bring-up choice, not a
+        physical limit: homing is a rest-to-rest positioning move with the whole
+        torque budget spare (the throw itself peaks at 13.4 of 39 Nm), and its
+        only real hazard is how fast the arm crosses the workspace. It is also
+        the single largest block of time in a throw cycle -- MEASURED
+        2026-09-09, pickup pose -> q_neutral is 3.13 rad on joint 2 and takes
+        11.2 s at 0.25, against 8.5 s for the entire throw trajectory.
+
+            0.25 -> 11.2 s      0.50 -> 5.6 s
+            0.40 ->  7.0 s      0.75 -> 3.7 s
+
+        Raise it deliberately, with the workspace clear -- and remember a ball
+        may be in the hand, so the cap also bounds how hard the grasp is
+        disturbed on the way to the start pose.
+        """
         q_neutral = np.asarray(q_neutral, dtype=float)
         q_lo, q_hi = np.asarray(arm._q_lo, float), np.asarray(arm._q_hi, float)
         dt = 1.0 / self.limits.control_hz
-        # cap homing speed at a small fraction of qd_max regardless of speed_scale
-        home_cap = 0.25 * self.limits.qd_max
+        frac = float(speed_frac)
+        if not 0.0 < frac <= 1.0:
+            raise ValueError(f"home speed_frac must be in (0, 1], got {frac}")
+        home_cap = frac * self.limits.qd_max
 
         # Size the window against the ACTUAL distance to travel before starting.
         # Measured on the lab arm: neutral was 3.426 rad away on joint 3, which
@@ -809,7 +912,8 @@ class HardwareThrowExecutor:
             duration = t_needed
 
         t0 = time.time()
-        print(f"[home] moving to neutral over ~{duration:.1f}s (capped, gentle)")
+        print(f"[home] moving to neutral over ~{duration:.1f}s "
+              f"(capped at {frac:.2f}*qd_max)")
         while time.time() - t0 < duration:
             q, _ = self.backend.read_joint_state() if not self.dry_run else (q_neutral * 0, None)
             self._assert_readback_sane(q, q_lo, q_hi)
@@ -1039,9 +1143,29 @@ class HardwareThrowExecutor:
                 # into a number.
                 if track is not None and (tick % track_every) == 0:
                     try:
-                        q_meas, _ = self.backend.read_joint_state()
+                        # BOTH halves of the feedback frame. read_joint_state()
+                        # has always returned (q, qd) off the same 1 kHz UDP
+                        # packet and the velocity used to be discarded here --
+                        # so "does the arm reach the commanded release speed",
+                        # the load-bearing sim-to-real claim, was unanswerable
+                        # from any log this project has ever written. Position
+                        # drift is NOT a proxy for it: the throw is streamed
+                        # open-loop in VELOCITY, so a velocity shortfall is the
+                        # error that acts directly on the ball.
+                        # Gripper position comes from the SAME feedback frame.
+                        # It had never been recorded during a throw, and it is
+                        # the instrument that shows whether the fingers actually
+                        # finish opening -- SendGripperCommand is ignored while
+                        # joint speeds are streaming (see
+                        # GRIPPER_RELEASE_PAUSE_S), so the fingers can freeze
+                        # part-open the instant the stream resumes and nothing
+                        # downstream would have known.
+                        q_meas, qd_meas, gp, gv = self.backend.read_feedback()
                         track.append((s, np.asarray(q, float).copy(),
-                                      np.asarray(q_meas, float).copy()))
+                                      np.asarray(q_meas, float).copy(),
+                                      np.asarray(qd_cmd, float).copy(),
+                                      np.asarray(qd_meas, float).copy(),
+                                      wall, gp, gv))
                     except Exception:
                         pass
                 if (not released) and s >= s_fire:
@@ -1092,6 +1216,27 @@ class HardwareThrowExecutor:
                 "drift_final_rad": float(np.max(np.abs(err[-1]))),
                 "drift_samples": len(track),
             })
+            # Joint-velocity tracking at release. Converting this to a TCP speed
+            # needs a Jacobian and a tool offset, which belong to the caller
+            # (robot_arm/tcp_velocity.py) -- this class must not import PyBullet
+            # into the hardware path. What belongs HERE is the raw, arm-side
+            # number, so a throw record is self-describing even with no model.
+            if len(track[0]) >= 6:
+                qd_pl = np.array([t[3][:self.n_dofs] for t in track])
+                qd_me = np.array([t[4][:self.n_dofs] for t in track])
+                qd_err = qd_me - qd_pl
+                self.last_exec_stats.update({
+                    "qd_err_at_release_rad_s": float(np.max(np.abs(qd_err[i_rel]))),
+                    "qd_err_max_rad_s": float(np.max(np.abs(qd_err))),
+                    "qd_max_frac_at_release": float(
+                        np.max(np.abs(qd_me[i_rel])) / np.max(self.limits.qd_max)),
+                    "qd_planned_at_release": qd_pl[i_rel].tolist(),
+                    "qd_measured_at_release": qd_me[i_rel].tolist(),
+                })
+                if verbose:
+                    print(f"[exec] RELEASE JOINT VELOCITY: max |qd_meas - qd_cmd| "
+                          f"= {np.max(np.abs(qd_err[i_rel])):.4f} rad/s "
+                          f"(worst over whole path {np.max(np.abs(qd_err)):.4f})")
             if verbose:
                 print(f"[exec] OPEN-LOOP DRIFT (planned vs actual): "
                       f"max {np.max(np.abs(err)):.4f} rad, "
