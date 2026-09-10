@@ -118,6 +118,27 @@ def build_parser():
         help="landing-plane height in metres (elevated basket); 0.0 = ground",
     )
     parser.add_argument(
+        "--base_height",
+        type=float,
+        default=0.0,
+        help=("height of the arm's base plate above the floor in metres. The "
+              "floor stays the collision plane at world z=0 and the ARM is "
+              "raised; never express a plate as a negative --target_height "
+              "(the landing crossing can then never fire). Must match the "
+              "floor the --opt_pose table was searched against: floor_z = "
+              "-base_height."),
+    )
+    parser.add_argument(
+        "--tool_offset_z",
+        type=float,
+        default=0.0,
+        help=("TCP offset along ee_link's own z-axis (m), e.g. 0.12 for a "
+              "modeled Robotiq 2F-85. 0.0 (default) welds the ball at the "
+              "bare flange, matching every checkpoint trained before this "
+              "flag existed. Must match the --opt_pose table's own "
+              "tool_offset stamp (find_throw_pose.py --tool_offset_z)."),
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="cpu",
@@ -245,6 +266,50 @@ def main():
             opt_launch_deg = float(_pose["elev_deg"])
         # a long, gentle windup keeps joint-velocity overshoot in check for the aimed throw
         T_W, T_R = 0.5, 1.6
+        # A pose table is optimal for exactly one landing plane: the search
+        # maximises landing distance, and dropping the floor changes both the
+        # winning release elevation and the achievable range. Tables written
+        # after 2026-08-12 stamp the floor they were searched against; refuse a
+        # mismatch rather than train a policy against the wrong geometry.
+        _entry0 = opt_posture_table[0] if opt_posture_table is not None else _pose
+        _table_floor = _entry0.get("floor_z", None)
+        _want_floor = -float(args.base_height)
+        if _table_floor is None:
+            if abs(_want_floor) > 1e-9:
+                raise ValueError(
+                    f"{args.opt_pose} carries no floor_z stamp, so it predates "
+                    "2026-08-12 and was searched against a floor level with the "
+                    f"base (floor_z=0). It cannot be used with --base_height="
+                    f"{args.base_height}. Re-run find_throw_pose.py with "
+                    f"--floor_z {_want_floor:.3f}."
+                )
+        elif abs(float(_table_floor) - _want_floor) > 1e-6:
+            raise ValueError(
+                f"{args.opt_pose} was searched against floor_z="
+                f"{float(_table_floor):+.3f} m but --base_height="
+                f"{args.base_height} implies floor_z={_want_floor:+.3f} m. "
+                "Re-search the table or fix --base_height."
+            )
+        # Same fail-closed precedent for the TCP offset the table was searched
+        # at: mismatched, the policy learns against a release direction/speed
+        # the real (or simulated) release never actually produces.
+        _table_offset = _entry0.get("tool_offset", None)
+        if _table_offset is None:
+            if abs(args.tool_offset_z) > 1e-9:
+                raise ValueError(
+                    f"{args.opt_pose} carries no tool_offset stamp, so it "
+                    "predates this flag and was searched at the bare flange "
+                    f"(tool_offset=0). It cannot be used with --tool_offset_z "
+                    f"{args.tool_offset_z}. Re-run find_throw_pose.py with "
+                    "--tool_offset_z, or pass 0.0 here."
+                )
+        elif abs(float(_table_offset[2]) - args.tool_offset_z) > 1e-6:
+            raise ValueError(
+                f"{args.opt_pose} was searched against tool_offset_z="
+                f"{float(_table_offset[2]):+.3f} m but --tool_offset_z="
+                f"{args.tool_offset_z} was given. Re-search the table or fix "
+                "--tool_offset_z."
+            )
     lengthscale_xy = (
         args.lengthscale_xy if args.lengthscale_xy is not None else 0.15 * (lM - lm)
     )
@@ -264,8 +329,13 @@ def main():
         _cid = _p.connect(_p.DIRECT)
         _arm_tmp = _p.loadURDF(_pd.getDataPath() + "/" + profile.urdf_rel_path,
                                useFixedBase=True, physicsClientId=_cid)
-        for _j in range(7):
-            _p.resetJointState(_arm_tmp, _j, _az0_entry["q"][_j], physicsClientId=_cid)
+        # Index through the profile's actuated joint ids, NOT range(7): the
+        # table's q is in profile order, and a UR URDF leads with two FIXED
+        # joints so its arm joints are 2..7. range(7) posed the wrong bodies
+        # and then ran off the end of a 6-DoF table entry.
+        for _local_i, _j in enumerate(profile.joint_ids):
+            _p.resetJointState(_arm_tmp, _j, _az0_entry["q"][_local_i],
+                               physicsClientId=_cid)
         _real_pos = _p.getLinkState(_arm_tmp, profile.ee_link, computeForwardKinematics=True,
                                     physicsClientId=_cid)[4]
         _p.disconnect(_cid)
@@ -286,6 +356,50 @@ def main():
         print(f"opt_pose table: anchoring target sampling AND particle release "
              f"position on REAL release_pos={RELEASE_POS} "
              f"(profile default was {profile.default_release_pos})")
+    if args.base_height:
+        # RELEASE_POS is derived from FK on an arm at the origin, i.e. it is in
+        # the BASE frame, while the GP particle model and the rollout both work
+        # in the WORLD frame where the floor is z=0 and the base sits at
+        # +base_height. Lift it, or the particle model believes the ball
+        # launches 0.433 m lower than it does and the policy learns to
+        # compensate for a launch point that does not exist -- the exact
+        # failure already recorded above for the un-anchored release position
+        # (39.7 cm mean error). x/y are unaffected: the plate raises, it does
+        # not translate.
+        RELEASE_POS = RELEASE_POS + np.array([0.0, 0.0, float(args.base_height)])
+        print(f"base_height={args.base_height:.3f} m: RELEASE_POS lifted to "
+              f"world frame {np.round(RELEASE_POS, 4)}")
+
+    if opt_posture_table is not None:
+        # Is the requested target band actually reachable at the requested speed
+        # bounds? Nothing checked this, and the failure is silent and expensive:
+        # train with the profile default uM=0.6 against a 0.70-0.94 m band that
+        # needs 1.18-1.60 m/s and the policy simply saturates at its ceiling and
+        # undershoots every target (measured: 47.64 cm mean, 0/30 hits, release
+        # speed pinned at 0.58-0.59 m/s). Ten trials and an evaluation to learn
+        # what ballistics answers instantly.
+        from find_throw_pose import ballistic_range as _brange
+        _e0 = min(opt_posture_table, key=lambda e: abs(e["azimuth_deg"]))
+        _d = np.asarray(_e0["v_dir"], dtype=float)
+        _d = _d / np.linalg.norm(_d)
+        # RELEASE_POS is world-frame here (floor at z=0), so floor_z=0.0.
+        _, _land_lo = _brange(RELEASE_POS, uMin * _d, floor_z=0.0)
+        _, _land_hi = _brange(RELEASE_POS, uM * _d, floor_z=0.0)
+        _reach_lo = float(np.hypot(_land_lo[0], _land_lo[1]))
+        _reach_hi = float(np.hypot(_land_hi[0], _land_hi[1]))
+        print(f"reachable landing band at [uMin={uMin:.2f}, uM={uM:.2f}] m/s: "
+              f"{_reach_lo:.3f}-{_reach_hi:.3f} m   requested [lm, lM] = "
+              f"[{lm:.3f}, {lM:.3f}] m")
+        if lm < _reach_lo - 1e-3 or lM > _reach_hi + 1e-3:
+            raise ValueError(
+                f"target band [{lm:.3f}, {lM:.3f}] m is not reachable with "
+                f"release speeds in [{uMin:.2f}, {uM:.2f}] m/s, which span "
+                f"{_reach_lo:.3f}-{_reach_hi:.3f} m from this release state. "
+                "The policy would saturate against its speed bound and miss "
+                "every target. Fix --lm/--lM or --uMin/--uM (note the profile "
+                "speed_bounds default may predate the pose table in use)."
+            )
+
     if args.flight_targets:
         # lm/lM are on-axis landing distances (release y = 0, so on-axis
         # flight = distance - release_x); convert to a flight annulus.
@@ -316,9 +430,11 @@ def main():
         t_r=T_R,
         robot_name=profile.name,
         target_height=args.target_height,
+        base_height=args.base_height,
         opt_posture=opt_posture,
         opt_posture_table=opt_posture_table,
         opt_launch_deg=opt_launch_deg,
+        tool_offset=[0.0, 0.0, args.tool_offset_z],
     )
 
     num_gp = 3
@@ -529,6 +645,7 @@ def main():
         "opt_launch_deg": float(opt_launch_deg),
         "delta_max_frac": float(args.delta_max_frac) if args.residual_physics else None,
         "target_height": float(args.target_height),
+        "base_height": float(args.base_height),
     }
     pkl.dump(config_log, open(os.path.join(log_path, "config_log.pkl"), "wb"))
 

@@ -165,10 +165,23 @@ class ArmController:
         self._attached_ball_id = None
 
     def attach_ball(self, ball_id):
-        """Weld ball to the end-effector via a fixed constraint."""
-        ee_pos = self.ee_state()[0]
+        """Weld ball to the end-effector via a fixed constraint.
+
+        createConstraint's parentFramePosition is in the PARENT LINK's own
+        LOCAL frame, not world frame -- so the ball's world-frame offset from
+        ee_link must be rotated into that local frame before use. This was
+        previously a world-frame delta passed straight through, invisible
+        only because every call site spawned the ball exactly at ee_pos
+        (offset identically zero, so no rotation could matter); a nonzero,
+        rigidly-rotating TCP offset makes the distinction real.
+        """
+        ee_pos, ee_orn = self.ee_state()[0], self.ee_state()[2]
         ball_pos, _ = p.getBasePositionAndOrientation(ball_id, physicsClientId=self._cid)
-        offset = np.array(ball_pos) - np.array(ee_pos)
+        inv_pos, inv_orn = p.invertTransform(ee_pos.tolist(), ee_orn.tolist())
+        offset, _ = p.multiplyTransforms(
+            inv_pos, inv_orn, ball_pos, [0, 0, 0, 1], physicsClientId=self._cid
+        )
+        offset = np.array(offset)
         self._set_ball_collision_with_arm(ball_id, enable=False)
         self._grip_id = p.createConstraint(
             parentBodyUniqueId=self._arm_id,
@@ -202,7 +215,7 @@ class ArmController:
 
     def plan_throw(self, v_cmd, release_pos, t_w=0.3, t_r=0.6, T=1.0,
                    q_release_override=None, qd_release_override=None,
-                   monotonic_windup=False):
+                   monotonic_windup=False, tool_offset=None):
         """
         Plan a 3-phase piecewise-cubic throw trajectory.
 
@@ -211,6 +224,30 @@ class ArmController:
           qd_release_override : explicit release joint velocity (n,) -- skip pinv, so the
                                 arm can use VELOCITY-LIMIT-OPTIMAL joint scheduling
                                 (qd = qd_max*sign(d.J)) instead of the min-norm pinv.
+          tool_offset         : (3,) offset from `ee_link`'s origin to the point the
+                                ball actually leaves from, in ee_link's LOCAL frame.
+                                None/zeros = the bare flange, which is bit-identical
+                                to every result produced before this parameter existed.
+
+        WHY tool_offset IS NOT OPTIONAL ONCE A GRIPPER EXISTS
+        ----------------------------------------------------
+        This Jacobian was hardcoded to `localPosition=[0, 0, 0]` -- the flange --
+        while the real Robotiq 2F-85 puts the ball 12 cm further out. The wrist is
+        ROTATING at release, so the TCP carries an extra `omega x r` term that does
+        not vanish just because the offset is nearly axial: measured 1.264x on the
+        shipped `throw_pose_table_tcp.npy` release state (1.126 m/s at the flange
+        against 1.424 m/s at the TCP).
+
+        `OptimizedReleaseSolver` has always solved at the TCP, so the returned
+        `qd_release` -- and therefore the trajectory the arm actually executes --
+        was correct throughout. What was wrong was the REPORT: `v_achieved` named
+        the flange's speed, `run_hardware_throw.py plan` printed it as
+        "v achievable" beside a larger commanded speed (reading as a 21% actuator
+        shortfall that does not exist), and `precheck(release_speed=...)` sized the
+        command-quantisation budget from it, under-reporting by the same 26%.
+
+        Fourth time the 2F-85's 12 cm has cost this project something: release
+        speed, release box, wrist-camera extrinsic, and now this.
 
         Returns
         -------
@@ -242,10 +279,16 @@ class ArmController:
         for local_i, dof_id in enumerate(self._dof_ids):
             q_release_full[dof_id] = q_release[local_i]
 
+        # Jacobian OF THE THROW POINT. With no tool_offset this is the flange,
+        # exactly as before. `localPosition` is in ee_link's local frame, which
+        # is the same convention OptimizedReleaseSolver and find_throw_pose.py
+        # already use -- never re-derive omega x r by hand, PyBullet does it.
+        tool_lp = ([0.0, 0.0, 0.0] if tool_offset is None
+                   else [float(v) for v in np.asarray(tool_offset, float).ravel()])
         j_lin_raw, _ = p.calculateJacobian(
             self._arm_id,
             self._ee_link,
-            localPosition=[0, 0, 0],
+            localPosition=tool_lp,
             objPositions=q_release_full.tolist(),
             objVelocities=[0.0] * self._n_dofs,
             objAccelerations=[0.0] * self._n_dofs,

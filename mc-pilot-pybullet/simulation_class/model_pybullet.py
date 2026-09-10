@@ -13,7 +13,7 @@ import pybullet as p
 import pybullet_data
 
 from robot_arm.arm_controller import ArmController
-from robot_arm.robot_profiles import get_robot_profile
+from robot_arm.robot_profiles import get_robot_profile, roll_indices
 from simulation_class.model import _ball_accel
 from simulation_class.release_solver import OptimizedReleaseSolver
 
@@ -40,6 +40,8 @@ class PyBulletThrowingSystem:
         opt_posture=None,
         opt_launch_deg=43.0,
         opt_posture_table=None,
+        base_height=0.0,
+        tool_offset=None,
     ):
         # Optimized-release mode: throw from a hardware-valid frozen-base posture
         # (base = azimuth only, qd[0]=0; shoulder/elbow sweep the vertical plane),
@@ -53,10 +55,28 @@ class PyBulletThrowingSystem:
         # The release solver is SHARED WITH HARDWARE (see release_solver.py).
         # Never inline this logic back into the sim system: run_hardware_throw.py
         # has to plan the identical release, and a second copy will drift.
+        # Rigid TCP offset (link frame, e.g. (0,0,0.12) for a modeled Robotiq
+        # 2F-85). Zero by default: every existing checkpoint/table/test was
+        # validated with the ball welded at ee_link itself. Threaded to BOTH
+        # the release solver (so the commanded release state targets the
+        # TCP) and the ball's own weld point below (so what physically flies
+        # is the same point the solver targeted) -- letting them disagree
+        # would silently reintroduce the exact bug this parameter exists to
+        # fix.
+        self.tool_offset = (np.zeros(3) if tool_offset is None
+                            else np.array(tool_offset, dtype=float))
+        # Which joints the release LP freezes is arm-dependent (the Gen3/Panda
+        # 7-DoF (0,2,4,6) is NOT a general law -- a UR is pan / three parallel
+        # pitches / wrist2 / tool-roll). Read it from the profile here and pass
+        # the SAME set on the hardware side (run_hardware_throw.py), or the two
+        # plan different throws with no error anywhere.
         self.release_solver = OptimizedReleaseSolver(
             opt_posture=opt_posture,
             opt_launch_deg=opt_launch_deg,
             opt_posture_table=opt_posture_table,
+            tool_offset=self.tool_offset,
+            roll_idx=roll_indices(get_robot_profile(robot_name)),
+            v_tcp_max=get_robot_profile(robot_name).v_tcp_max,
         )
         self._opt_posture = self.release_solver.posture
         self._opt_table = self.release_solver.table
@@ -73,6 +93,17 @@ class PyBulletThrowingSystem:
         # a platform). The trajectory is cut at the descending crossing of this
         # plane and the landing point interpolated onto it.
         self.target_height = float(target_height)
+        # Height of the arm's base plate above the floor (m). The floor is a real
+        # collision plane at world z=0, so an arm on a plate is modelled by
+        # RAISING THE BASE, never by pushing target_height negative: the ball
+        # would hit the plane at z=0 before crossing a negative target_height,
+        # the descending-crossing test would never fire, and the rollout returns
+        # with no landing detected and no error (see rollout's landing test and
+        # the empty-trajectory fallback). World frame: floor at 0, base at
+        # +base_height. Base frame (hardware, pose tables): base at 0, floor at
+        # -base_height. One offset, converted in exactly one place.
+        self.base_height = float(base_height)
+        self._check_target_height(self.target_height)
         self._gui_mode = gui_mode
         self.robot_name = robot_name
         self._profile = get_robot_profile(robot_name)
@@ -92,6 +123,26 @@ class PyBulletThrowingSystem:
             from simulation_class.wind_models import WindModel
             self.wind_model = WindModel()
 
+    @staticmethod
+    def _check_target_height(h):
+        """A landing plane below the floor cannot be detected, so refuse it.
+
+        The floor (`plane.urdf`) is a real collision plane at world z=0. The
+        landing test fires only on a DESCENDING crossing of `target_height`, so
+        for h < 0 the ball rests on the floor without ever crossing, the loop
+        runs out, and the rollout returns a trajectory whose last point is
+        wherever the ball rolled to a stop -- a plausible number, silently
+        wrong. Model an arm on a plate with `base_height` instead.
+        """
+        if float(h) < 0.0:
+            raise ValueError(
+                f"target_height={float(h):.3f} m is below the floor and cannot "
+                "be detected as a landing (the ball hits plane.urdf at z=0 "
+                "first and no descending crossing ever occurs). To throw from a "
+                "raised base down to the floor, pass base_height=<plate height> "
+                "and keep target_height=0.0."
+            )
+
     def rollout(self, s0, policy, T, dt, noise):
         """
         Simulate one throw in PyBullet.
@@ -105,6 +156,7 @@ class PyBulletThrowingSystem:
         # Height-conditioned task (9-D state): landing plane comes from the
         # per-episode target height rather than the fixed constructor value.
         if not self.wind_aware and len(target_full) >= 3:
+            self._check_target_height(target_full[2])
             self.target_height = float(target_full[2])
 
         u0 = np.array(policy(s0, 0.0)).flatten()
@@ -202,10 +254,19 @@ class PyBulletThrowingSystem:
         p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=client)
         p.loadURDF(self._plane_urdf, physicsClientId=client)
 
-        arm = ArmController(client, self._urdf_path, robot_name=self.robot_name)
+        arm = ArmController(client, self._urdf_path, robot_name=self.robot_name,
+                            base_position=(0.0, 0.0, self.base_height))
         arm.reset()
 
-        ee_pos_init, _, _, _ = arm.ee_state()
+        ee_pos_init, _, ee_orn_init, _ = arm.ee_state()
+        # Ball spawns at the TCP (ee_link origin + tool_offset rotated into
+        # world frame), not the bare flange -- so attach_ball's own local-
+        # frame computation (see arm_controller.py) welds it exactly there.
+        # Reduces to ee_pos_init unchanged at the zero default.
+        ball_spawn_pos, _ = p.multiplyTransforms(
+            ee_pos_init.tolist(), ee_orn_init.tolist(), self.tool_offset.tolist(),
+            [0, 0, 0, 1], physicsClientId=client,
+        )
         ball_col = p.createCollisionShape(
             p.GEOM_SPHERE, radius=self.radius, physicsClientId=client
         )
@@ -219,7 +280,7 @@ class PyBulletThrowingSystem:
             baseMass=self.mass,
             baseCollisionShapeIndex=ball_col,
             baseVisualShapeIndex=ball_vis,
-            basePosition=ee_pos_init.tolist(),
+            basePosition=list(ball_spawn_pos),
             physicsClientId=client,
         )
         p.changeDynamics(
@@ -242,6 +303,10 @@ class PyBulletThrowingSystem:
             v_cmd, release_pos, self.t_w, self.t_r, t_arm,
             q_release_override=q_ovr, qd_release_override=qd_ovr,
             monotonic_windup=self._opt_mode,
+            # Same throw point the ball is welded at (see attach_ball) and the
+            # same one run_hardware_throw.py reports -- the sim and hardware
+            # planners must not disagree about where the ball leaves from.
+            tool_offset=self.tool_offset,
         )
         t_r_actual = coeffs["t_r"]  # torque mode may have stretched the throw
 

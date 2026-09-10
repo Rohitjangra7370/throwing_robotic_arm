@@ -841,6 +841,58 @@ class Ballistic_Model_learning_RBF(Speed_Model_learning_RBF_angle_state):
         return next_states, delta_vel_mean, delta_vel_var
 
 
+class Ballistic_SemiParametric_Model_learning_RBF(Ballistic_Model_learning_RBF):
+    """
+    Residual-physics ballistic dynamics model (TossingBot idea applied at the
+    MODEL level instead of the policy level).
+
+    The plain Ballistic_Model_learning_RBF GP learns the FULL per-step velocity
+    change delta_v with a zero mean -- so gravity (the dominant, exactly-known
+    term) is learned from scratch, and out of distribution the zero-mean GP
+    reverts to predicting delta_v -> 0 (i.e. NO gravity), which is precisely
+    where thin-coverage wide-domain arms are pushed and the systematic bias shows.
+
+    Here the GP learns only the RESIDUAL   delta_v - m(state), where m is the
+    KNOWN analytical velocity change over one step. The full prediction is
+    m + GP_residual, so the model is physically grounded and extrapolates to
+    correct gravity in unsampled regions.
+
+    Gravity-only mean (state-independent):   m = [0, 0, -g * Ts]
+    (drag is <=1% of gravity here, so it is left to the residual for now).
+
+    Only two hooks change vs the parent -- the GP target construction and the
+    one-step integration -- everything else (sparse GP, particle propagation,
+    policy gradient) is inherited unchanged.
+    """
+
+    def __init__(self, *args, g=9.81, **kwargs):
+        super(Ballistic_SemiParametric_Model_learning_RBF, self).__init__(*args, **kwargs)
+        self.g = float(g)
+
+    def _mean_delta_v(self, n):
+        """Per-step analytical velocity change for [vx, vy, vz]: gravity only. [n, 3]."""
+        m = torch.zeros(n, 3, dtype=self.dtype, device=self.device)
+        m[:, 2] = -self.g * self.T_sampling
+        return m
+
+    def data_to_gp_output(self, states):
+        """GP targets = full delta_v MINUS the analytical mean (i.e. the residual)."""
+        full = super(Ballistic_SemiParametric_Model_learning_RBF, self).data_to_gp_output(states)
+        m = self._mean_delta_v(full[0].shape[0])
+        return [full[i] - m[:, i : i + 1] for i in range(len(full))]
+
+    def get_next_state_from_gp_output(
+        self, current_state, current_input,
+        gp_output_mean_list, gp_output_var_list, particle_pred=True,
+    ):
+        """Add the analytical mean back onto the GP residual mean, then integrate."""
+        m = self._mean_delta_v(current_state.shape[0])
+        adj_mean = [gp_output_mean_list[i] + m[:, i : i + 1] for i in range(len(gp_output_mean_list))]
+        return super(Ballistic_SemiParametric_Model_learning_RBF, self).get_next_state_from_gp_output(
+            current_state, current_input, adj_mean, gp_output_var_list, particle_pred=particle_pred,
+        )
+
+
 class SP_Speed_Model_learning_Furuta(Model_learning):
     """
     Speed model learning class for the FP with semiparametric kernel.

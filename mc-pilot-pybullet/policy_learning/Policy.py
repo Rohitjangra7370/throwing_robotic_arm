@@ -535,6 +535,113 @@ class Throwing_Policy(Sum_of_gaussians):
         )
 
 
+class Residual_Throwing_Policy(Throwing_Policy):
+    """
+    TossingBot-style residual-physics throwing policy (Zeng et al., 2019/2020).
+
+        release_speed = clamp( v_hat(target) + delta_rbf(target),  0,  u_max )
+
+    where
+      * v_hat  = the analytical, no-drag *parabolic* release speed for the target
+                 (paper Eq. 13 == eval_baseline.baseline_speed), a fixed function
+                 with NO learnable parameters, and
+      * delta_rbf = delta_max * tanh( RBF(target) ), a learned bounded correction.
+
+    Because delta = delta_max * tanh(raw), a near-zero-weight RBF makes the policy
+    output == v_hat: the policy *starts at the analytical baseline* and trials only
+    refine it. This is the whole point of residual physics -- the parabolic prior
+    generalises over the full target domain (its strength), while the learned
+    residual captures only the unmodelled part (drag, gripper slip, arm coupling,
+    release-position bias). Structurally this makes MC-PILOT >= baseline: worst
+    case the residual stays ~0 and matches Eq. 13; where physics is unmodelled the
+    residual improves on it.
+
+    Only forward() changes vs Throwing_Policy; the RBF math, reinit(), squashing of
+    the *residual* (via tanh), and every other study are untouched. The analytical
+    prior (release_pos, launch angle, target height) is fixed config, passed at init.
+
+    Extra parameters
+    ----------------
+    release_pos      : (3,) release point [x, y, z] in world frame (from arm profile)
+    launch_angle_deg : fixed launch elevation alpha (must match ThrowingSystem, 35)
+    target_height    : z of the target/landing plane (0 for ground targets)
+    delta_max_frac   : residual bound as a fraction of u_max (delta in +-frac*u_max)
+    g                : gravity (m/s^2)
+    """
+
+    def __init__(
+        self,
+        full_state_dim,
+        target_dim,
+        num_basis,
+        u_max,
+        release_pos,
+        launch_angle_deg=35.0,
+        target_height=0.0,
+        delta_max_frac=0.5,
+        g=9.81,
+        lengthscales_init=None,
+        centers_init=None,
+        weight_init=None,
+        flg_drop=True,
+        dtype=torch.float64,
+        device=torch.device("cpu"),
+    ):
+        super(Residual_Throwing_Policy, self).__init__(
+            full_state_dim=full_state_dim,
+            target_dim=target_dim,
+            num_basis=num_basis,
+            u_max=u_max,
+            lengthscales_init=lengthscales_init,
+            centers_init=centers_init,
+            weight_init=weight_init,
+            flg_drop=flg_drop,
+            dtype=dtype,
+            device=device,
+        )
+        self.register_buffer(
+            "release_pos",
+            torch.tensor(np.asarray(release_pos, dtype=float), dtype=dtype, device=device),
+        )
+        self.alpha = float(np.deg2rad(launch_angle_deg))
+        self.target_height = float(target_height)
+        self.g = float(g)
+        self.delta_max = float(delta_max_frac) * float(u_max)
+        self._eps = 1e-6
+
+    def baseline_speed(self, P):
+        """
+        Torch port of eval_baseline.baseline_speed (paper Eq. 13), vectorised.
+        P : [batch, target_dim] target xy.  Returns [batch, 1] parabolic release speed.
+        denom is clamped >= eps so a geometrically-unreachable sample can never nan
+        the gradient; the residual + clamp absorb such an edge (matches how
+        eval_baseline flags these targets as unreachable).
+        """
+        cos_a = np.cos(self.alpha)
+        tan_a = np.tan(self.alpha)
+        rel_xy = self.release_pos[: self.target_dim]
+        z_rel = self.release_pos[2]
+        d = torch.norm(P - rel_xy, dim=1, keepdim=True)  # [batch, 1]
+        denom = 2.0 * cos_a ** 2 * (d * tan_a - self.target_height + z_rel)
+        denom = torch.clamp(denom, min=self._eps)
+        return torch.sqrt(self.g * d ** 2 / denom)
+
+    def forward(self, states, t=None, p_dropout=0.0):
+        batch = states.shape[0] if states.dim() == 2 else 1
+        if t is not None and t > 0:
+            return torch.zeros(batch, 1, dtype=self.dtype, device=self.device)
+
+        states_2d = states.reshape(-1, self.full_state_dim)
+        P = states_2d[:, -self.target_dim:]   # [batch, target_dim]
+
+        # RBF residual (raw), bypassing Throwing_Policy's own squash
+        raw = Sum_of_gaussians.forward(self, P, t=t, p_dropout=p_dropout)
+        v_hat = self.baseline_speed(P)
+        delta = self.delta_max * torch.tanh(raw)
+        speed = v_hat + delta
+        return torch.clamp(speed, min=0.0, max=self.u_max)
+
+
 class Random_Throwing_Exploration(Policy):
     """
     Random exploration policy for the throwing task.
