@@ -265,11 +265,14 @@ for throw_idx in range(args.num_throws):
                 release_dir = v_cmd / speed_norm if speed_norm > 1e-9 else np.zeros(3)
                 use_safe_release = profile.use_safe_release
                 safe_release_pos = ee_pos_now + release_dir * (1.25 * BALL_RADIUS)
+                # Collision stays disabled after release — the arm's follow-through
+                # otherwise strikes the ball (same fix as the training rollout in
+                # simulation_class/model_pybullet.py).
                 release_vel = arm.release_ball(
                     ball_id,
                     set_vel=v_cmd,
                     release_pos=safe_release_pos if use_safe_release else None,
-                    keep_collision_disabled=use_safe_release,
+                    keep_collision_disabled=True,
                 )
                 print(f"  Released at t={t:.3f}s with |v|={np.linalg.norm(release_vel):.3f} m/s")
                 released = True

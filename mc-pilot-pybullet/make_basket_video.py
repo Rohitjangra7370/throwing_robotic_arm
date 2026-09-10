@@ -1,10 +1,12 @@
 """
-Video of the dynamic (torque-controlled, physically real) Kinova Gen3 release --
-the "hardware config" checkpoint (1.54cm mean accuracy, results_mc_pilot_pb_A_kinova_gen3_dyn).
+Dynamic (torque-controlled) Kinova Gen3 throw video WITH a visible basket at each
+target -- so you can see the ball land into the bin.
 
-Captures frames via a frame_hook into PyBulletThrowingSystem.rollout (DIRECT mode,
-TinyRenderer -- fast and reliable, per this project's established video method),
-draws a visual-only target marker per throw, and encodes to mp4 via imageio/libx264.
+Same established method as make_dynamic_video.py (DIRECT + TinyRenderer + frame_hook),
+but adds a VISUAL-ONLY square bin (base plate + 4 low walls, no collision) centred on
+each throw's target. Visual-only is deliberate: physical bin walls deflect the
+near-horizontal approach (see change_history.md), so the bin is a marker the ball lands
+into, not a collider.
 """
 
 import argparse
@@ -14,7 +16,6 @@ import pickle as pkl
 import imageio.v2 as imageio
 import numpy as np
 import pybullet as p
-import pybullet_data
 import torch
 
 import policy_learning.Policy as Policy
@@ -59,11 +60,35 @@ def make_camera_matrices(client):
     return view, proj
 
 
+def add_basket(client, center_xy, half=0.065, wall_h=0.085, wall_t=0.006):
+    """Visual-only square bin at (x, y) on the ground plane. No collision."""
+    cx, cy = float(center_xy[0]), float(center_xy[1])
+    base_rgba = [0.45, 0.28, 0.12, 1.0]     # opaque wooden base
+    wall_rgba = [0.85, 0.45, 0.15, 0.55]    # translucent orange walls
+
+    def vis_box(half_extents, rgba):
+        return p.createVisualShape(p.GEOM_BOX, halfExtents=half_extents,
+                                   rgbaColor=rgba, physicsClientId=client)
+
+    def body(vis, pos):
+        p.createMultiBody(baseMass=0, baseCollisionShapeIndex=-1,
+                          baseVisualShapeIndex=vis, basePosition=pos,
+                          physicsClientId=client)
+
+    # base plate
+    body(vis_box([half, half, 0.004], base_rgba), [cx, cy, 0.004])
+    # 4 walls
+    body(vis_box([half, wall_t, wall_h / 2], wall_rgba), [cx, cy + half, wall_h / 2])  # +y
+    body(vis_box([half, wall_t, wall_h / 2], wall_rgba), [cx, cy - half, wall_h / 2])  # -y
+    body(vis_box([wall_t, half, wall_h / 2], wall_rgba), [cx + half, cy, wall_h / 2])  # +x
+    body(vis_box([wall_t, half, wall_h / 2], wall_rgba), [cx - half, cy, wall_h / 2])  # -x
+
+
 def main():
     ap = argparse.ArgumentParser(__doc__)
     ap.add_argument("--log_path", type=str, default="results_mc_pilot_pb_A_kinova_gen3_dyn/1")
     ap.add_argument("--out", type=str,
-                    default=os.path.join(_VIDS, "mc_pilot_kinova_dynamic_throws.mp4"))
+                    default=os.path.join(_VIDS, "mc_pilot_kinova_basket_throws.mp4"))
     ap.add_argument("--num_throws", type=int, default=6)
     ap.add_argument("--seed", type=int, default=99)
     ap.add_argument("--fps", type=int, default=50)
@@ -87,9 +112,13 @@ def main():
     hit_count = 0
     for i, tgt in enumerate(targets):
         frames = []
+        state = {"basket_added": False}
 
-        def capture(client, _frames=frames):
-            if len(_frames) % 2 != 0:  # capture every other physics step (~25fps of sim motion, upsampled to 50fps output via hold)
+        def capture(client, _frames=frames, _st=state, _tgt=tgt):
+            if not _st["basket_added"]:
+                add_basket(client, _tgt)          # draw bin once, at this throw's target
+                _st["basket_added"] = True
+            if len(_frames) % 2 != 0:
                 _frames.append(None)
                 return
             view, proj = make_camera_matrices(client)
@@ -114,7 +143,6 @@ def main():
 
         real_frames = [f for f in frames if f is not None]
         if real_frames:
-            # hold the last frame briefly between throws
             all_frames.extend(real_frames)
             all_frames.extend([real_frames[-1]] * (args.fps // 2))
 
