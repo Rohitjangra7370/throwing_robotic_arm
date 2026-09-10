@@ -1,0 +1,77 @@
+\begin{thebibliography}{10}
+
+\bibitem{turcato2025mcpilot}
+N.~Turcato, G.~Giacomuzzo, M.~Terrean, D.~Allegro, R.~Carli, and
+  A.~Dalla~Libera, ``Data efficient robotic object throwing with model-based
+  reinforcement learning,'' {\em arXiv preprint arXiv:2502.05595}, 2025.
+
+\bibitem{amadio2022mcpilco}
+F.~Amadio, A.~Dalla~Libera, D.~Nikovski, R.~Carli, and D.~Romeres,
+  ``Model-based policy search via monte carlo gradient estimation with real
+  system applications,'' {\em IEEE Transactions on Robotics}, vol.~38, no.~6,
+  pp.~3879--3898, 2022.
+
+\bibitem{turcato2023codit}
+N.~Turcato, A.~Dalla~Libera, G.~Giacomuzzo, and R.~Carli, ``Teaching a robot to
+  toss arbitrary objects with model-based reinforcement learning,'' in {\em
+  2023 9th International Conference on Control, Decision and Information
+  Technologies (CoDIT)}, pp.~1126--1131, 2023.
+
+\bibitem{lynch1999dynamic}
+K.~M. Lynch and M.~T. Mason, ``Dynamic nonprehensile manipulation:
+  Controllability, planning, and experiments,'' {\em The International Journal
+  of Robotics Research}, vol.~18, no.~1, pp.~64--92, 1999.
+
+\bibitem{bombile2023bimanual}
+M.~Bombile and A.~Billard, ``Bimanual dynamic grabbing and tossing of objects
+  onto a moving target,'' {\em Robotics and Autonomous Systems}, vol.~167,
+  p.~104481, 2023.
+
+\bibitem{zeng2020tossingbot}
+A.~Zeng, S.~Song, J.~Lee, A.~Rodriguez, and T.~Funkhouser, ``Tossingbot:
+  Learning to throw arbitrary objects with residual physics,'' {\em IEEE
+  Transactions on Robotics}, vol.~36, no.~4, pp.~1307--1319, 2020.
+
+\bibitem{monastirsky2023learning}
+M.~Monastirsky, O.~Azulay, and A.~Sintov, ``Learning to throw with a handful of
+  samples using decision transformers,'' {\em IEEE Robotics and Automation
+  Letters}, vol.~8, no.~2, pp.~576--583, 2023.
+
+\bibitem{huang2023dynamic}
+B.~Huang, Y.~Chen, T.~Wang, Y.~Qin, Y.~Yang, N.~Atanasov, and X.~Wang,
+  ``Dynamic handover: Throw and catch with bimanual hands,'' in {\em Conference
+  on Robot Learning (CoRL)}, 2023.
+
+\bibitem{munn2024wholebody}
+H.~Munn, B.~Tidd, P.~B{\"o}hm, M.~Gallagher, and D.~Howard, ``Whole-body
+  dynamic throwing with legged manipulators,'' {\em arXiv preprint
+  arXiv:2410.05681}, 2024.
+
+\bibitem{zhang2025catch}
+Y.~Zhang, T.~Liang, Z.~Chen, Y.~Ze, and H.~Xu, ``Catch it! learning to catch in
+  flight with mobile dexterous hands,'' in {\em IEEE International Conference
+  on Robotics and Automation (ICRA)}, pp.~14385--14391, 2025.
+
+\bibitem{werner2024dynamic}
+L.~Werner, F.~Nan, P.~Eyschen, F.~A. Spinelli, H.~Yang, and M.~Hutter,
+  ``Dynamic throwing with robotic material handling machines,'' in {\em 2024
+  IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)},
+  2024.
+
+\bibitem{liu2022adaptive}
+Y.~Liu, A.~Nayak, and A.~Billard, ``A solution to adaptive mobile manipulator
+  throwing,'' in {\em 2022 IEEE/RSJ International Conference on Intelligent
+  Robots and Systems (IROS)}, 2022.
+
+\bibitem{moura2022nonprehensile}
+J.~Moura, T.~Stouraitis, and S.~Vijayakumar, ``Non-prehensile planar
+  manipulation via trajectory optimization with complementarity constraints,''
+  in {\em IEEE International Conference on Robotics and Automation (ICRA)},
+  pp.~970--976, 2022.
+
+\bibitem{coumans2021pybullet}
+E.~Coumans and Y.~Bai, ``Pybullet, a python module for physics simulation for
+  games, robotics and machine learning.'' \url{http://pybullet.org},
+  2016--2021.
+
+\end{thebibliography}
