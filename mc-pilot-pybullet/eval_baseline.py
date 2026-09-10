@@ -32,12 +32,22 @@ def load_policy(log_path):
     with open(os.path.join(log_path, "config_log.pkl"), "rb") as f:
         cfg = pkl.load(f)
     state = log["parameters_trial_list"][-1]
-    policy_obj = Policy.Throwing_Policy(
+    common = dict(
         full_state_dim=8, target_dim=2, num_basis=state["centers"].shape[0],
         u_max=cfg["uM"], lengthscales_init=state["log_lengthscales"].exp().numpy()[0],
         centers_init=state["centers"].numpy(), weight_init=state["f_linear.weight"].numpy(),
         flg_drop=False, dtype=torch.float64, device=torch.device("cpu"),
     )
+    if cfg.get("residual_physics"):
+        policy_obj = Policy.Residual_Throwing_Policy(
+            release_pos=np.asarray(cfg["release_pos"], dtype=float),
+            launch_angle_deg=cfg.get("launch_angle_deg", 35.0),
+            target_height=cfg.get("target_height", 0.0),
+            delta_max_frac=cfg.get("delta_max_frac", 0.5),
+            **common,
+        )
+    else:
+        policy_obj = Policy.Throwing_Policy(**common)
     policy_obj.load_state_dict(state)
     policy_obj.eval()
     return policy_obj, cfg
@@ -88,7 +98,20 @@ def main():
     rng = np.random.default_rng(args.seed)
     targets = make_targets(cfg, release[:2], args.num_throws, rng)
 
-    system = PyBulletThrowingSystem(robot_name=args.robot, t_w=t_w, t_r=t_r)
+    # Geometry comes from the checkpoint, never from the evaluator's defaults:
+    # evaluating a plate-trained policy with the arm back at floor level throws
+    # to a different world than the one it was trained in, and the only symptom
+    # is a worse number.
+    base_height = float(cfg.get("base_height", 0.0))
+    if base_height:
+        release = release + np.array([0.0, 0.0, base_height])
+        print(f"checkpoint base_height={base_height:.3f} m (arm on a plate)")
+    system = PyBulletThrowingSystem(
+        robot_name=args.robot, t_w=t_w, t_r=t_r,
+        mass=cfg.get("ball_mass", 0.0577),
+        radius=cfg.get("ball_radius", 0.0327),
+        base_height=base_height,
+    )
 
     def mcpilot_policy(s, t):
         with torch.no_grad():

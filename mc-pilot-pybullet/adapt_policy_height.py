@@ -136,6 +136,7 @@ def main():
         else float(e0["elev_deg"]),
         arm_noise=None, t_w=cfg["T_W"], t_r=cfg["T_R"],
         robot_name=profile.name, target_height=args.height,
+        base_height=float(cfg.get("base_height", 0.0)),
         opt_posture_table=table, opt_launch_deg=float(e0["elev_deg"]),
     )
 
@@ -220,7 +221,12 @@ def main():
 
     print(f"\n=== re-optimising policy only (no new trials), {args.Nopt} steps ===")
     cost_list, _, _, _ = mc.reinforce_policy(
-        T_control=int(T_new / Ts),
+        # T_control is a DURATION in seconds -- reinforce_policy divides by
+        # T_sampling internally. Was `int(T_new / Ts)`, a pre-divided step
+        # count fed in as if it were seconds, stretching every height-
+        # adaptation control horizon ~50x too long (found 2026-09-02
+        # building hardware_session.py; fixed here 2026-09-03).
+        T_control=T_new,
         num_particles=M,
         trial_index=num_trained - 1,
         particles_initial_state_mean=torch.tensor(initial_state, dtype=dtype, device=device),

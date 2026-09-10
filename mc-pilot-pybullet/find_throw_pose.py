@@ -39,7 +39,8 @@ import pybullet as p
 import pybullet_data
 from scipy.optimize import linprog
 from simulation_class.model import _ball_accel
-from robot_arm.robot_profiles import get_robot_profile
+from robot_arm.robot_profiles import get_robot_profile, roll_indices
+from robot_arm.urdf_fixup import repair_massless_links
 from robot_arm.arm_controller import _cubic_to_velocity, _cubic_from_velocity, _eval_cubic
 
 # Defaults preserve the original Kinova Gen3 behavior; override via --robot to
@@ -53,17 +54,69 @@ QN = np.array(_PROFILE.q_neutral, dtype=float)
 N, EE, MASS, RAD = len(_PROFILE.joint_ids), _PROFILE.ee_link, 0.0577, 0.0327
 URDF_REL_PATH = _PROFILE.urdf_rel_path
 
+# URDF joint indices of the actuated joints. NOT always range(N): the Gen3,
+# Panda and KUKA put their actuated joints first (0..N-1), but a UR URDF leads
+# with two FIXED joints (base_joint, base_link-base_link_inertia), so its arm
+# joints are 2..7. Every resetJointState/getJointInfo here must index through
+# this, or the search silently reads the limits of a fixed joint and leaves the
+# real wrist joints at zero.
+JOINT_IDS = tuple(_PROFILE.joint_ids)
+
+# Manufacturer-rated Cartesian TCP-speed ceiling, or None. See RobotProfile.
+V_TCP_MAX = _PROFILE.v_tcp_max
+
+# Sentinel for aimed_speed's v_tcp_max argument: "take the loaded profile's".
+# A plain None default could not express "explicitly uncapped", which the tests
+# and any deliberate joint-velocity-only analysis need.
+_PROFILE_TCP_MAX = object()
+
+# Repair bodyless links before loading? DEFAULT FALSE, which is BUG-COMPATIBLE
+# with every pose table and paper number produced to date.
+#
+# A URDF link with no <inertial> is massless by spec, but PyBullet substitutes
+# mass=1 kg / inertia=diag(1,1,1) and only warns on stdout. This module has
+# always loaded raw, so its whole feasibility cascade -- static_feasible,
+# release_dynamics_feasible, throw_ramp_feasible, follow_through_feasible, all
+# of them torque gates -- has run under that phantom mass. Measured on the
+# Gen3 (3 bodyless camera frames, all at the wrist): 9.491 kg vs a real 6.491,
+# mean peak gravity torque 0.696 of limit vs 0.324 (2.15x, matching the
+# 2.1-2.4x measured against the arm's own torque sensors), and 16.8% of
+# postures rejected at the very first gate that are in fact feasible.
+#
+# The error is CONSERVATIVE -- a pose that passes under inflated torque passes
+# under real torque -- so existing tables and checkpoints describe throws that
+# are safe, just not maximal. What it distorts is any CROSS-ARM comparison:
+# the Gen3 carries +46% phantom mass while the KUKA and Panda carry exactly
+# none, so the paper's Gen3-vs-Panda feasibility contrast is partly an
+# artifact. Left default-off pending a decision on regenerating those numbers;
+# see CLAUDE.md. ArmController (and therefore every rollout, eval and hardware
+# precheck) has always repaired.
+REPAIR_INERTIALS = False
+
+
+def load_arm(urdf_rel_path=None):
+    """Load the arm for a search, honouring REPAIR_INERTIALS. Single loader --
+    the three search entry points and paper_ablation_feasibility.py must agree
+    on the mass they are planning against."""
+    path = pybullet_data.getDataPath() + "/" + (urdf_rel_path or URDF_REL_PATH)
+    if REPAIR_INERTIALS:
+        path = repair_massless_links(path)
+    return p.loadURDF(path, useFixedBase=True)
+
 # Real actuator torque limits (published by the manufacturer -- Kinova
 # ros_kortex gen3_macro.xacro for Gen3, franka_ros joint_limits.yaml for
 # Panda), set per-robot via set_robot() below.
 TAU_MAX = np.array(_PROFILE.tau_max, dtype=float)
 
-# Roll/twist joints: base + every other joint going out the chain (idx 0,2,4,6
-# for a 7-DOF alternating roll-pitch-roll arm). Frozen at qd=0 during the
-# throw -- see module docstring. Verified numerically for both Gen3 and Panda
-# (joint-axis vs base->EE-vector angle: pitch joints 1,3,5 sit at ~90deg,
-# roll joints 0,2,4,6 sit far from 90deg) -- not just assumed from the name.
-_ROLL_IDX = (0, 2, 4, 6)
+# Roll/twist joints: the base's azimuth joint plus every joint whose axis runs
+# roughly ALONG its own link. Frozen at qd=0 during the throw -- see module
+# docstring. WHICH indices those are is a property of the arm, NOT a constant:
+# (0,2,4,6) is the 7-DOF alternating roll-pitch-roll layout (verified
+# numerically for Gen3 and Panda -- pitch joints 1,3,5 sit at ~90deg to the
+# base->EE vector, roll joints far from it), while a UR is
+# pan / three parallel pitches / wrist2 / tool-roll -> (0,4,5). Comes from
+# `RobotProfile.roll_idx` via set_robot(), same as QD/QN/TAU_MAX.
+_ROLL_IDX = roll_indices(_PROFILE)
 
 # Total non-fixed DOF count of the loaded URDF, set by _set_n_full() once the
 # body exists. Some arms (Panda) carry extra PASSIVE dofs beyond the N=7
@@ -80,10 +133,25 @@ N_FULL = None
 def _set_n_full(arm):
     global N_FULL
     n_full = 0
+    dof_of = {}
     for j in range(p.getNumJoints(arm)):
         if p.getJointInfo(arm, j)[2] != p.JOINT_FIXED:
+            dof_of[j] = n_full
             n_full += 1
     N_FULL = n_full
+    # _fkj slices the Jacobian as [:, :N], and _pad writes the controlled
+    # joints into the FIRST N dof slots. Both are only correct while the
+    # actuated joints occupy dof positions 0..N-1 -- true for every profile so
+    # far (a UR's leading joints are FIXED, so they consume no dof), but it is
+    # an assumption about the URDF, not a guarantee. Fail loudly rather than
+    # silently planning against the wrong columns.
+    got = [dof_of.get(j) for j in JOINT_IDS]
+    if got != list(range(N)):
+        raise ValueError(
+            f"{_ROBOT_NAME}: actuated joints {list(JOINT_IDS)} map to dof "
+            f"positions {got}, expected {list(range(N))}. The Jacobian slice "
+            "and zero-pad shortcuts in this module need real index scatter "
+            "handling before this arm can be searched.")
 
 
 def _pad(q):
@@ -98,29 +166,45 @@ def _pad(q):
 
 def set_robot(robot_name):
     """Switch the module-level robot-specific constants (QD, QN, N, EE,
-    TAU_MAX, URDF_REL_PATH) to a different profile. Call before search()."""
+    TAU_MAX, URDF_REL_PATH, _ROLL_IDX, V_TCP_MAX) to a different profile. Call before
+    search()."""
     global _ROBOT_NAME, _PROFILE, QD, QN, N, EE, TAU_MAX, URDF_REL_PATH, N_FULL
+    global JOINT_IDS
+    global _ROLL_IDX, V_TCP_MAX
     _ROBOT_NAME = robot_name
     _PROFILE = get_robot_profile(robot_name)
     QD = np.array(_PROFILE.qd_max, dtype=float)
     QN = np.array(_PROFILE.q_neutral, dtype=float)
     N, EE = len(_PROFILE.joint_ids), _PROFILE.ee_link
+    JOINT_IDS = tuple(_PROFILE.joint_ids)
     TAU_MAX = np.array(_PROFILE.tau_max, dtype=float)
     URDF_REL_PATH = _PROFILE.urdf_rel_path
+    _ROLL_IDX = roll_indices(_PROFILE)
+    V_TCP_MAX = _PROFILE.v_tcp_max
     N_FULL = None
 
 
-def aimed_speed(J, d, qd_max, freeze_roll=True):
+def aimed_speed(J, d, qd_max, freeze_roll=True, v_tcp_max=_PROFILE_TCP_MAX):
     """max s s.t. J qd = s d_hat, |qd_i|<=qd_max, optionally qd[roll]=0 for
-    every roll/twist joint (base + joints 3,5,7) so only the pitch joints
-    (perpendicular to the swing plane) carry throw velocity."""
+    every roll/twist joint so only the pitch joints (perpendicular to the swing
+    plane) carry throw velocity.
+
+    `v_tcp_max` additionally caps s at the arm's rated Cartesian TCP speed.
+    Defaults to the loaded profile's; pass None to force the historical
+    joint-velocity-only bound. Without the cap the LP on a UR7e returns
+    4.65 m/s against a rated 4.0 -- every table entry over the manufacturer's
+    limit, and the controller would clamp or refuse the very throw the
+    simulator trained on. Never binds on the Gen3 (LP max 2.07 m/s).
+    """
+    if v_tcp_max is _PROFILE_TCP_MAX:
+        v_tcp_max = V_TCP_MAX
     d = np.asarray(d, dtype=float)
     d = d / np.linalg.norm(d)
     n = len(qd_max)
     c = np.zeros(n + 1)
     c[-1] = -1.0
     A_eq = np.hstack([np.asarray(J, dtype=float), -d.reshape(3, 1)])
-    bounds = [(-qd_max[i], qd_max[i]) for i in range(n)] + [(0, None)]
+    bounds = [(-qd_max[i], qd_max[i]) for i in range(n)] + [(0, v_tcp_max)]
     if freeze_roll:
         for i in _ROLL_IDX:
             bounds[i] = (0.0, 0.0)
@@ -136,24 +220,109 @@ def windup_within_limits(q_release, qd_release, t_throw, lo, hi):
     return bool(np.all(q_windup >= lo - 1e-9) and np.all(q_windup <= hi + 1e-9))
 
 
-def ballistic_range(pos, vel, mass=MASS, radius=RAD):
+# Landing plane in the arm's BASE frame (metres, signed). 0.0 = floor level with
+# the base -- the geometry every table shipped before 2026-08-12 was searched
+# against. A base plate raises the arm above the real floor, which puts the floor
+# BELOW the base: a 0.433 m plate means floor_z = -0.433. That is not a detail.
+# More drop = more flight time, so it moves both the optimal release elevation
+# and the achievable range, i.e. it changes which release state wins the search.
+FLOOR_Z = 0.0
+
+
+def set_floor_z(z):
+    """Set the landing plane (base frame) used by the search's range objective."""
+    global FLOOR_Z
+    FLOOR_Z = float(z)
+
+
+# Rigid offset (link frame) from ee_link's own origin to the point the ball
+# actually leaves from -- e.g. (0,0,0.12) for the Robotiq 2F-85 TCP. Zero by
+# default so every existing table search is byte-identical unless a caller
+# opts in via --tool_offset_z; see release_solver.py's OptimizedReleaseSolver
+# for why this must default to matching the flange (sim has no gripper
+# modeled and welds the ball at ee_link with zero offset).
+TOOL_OFFSET = np.zeros(3)
+
+
+def set_tool_offset(offset):
+    """Set the TCP offset (base/link frame, 3-vector) used by _fkj -- and
+    therefore by every feasibility check and the search objective itself."""
+    global TOOL_OFFSET
+    TOOL_OFFSET = np.array(offset, dtype=float)
+
+
+def ballistic_range(pos, vel, mass=MASS, radius=RAD, floor_z=None):
+    fz = FLOOR_Z if floor_z is None else float(floor_z)
     x = np.asarray(pos, dtype=float).copy()
     v = np.asarray(vel, dtype=float).copy()
     dt = 0.002
     for _ in range(5000):
         v = v + _ball_accel(x, v, mass, radius, np.zeros(3)) * dt
         x = x + v * dt
-        if x[2] <= 0 and v[2] < 0:
+        if x[2] <= fz and v[2] < 0:
             break
     return float(np.hypot(x[0] - pos[0], x[1] - pos[1])), x
 
 
+def pitch_indices():
+    """The velocity-carrying joints: everything the release LP does not freeze.
+
+    The sagittal searches below pin every roll/twist joint at zero and sweep
+    exactly three pitch joints. Which three is a property of the arm -- (1,3,5)
+    on a 7-DoF Gen3/Panda, (1,2,3) on a UR -- so it is derived from the profile
+    rather than written out as a literal posture vector.
+    """
+    pitch = [i for i in range(N) if i not in _ROLL_IDX]
+    if len(pitch) != 3:
+        raise ValueError(
+            f"{_ROBOT_NAME}: expected exactly 3 velocity-carrying joints for "
+            f"the three-grid sagittal sweep, got {pitch}.")
+    return pitch
+
+
+def sagittal_q(pitch, a, b, c):
+    """Posture vector with the three pitch joints set and every roll at zero.
+
+    On a 7-DoF arm this reproduces the literal [0, a, 0, b, 0, c, 0] this
+    module used to build, bit-for-bit.
+    """
+    q = np.zeros(N)
+    q[pitch[0]], q[pitch[1]], q[pitch[2]] = a, b, c
+    return q
+
+
+def joint_limits(arm):
+    """(lo, hi) position limits of the ACTUATED joints, in profile order.
+
+    Indexes through JOINT_IDS, not range(N) -- see that constant. A continuous
+    joint (URDF lower >= upper) is reported as +-pi, which is what the windup
+    and follow-through checks have always assumed.
+    """
+    lo, hi = [], []
+    for j in JOINT_IDS:
+        ji = p.getJointInfo(arm, j)
+        l, h = ji[8], ji[9]
+        if l >= h:
+            l, h = -np.pi, np.pi
+        lo.append(l)
+        hi.append(h)
+    return np.array(lo), np.array(hi)
+
+
 def _fkj(arm, q):
-    for j in range(N):
-        p.resetJointState(arm, j, q[j])
-    pos = np.array(p.getLinkState(arm, EE, computeForwardKinematics=True)[4])
+    for local_i, j in enumerate(JOINT_IDS):
+        p.resetJointState(arm, j, q[local_i])
+    ls = p.getLinkState(arm, EE, computeForwardKinematics=True)
+    # TCP world position: ee_link origin + TOOL_OFFSET rotated by the link's
+    # own orientation. Reduces to the bare flange position at the zero
+    # default -- see TOOL_OFFSET's docstring.
+    pos, _ = p.multiplyTransforms(ls[4], ls[5], TOOL_OFFSET.tolist(), [0, 0, 0, 1])
+    pos = np.array(pos)
     q_full = _pad(q)
-    jl, _ = p.calculateJacobian(arm, EE, [0, 0, 0], q_full, [0.] * len(q_full), [0.] * len(q_full))
+    # localPosition=TOOL_OFFSET gives the Jacobian of the TCP directly --
+    # PyBullet folds in the omega x r_offset coupling itself.
+    jl, _ = p.calculateJacobian(arm, EE, TOOL_OFFSET.tolist(), q_full,
+                                [0.] * len(q_full), [0.] * len(q_full))
     return pos, np.array(jl)[:, :N]
 
 
@@ -425,6 +594,47 @@ def search_azimuth(arm, lo, hi, azimuth, t_throw=1.1, seed_q=None,
     return min(candidates, key=joint_dist)
 
 
+def base_rotation_sign(arm, q_probe):
+    """+1 or -1: which way the base joint angle must move to aim the throw at
+    a LARGER world azimuth.
+
+    `build_table_by_rotation` propagates one verified posture across the
+    azimuth wedge by turning the base only, which is valid because gravity is
+    z-symmetric. But whether that means ADDING or SUBTRACTING the azimuth from
+    q[0] depends on how the URDF orients its base joint axis, and getting it
+    backwards does not fail -- it aims the throw the wrong way round. Measured
+    (Gen3 -1, UR7e +1), never assumed from the axis field: rotate the base by a
+    test angle, and see which sign makes the resulting end-effector velocity
+    equal Rz(+delta) times the original.
+
+    Every historical table predates this and is Gen3/Panda, i.e. -1, which is
+    the default `OptimizedReleaseSolver` falls back to for an unstamped table.
+    """
+    delta = np.deg2rad(20.0)
+    q = np.asarray(q_probe, dtype=float)
+    pitch = pitch_indices()
+    qd = np.zeros(N)
+    qd[pitch[0]], qd[pitch[1]] = 1.0, -0.5      # any in-plane motion will do
+    _, J0 = _fkj(arm, q)
+    v0 = J0 @ qd
+    ca, sa = np.cos(delta), np.sin(delta)
+    Rz = np.array([[ca, -sa, 0.0], [sa, ca, 0.0], [0.0, 0.0, 1.0]])
+    want = Rz @ v0
+    errs = {}
+    for sign in (-1.0, +1.0):
+        q2 = q.copy()
+        q2[0] = q[0] + sign * delta
+        _, J2 = _fkj(arm, q2)
+        errs[sign] = float(np.linalg.norm(J2 @ qd - want))
+    best = min(errs, key=errs.get)
+    if errs[best] > 1e-4 or errs[best] * 100 > errs[-best]:
+        raise ValueError(
+            f"{_ROBOT_NAME}: base-rotation sign is ambiguous "
+            f"(residuals {errs}); base rotation may not be a pure world-z "
+            "rotation for this arm, which build_table_by_rotation assumes.")
+    return best
+
+
 def build_table_by_rotation(e0, azimuth_deg_grid=None):
     """Propagate ONE verified az=0 posture across the whole azimuth wedge by
     base-rotation. This is the TossingBot / MC-PILOT (Eq. 5) formulation: a
@@ -445,18 +655,24 @@ def build_table_by_rotation(e0, azimuth_deg_grid=None):
     if azimuth_deg_grid is None:
         azimuth_deg_grid = np.arange(-33.0, 33.1, 3.0)
     az0 = np.deg2rad(float(e0.get("azimuth_deg", 0.0)))   # e0's OWN heading
+    sign = e0.get("base_sign")
+    if sign is None:
+        raise ValueError("e0 carries no measured base_sign -- see "
+                         "base_rotation_sign()")
+    sign = float(sign)
     table = []
     for az_deg in azimuth_deg_grid:
         az = np.deg2rad(az_deg) - az0     # rotation relative to e0's heading
         q = np.array(e0["q"], dtype=float).copy()
-        q[0] -= az
+        q[0] += sign * az
         entry = {
             "range": e0["range"], "q": q, "qd": np.array(e0["qd"]).copy(),
             "elev_deg": e0["elev_deg"], "speed": e0["speed"],
             "azimuth_deg": float(az_deg),
-            # marks the base-angle convention (q[0] = q0[0] - az, verified
-            # sign) so _optimized_release can recover q0 and aim exactly
+            # marks the base-angle convention (q[0] = q0[0] + base_sign*az)
+            # so the release solver can recover q0 and aim exactly
             "rotation_built": True,
+            "base_sign": sign,
         }
         if "v_dir" in e0:
             # exact release-velocity direction, rotated with the posture --
@@ -483,31 +699,23 @@ def search_release_state(t_throw=1.1):
     cid = p.connect(p.DIRECT)
     p.setGravity(0, 0, -9.81)
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
-    arm = p.loadURDF(pybullet_data.getDataPath() + "/" + URDF_REL_PATH,
-                     useFixedBase=True)
+    arm = load_arm()
     _set_n_full(arm)
-    lo, hi = [], []
-    for j in range(N):
-        ji = p.getJointInfo(arm, j)
-        l, h = ji[8], ji[9]
-        if l >= h:
-            l, h = -np.pi, np.pi
-        lo.append(l)
-        hi.append(h)
-    lo, hi = np.array(lo), np.array(hi)
+    lo, hi = joint_limits(arm)
 
     g2 = np.deg2rad(np.arange(-120, 121, 5))
     g4 = np.deg2rad(np.arange(-147, 148, 5))
     g6 = np.deg2rad(np.arange(-120, 121, 8))
+    pitch = pitch_indices()
     best = None
     for s2 in g2:
         for s4 in g4:
             for s6 in g6:
-                q = np.array([0.0, s2, 0.0, s4, 0.0, s6, 0.0])
+                q = sagittal_q(pitch, s2, s4, s6)
                 pos, J = _fkj(arm, q)
                 if pos[2] < 0.15:
                     continue
-                u1, u3 = J[:, 1], J[:, 3]
+                u1, u3 = J[:, pitch[0]], J[:, pitch[1]]
                 nvec = np.cross(u1, u3)
                 nn = np.linalg.norm(nvec)
                 if nn < 1e-8:
@@ -568,6 +776,12 @@ def search_release_state(t_throw=1.1):
                                     "elev_deg": float(elev_deg),
                                     "v_dir": d.copy(), "azimuth_deg": 0.0,
                                     "release_pos": pos.copy()}
+    # Measure the base-rotation sign on THIS arm before tearing the client
+    # down -- build_table_by_rotation refuses to guess it.
+    if best is not None:
+        best["base_sign"] = base_rotation_sign(arm, best["q"])
+        print(f"base rotation sign (measured, not assumed): "
+              f"{best['base_sign']:+.0f}")
     p.disconnect(cid)
     if best is None:
         return []
@@ -588,18 +802,9 @@ def search(azimuth_deg_grid=None, t_throw=1.1):
     cid = p.connect(p.DIRECT)
     p.setGravity(0, 0, -9.81)
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
-    arm = p.loadURDF(pybullet_data.getDataPath() + "/" + URDF_REL_PATH,
-                     useFixedBase=True)
+    arm = load_arm()
     _set_n_full(arm)
-    lo, hi = [], []
-    for j in range(N):
-        ji = p.getJointInfo(arm, j)
-        l, h = ji[8], ji[9]
-        if l >= h:
-            l, h = -np.pi, np.pi
-        lo.append(l)
-        hi.append(h)
-    lo, hi = np.array(lo), np.array(hi)
+    lo, hi = joint_limits(arm)
 
     # Independent per-azimuth search (no seed_q continuity chaining -- see
     # search_azimuth's docstring/comments: that machinery is needed for the
@@ -622,18 +827,9 @@ def search_and_rotate(t_throw=1.1):
     cid = p.connect(p.DIRECT)
     p.setGravity(0, 0, -9.81)
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
-    arm = p.loadURDF(pybullet_data.getDataPath() + "/" + URDF_REL_PATH,
-                     useFixedBase=True)
+    arm = load_arm()
     _set_n_full(arm)
-    lo, hi = [], []
-    for j in range(N):
-        ji = p.getJointInfo(arm, j)
-        l, h = ji[8], ji[9]
-        if l >= h:
-            l, h = -np.pi, np.pi
-        lo.append(l)
-        hi.append(h)
-    lo, hi = np.array(lo), np.array(hi)
+    lo, hi = joint_limits(arm)
     e0 = search_azimuth(arm, lo, hi, 0.0, t_throw, wide=True)
     p.disconnect(cid)
     if e0 is None:
@@ -646,6 +842,31 @@ if __name__ == "__main__":
     ap.add_argument("--robot", default="kinova_gen3_dyn")
     ap.add_argument("--out", default=None)
     ap.add_argument("--t_throw", type=float, default=1.1)
+    ap.add_argument("--floor_z", type=float, default=0.0,
+                    help=("landing plane in BASE frame (m, signed). 0.0 = floor "
+                          "level with the base (default, matches every table "
+                          "shipped before 2026-08-12). Arm on a base plate of "
+                          "height h throwing to the real floor: pass -h, e.g. "
+                          "-0.433. Stamped into every table entry so a table "
+                          "cannot be silently used against the wrong floor."))
+    ap.add_argument("--tool_offset_z", type=float, default=0.0,
+                    help=("TCP offset along ee_link's own z-axis (m), e.g. "
+                          "0.12 for the real Robotiq 2F-85 (measured from the "
+                          "arm's own firmware, GetToolConfiguration -- see "
+                          "CLAUDE.md). 0.0 (default) = bare flange, matching "
+                          "every table shipped before this flag existed and "
+                          "matching the sim, which has no gripper modeled. "
+                          "Stamped into every table entry; run_hardware_throw.py "
+                          "refuses a mismatched --tool_offset_z at throw time."))
+    ap.add_argument("--repair_inertials", action="store_true",
+                    help="Give bodyless URDF links an explicit ZERO-mass "
+                         "inertial block before loading, instead of letting "
+                         "PyBullet substitute 1 kg each. OFF by default, which "
+                         "is bug-compatible with every table and paper number "
+                         "produced so far -- see REPAIR_INERTIALS in this "
+                         "module. Affects only arms that HAVE bodyless links "
+                         "(Gen3: +3.00 kg / +46%, UR7e: +5.00 kg / +23%; KUKA "
+                         "and Panda: none), and only their torque gates.")
     ap.add_argument("--mode", choices=["overhead", "rotate", "independent"],
                     default="overhead",
                     help=("overhead (default): release-state-first search -- max "
@@ -657,6 +878,9 @@ if __name__ == "__main__":
     args = ap.parse_args()
     if args.robot != _ROBOT_NAME:
         set_robot(args.robot)
+    REPAIR_INERTIALS = args.repair_inertials
+    set_floor_z(args.floor_z)
+    set_tool_offset([0.0, 0.0, args.tool_offset_z])
     out_path = args.out or ("throw_pose_table.npy" if args.robot == "kinova_gen3_dyn"
                             else f"{args.robot}_throw_pose_table.npy")
 
@@ -666,8 +890,15 @@ if __name__ == "__main__":
         table = search_and_rotate(t_throw=args.t_throw)
     else:
         table = search(t_throw=args.t_throw)
+    # Stamp the geometry the table was searched against. A pose table is only
+    # optimal for one floor; without this the file carries no way to tell which,
+    # and a 0.433 m mismatch reads as a policy that overshoots.
+    for e in table:
+        e["floor_z"] = float(FLOOR_Z)
+        e["tool_offset"] = TOOL_OFFSET.tolist()
     np.save(out_path, np.array(table, dtype=object))
-    print(f"saved {out_path}: {len(table)} azimuth entries")
+    print(f"saved {out_path}: {len(table)} azimuth entries  "
+          f"(floor_z={FLOOR_Z:+.3f} m, tool_offset_z={TOOL_OFFSET[2]:+.3f} m)")
     for e in table:
         roll_qd = np.max(np.abs(e["qd"][list(_ROLL_IDX)]))
         print(f"  az={e['azimuth_deg']:+6.1f}  speed={e['speed']:.2f} m/s  "
