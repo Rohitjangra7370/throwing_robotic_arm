@@ -1,0 +1,32 @@
+{
+  "robot": "franka_panda_dyn",
+  "pitch_joints": [
+    1,
+    3,
+    5
+  ],
+  "repair_inertials": true,
+  "t_throw": 1.6,
+  "elapsed_s": 1821.2430965900421,
+  "stats": {
+    "n_postures": 72917,
+    "n_static_feasible": 72917,
+    "n_lp_success": 1097220,
+    "n_windup_kin_ok": 79412,
+    "n_release_instant_ok": 79412,
+    "n_windup_path_fail": 0,
+    "n_ramp_fail": 0,
+    "n_follow_fail": 0,
+    "n_full_ok": 79412
+  },
+  "best_release_instant_only": {
+    "land": 1.6491251398204585,
+    "speed": 3.2718596822808252,
+    "elev_deg": 10
+  },
+  "best_full_trajectory": {
+    "land": 1.6491251398204585,
+    "speed": 3.2718596822808252,
+    "elev_deg": 10
+  }
+}

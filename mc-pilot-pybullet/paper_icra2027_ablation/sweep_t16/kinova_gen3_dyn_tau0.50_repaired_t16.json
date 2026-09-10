@@ -1,0 +1,32 @@
+{
+  "robot": "kinova_gen3_dyn_tau0.50",
+  "pitch_joints": [
+    1,
+    3,
+    5
+  ],
+  "repair_inertials": true,
+  "t_throw": 1.6,
+  "elapsed_s": 1896.4755864143372,
+  "stats": {
+    "n_postures": 69505,
+    "n_static_feasible": 57649,
+    "n_lp_success": 706703,
+    "n_windup_kin_ok": 331415,
+    "n_release_instant_ok": 330325,
+    "n_windup_path_fail": 213708,
+    "n_ramp_fail": 45755,
+    "n_follow_fail": 24828,
+    "n_full_ok": 46034
+  },
+  "best_release_instant_only": {
+    "land": 1.0310114411320317,
+    "speed": 2.096164260134767,
+    "elev_deg": 5
+  },
+  "best_full_trajectory": {
+    "land": 0.9367892482861153,
+    "speed": 1.9238821314361891,
+    "elev_deg": 10
+  }
+}
