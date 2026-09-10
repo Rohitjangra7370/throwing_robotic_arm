@@ -490,7 +490,9 @@ inverse dynamics are evaluated and constrained to remain below $90\%$ of the
 corresponding manufacturer torque limit.
 
 Next, the cubic velocity profile used by the runtime controller to move from
-windup to release is evaluated at 40 points. At each point, the required torque
+windup to release is evaluated at 40 points over a $1.1$~s ramp, held equal
+across arms so the comparison in Sec.~\ref{sec:results-ablation} varies only the
+manipulator. At each point, the required torque
 includes the manipulator inverse dynamics and the Jacobian-transpose
 feedforward term associated with the weight of the gripped object. The torque
 must remain below $75\%$ of the corresponding actuator limit.
