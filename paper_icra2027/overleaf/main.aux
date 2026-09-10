@@ -1,0 +1,104 @@
+\relax 
+\citation{turcato2025mcpilot}
+\citation{amadio2022mcpilco}
+\citation{turcato2023codit}
+\@writefile{toc}{\contentsline {section}{\numberline {I}Introduction}{1}{}\protected@file@percent }
+\newlabel{sec:intro}{{I}{1}}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Overview of the proposed constraint-aware model-based PTP framework. The offline stage is executed once per manipulator; the online stage repeats once per training trial.}}{1}{}\protected@file@percent }
+\newlabel{fig:pipeline}{{1}{1}}
+\citation{lynch1999dynamic}
+\citation{bombile2023bimanual}
+\citation{zeng2020tossingbot}
+\citation{monastirsky2023learning}
+\citation{huang2023dynamic}
+\citation{munn2024wholebody}
+\citation{zhang2025catch}
+\citation{werner2024dynamic}
+\citation{liu2022adaptive}
+\citation{moura2022nonprehensile}
+\citation{turcato2025mcpilot}
+\@writefile{toc}{\contentsline {section}{\numberline {II}Constraint-Aware Model-Based Pick-Throw-Place}{2}{}\protected@file@percent }
+\newlabel{sec:approach}{{II}{2}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {II-A}Problem Formulation and Learning Framework}{2}{}\protected@file@percent }
+\newlabel{sec:method-formulation}{{II-A}{2}}
+\newlabel{eq:policy-squash}{{2}{2}}
+\@writefile{loa}{\contentsline {algorithm}{\numberline {1}{\ignorespaces Constraint-Aware Model-Based Pick-Throw-Place}}{3}{}\protected@file@percent }
+\newlabel{alg:pipeline}{{1}{3}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {II-B}Release-State Search}{3}{}\protected@file@percent }
+\newlabel{sec:method-search}{{II-B}{3}}
+\newlabel{eq:release-lp}{{3}{3}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {II-C}Whole-Trajectory Feasibility}{3}{}\protected@file@percent }
+\newlabel{sec:method-feasibility}{{II-C}{3}}
+\citation{coumans2021pybullet}
+\citation{turcato2025mcpilot}
+\@writefile{toc}{\contentsline {subsection}{\numberline {II-D}Dynamics-Aware Throw Execution}{4}{}\protected@file@percent }
+\newlabel{sec:method-torque}{{II-D}{4}}
+\newlabel{eq:computed-torque}{{5}{4}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {II-E}Target-Height Generalization}{4}{}\protected@file@percent }
+\newlabel{sec:method-height}{{II-E}{4}}
+\@writefile{toc}{\contentsline {section}{\numberline {III}Results and Discussion}{4}{}\protected@file@percent }
+\newlabel{sec:results}{{III}{4}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {III-A}Simulation Environment and Evaluation}{4}{}\protected@file@percent }
+\newlabel{sec:setup-simulation}{{III-A}{4}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Simulated Kinova Gen3 throw: (a) windup, (b) release, (c) flight during post-release recovery, and (d) landing. Frames are from a single rigid-body rollout of the learned policy under computed-torque control; the dashed curve in (c) is the object's recorded trajectory.}}{5}{}\protected@file@percent }
+\newlabel{fig:throw-phases}{{2}{5}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {III-B}Hardware Environment}{5}{}\protected@file@percent }
+\newlabel{sec:setup-hardware}{{III-B}{5}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {III-C}Training and Implementation Details}{5}{}\protected@file@percent }
+\newlabel{sec:setup-implementation}{{III-C}{5}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {III-D}Optimization Reliability}{5}{}\protected@file@percent }
+\newlabel{sec:results-baseline}{{III-D}{5}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {III-E}Cross-Manipulator Evaluation}{5}{}\protected@file@percent }
+\newlabel{sec:results-multiarm}{{III-E}{5}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {III-F}Aerodynamic-Drag Robustness}{5}{}\protected@file@percent }
+\newlabel{sec:results-drag}{{III-F}{5}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Seeds converged, out of five, under random exploration and under each reliability modification in turn.}}{6}{}\protected@file@percent }
+\newlabel{fig:reliability}{{3}{6}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Final-policy landing error per random seed, on 50 previously unseen targets each.}}{6}{}\protected@file@percent }
+\newlabel{fig:eval-dist}{{4}{6}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {III-G}Target-Height Generalization}{6}{}\protected@file@percent }
+\newlabel{sec:results-height}{{III-G}{6}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {III-H}Low-Torque Throwing}{6}{}\protected@file@percent }
+\newlabel{sec:results-overhead}{{III-H}{6}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Landing error against target height for the KUKA iiwa, on 100 targets at heights not seen during training. The line is a rolling mean, the band its standard deviation.}}{7}{}\protected@file@percent }
+\newlabel{fig:height-gen}{{5}{7}}
+\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces Zero-new-trial target-height adaptation on the Kinova Gen3, all conditions evaluated on the same fixed set of 30 previously unseen targets.}}{7}{}\protected@file@percent }
+\newlabel{fig:height-adapt}{{6}{7}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {III-I}Whole-Trajectory Feasibility}{7}{}\protected@file@percent }
+\newlabel{sec:results-ablation}{{III-I}{7}}
+\@writefile{lot}{\contentsline {table}{\numberline {I}{\ignorespaces Release-instant-only versus whole-trajectory feasibility across three manipulators on the same posture and direction grid. Bodyless frames in each manipulator description are given zero mass; loading the Gen3 description unmodified instead assigns them the simulator's 1\nobreakspace  {}kg default, adding 3.00\nobreakspace  {}kg at the wrist and reducing its survivors to 74{,}230 (16.6\%).}}{7}{}\protected@file@percent }
+\newlabel{tab:ablation}{{I}{7}}
+\@writefile{lof}{\contentsline {figure}{\numberline {7}{\ignorespaces Share of release-instant-feasible candidates rejected by each stage of the cascade, against actuator torque capacity, for Gen3-identical kinematics.}}{7}{}\protected@file@percent }
+\newlabel{fig:torque-sweep}{{7}{7}}
+\@writefile{lot}{\contentsline {table}{\numberline {II}{\ignorespaces Torque-capacity sweep using Gen3-identical kinematics. Rejection rates are computed relative to the torque-dependent release-instant-feasible pool.}}{8}{}\protected@file@percent }
+\newlabel{tab:torque-sweep}{{II}{8}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {III-J}Computational Efficiency}{8}{}\protected@file@percent }
+\newlabel{sec:results-cost}{{III-J}{8}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {III-K}Hardware Validation}{8}{}\protected@file@percent }
+\newlabel{sec:results-hw}{{III-K}{8}}
+\@writefile{lot}{\contentsline {table}{\numberline {III}{\ignorespaces Which stages of the execution pipeline have run on the physical Kinova Gen3. What separates this study from a physical accuracy result is measurement, not execution.}}{8}{}\protected@file@percent }
+\newlabel{tab:hw-status}{{III}{8}}
+\@writefile{lof}{\contentsline {figure}{\numberline {8}{\ignorespaces Net landing error against the instant the object leaves the hand, from $n=9$ recorded full-speed throws (band: $\pm 1$ s.d.). The command lag makes the throw short and a late release makes it long, so the two cancel near $65$\nobreakspace  {}ms; the shaded column is where the fingers were observed to first move.}}{8}{}\protected@file@percent }
+\newlabel{fig:error-budget}{{8}{8}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {III-L}Discussion}{8}{}\protected@file@percent }
+\newlabel{sec:discussion}{{III-L}{8}}
+\bibstyle{ieeetr}
+\bibdata{reference}
+\bibcite{turcato2025mcpilot}{1}
+\bibcite{amadio2022mcpilco}{2}
+\bibcite{turcato2023codit}{3}
+\bibcite{lynch1999dynamic}{4}
+\bibcite{bombile2023bimanual}{5}
+\bibcite{zeng2020tossingbot}{6}
+\bibcite{monastirsky2023learning}{7}
+\bibcite{huang2023dynamic}{8}
+\bibcite{munn2024wholebody}{9}
+\bibcite{zhang2025catch}{10}
+\bibcite{werner2024dynamic}{11}
+\bibcite{liu2022adaptive}{12}
+\bibcite{moura2022nonprehensile}{13}
+\bibcite{coumans2021pybullet}{14}
+\@writefile{toc}{\contentsline {section}{\numberline {IV}Conclusion}{9}{}\protected@file@percent }
+\newlabel{sec:conclusion}{{IV}{9}}
+\@writefile{toc}{\contentsline {section}{References}{9}{}\protected@file@percent }
+\gdef \@abspage@last{9}
