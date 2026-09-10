@@ -16,10 +16,10 @@ from __future__ import annotations
 import numpy as np
 
 from perception.ball_track import (detect_candidates, frame_diagnostics,
-                                   median_background)
+                                   median_background, reject_static_candidates)
 from perception.ray_plane import D435I_IR_848x480
 from perception.stereo import D435I_IR_BASELINE_M, StereoRig, pair_candidates
-from perception.trajectory import (BALL_RADIUS, Z_FLOOR_BASE,
+from perception.trajectory import (BALL_RADIUS, G_BASE, Z_FLOOR_BASE,
                                    ransac_track, solve_impact)
 
 __all__ = ["build_observations", "measure_landing", "default_rig"]
@@ -29,7 +29,7 @@ def default_rig():
     return StereoRig(D435I_IR_848x480, D435I_IR_BASELINE_M)
 
 
-def build_observations(rec, bg1=None, bg2=None, **detect_kw):
+def build_observations(rec, bg1=None, bg2=None, reject_static=True, **detect_kw):
     """
     Recording -> ((N, 5) observation array [t, u1, v1, u2, v2], max_mask_frac).
 
@@ -41,6 +41,14 @@ def build_observations(rec, bg1=None, bg2=None, **detect_kw):
     enters view is one of those, and it is not an error. Frames with several
     candidates contribute several rows; deciding which is the ball is
     `ransac_track`'s job, not this function's.
+
+    `reject_static` (default True) drops, per camera stream, any candidate
+    that recurs at nearly the same pixel location across many frames of this
+    recording before pairing -- see `reject_static_candidates`'s docstring
+    (found 2026-09-02: a permanently-mounted calibration board in the fixed
+    overhead FOV otherwise floods the observation set with non-ball detections
+    that dilute the real track below RANSAC's inlier gate). Pass False to get
+    the raw, unfiltered candidates (e.g. for diagnosing the detector itself).
     """
     ir1, ir2, ts = rec["ir1"], rec["ir2"], np.asarray(rec["t"], float)
     if len(ir1) != len(ir2) or len(ir1) != len(ts):
@@ -51,13 +59,22 @@ def build_observations(rec, bg1=None, bg2=None, **detect_kw):
     if bg2 is None:
         bg2 = median_background(ir2)
 
-    rows, max_frac = [], 0.0
+    max_frac = 0.0
+    per_left, per_right = [], []
     for k in range(len(ts)):
         max_frac = max(max_frac,
                        frame_diagnostics(ir1[k], bg1)["mask_nonzero_frac"],
                        frame_diagnostics(ir2[k], bg2)["mask_nonzero_frac"])
-        left = detect_candidates(ir1[k], bg1, **detect_kw)
-        right = detect_candidates(ir2[k], bg2, **detect_kw)
+        per_left.append(detect_candidates(ir1[k], bg1, **detect_kw))
+        per_right.append(detect_candidates(ir2[k], bg2, **detect_kw))
+
+    if reject_static:
+        per_left = reject_static_candidates(per_left)
+        per_right = reject_static_candidates(per_right)
+
+    rows = []
+    for k in range(len(ts)):
+        left, right = per_left[k], per_right[k]
         if not left or not right:
             continue
         lt = [c.as_uv_area() for c in left]
@@ -80,7 +97,9 @@ def build_observations(rec, bg1=None, bg2=None, **detect_kw):
 
 
 def measure_landing(rec, R_bc, t_bc, z_floor=Z_FLOOR_BASE,
-                    ball_radius=BALL_RADIUS, seed=0, rig=None, **detect_kw):
+                    ball_radius=BALL_RADIUS, seed=0, rig=None,
+                    commanded_speed=None, release_t_offset=None,
+                    speed_ratio_tol=2.0, **detect_kw):
     """
     The whole offline pipeline, in base-frame coordinates.
 
@@ -94,10 +113,61 @@ def measure_landing(rec, R_bc, t_bc, z_floor=Z_FLOOR_BASE,
     solve_impact around the estimate. A landing point WITHOUT a sigma is not
     eligible to become a GP datapoint, which is why this is returned and not
     merely logged.
+
+    `commanded_speed`, if given, sanity-checks the fitted release speed against
+    the throw's own commanded release speed (already known and logged
+    per-throw -- an outside fact, same principle `start_of_day.py`'s gates
+    use, since RANSAC/RMS cannot catch this). `release_t_offset` is REQUIRED
+    alongside it: `p0`/`v0` are fit parameters at the recording's local
+    `t = 0`, which for a `session_camera.RingBuffer`-style capture is
+    `PRE_S` seconds BEFORE the ball is ever released (`t` is zeroed to the
+    window's first kept frame, and the window starts at `t_release - PRE_S`)
+    -- NOT at release. Comparing raw `v0` to a commanded release speed is
+    comparing the wrong instant: found 2026-09-02, a real throw's `v0`
+    included ~0.45s of backward gravity extrapolation through a period the
+    ball was still in the gripper, inflating the vertical component by
+    `g * PRE_S =~ 4.4 m/s` on its own and making a fine measurement look like
+    an 18x-wrong one. The check instead evaluates velocity at
+    `t = release_t_offset` (`v0 + g * release_t_offset`) before comparing.
+    Passing `commanded_speed` without `release_t_offset` raises ValueError --
+    silently falling back to the wrong instant is exactly the bug this
+    guards against. Both `None` (default) skips the check entirely for
+    callers with no commanded speed to compare against (offline re-analysis,
+    the standalone CLI).
+
+    Refuses when the release-time speed is outside
+    `[1/speed_ratio_tol, speed_ratio_tol] * commanded_speed`.
     """
+    if commanded_speed is not None and release_t_offset is None:
+        raise ValueError(
+            "commanded_speed requires release_t_offset -- p0/v0 are fit at "
+            "the recording's local t=0, which is PRE_S seconds BEFORE "
+            "release for a RingBuffer-style capture, not at release itself. "
+            "Comparing raw v0 to a commanded release speed compares the "
+            "wrong instant (found 2026-09-02: inflated a fine measurement "
+            "by ~g*PRE_S in the vertical component). Pass the offset from "
+            "release to the window's local t=0 for this capture's own "
+            "convention (e.g. session_camera.PRE_S).")
+
     rig = rig or default_rig()
     obs, max_frac = build_observations(rec, **detect_kw)
     inliers, fit = ransac_track(obs, rig, R_bc, t_bc, seed=seed)
+
+    if commanded_speed is not None:
+        v_release = fit.v0 + G_BASE * release_t_offset
+        measured_speed = float(np.linalg.norm(v_release))
+        lo, hi = commanded_speed / speed_ratio_tol, commanded_speed * speed_ratio_tol
+        if not (lo <= measured_speed <= hi):
+            raise RuntimeError(
+                f"fit passed RANSAC ({inliers.size}/{obs.shape[0]} frames, "
+                f"{fit.rms_px:.2f} px RMS) but release-time speed "
+                f"{measured_speed:.2f} m/s (v0 shifted by {release_t_offset:.3f}s) "
+                f"is outside [{lo:.2f}, {hi:.2f}] m/s of the commanded "
+                f"{commanded_speed:.2f} m/s -- likely a depth/velocity "
+                f"degeneracy from a short or poorly-conditioned track, not a "
+                f"real measurement. Refusing rather than reporting "
+                f"a plausible-looking wrong number; re-throw.")
+
     x, y, t_imp = solve_impact(fit.p0, fit.v0, z_floor=z_floor,
                                ball_radius=ball_radius)
 

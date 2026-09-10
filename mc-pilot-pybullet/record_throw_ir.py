@@ -20,7 +20,7 @@ def main():
     ap.add_argument("--out", required=True, help="output .npz path")
     ap.add_argument("--seconds", type=float, default=2.0)
     ap.add_argument("--countdown", type=int, default=3)
-    ap.add_argument("--exposure_us", type=int, default=2000)
+    ap.add_argument("--exposure_us", type=int, default=4000)
     ap.add_argument("--no_emitter", action="store_true")
     args = ap.parse_args()
 
