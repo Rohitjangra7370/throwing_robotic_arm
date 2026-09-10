@@ -104,7 +104,11 @@ class SessionState:
         return self.stage in (Stage.READY, Stage.MODEL_UPDATED)
 
     def check_scale(self, requested):
-        return scale_allowed(requested, self.logged_scales)
+        # Escalation ladder disabled by explicit user request 2026-09-02 --
+        # any speed_scale runs immediately, no 0.15->0.30->0.60->1.00 staging.
+        # scale_allowed()/logged_scales still exist and are still tested; this
+        # just stops the GUI from calling into them.
+        return True, ""
 
     def record_throw(self, record):
         self.throws.append(record)
@@ -430,6 +434,8 @@ class ThrowCycle:
         import numpy as np
         from measure_landing import measure_landing
         from perception.ir_capture import save_recording
+        from robot_arm.kinova_hardware import GRIPPER_RELEASE_LATENCY_S
+        from session_camera import PRE_S
 
         ex, arm, profile = plan["ex"], plan["arm"], plan["profile"]
 
@@ -519,9 +525,19 @@ class ThrowCycle:
             return None, {"refusal_reason": f"capture save failed: {e}"}, exec_stats, None
 
         R, t = extrinsic
+        # mark_release() timestamps the commanded gripper OPEN, not the ball
+        # actually leaving the hand -- GRIPPER_RELEASE_LATENCY_S (measured,
+        # see kinova_hardware.py) is the real mechanical delay between them.
+        # Both offsets found necessary 2026-09-02: PRE_S alone (window-start
+        # to marked-release) left a real throw's release-time speed at the
+        # very edge of the sanity tolerance; adding the gripper latency
+        # brought it comfortably inside.
+        release_t_offset = PRE_S + GRIPPER_RELEASE_LATENCY_S
         try:
             meas = measure_landing(event["rec"], R, t, z_floor=-self.args.base_height,
-                                   ball_radius=self.args.ball_radius)
+                                   ball_radius=self.args.ball_radius,
+                                   commanded_speed=plan["speed"],
+                                   release_t_offset=release_t_offset)
             return [float(meas["x"]), float(meas["y"])], meas, exec_stats, capture_file
         except Exception as e:
             # Broad on purpose, not just RuntimeError: the ball has ALREADY LEFT
@@ -651,7 +667,7 @@ def build_argparser():
     g.add_argument("--camera_fps", type=int, default=90)
     g.add_argument("--camera_width", type=int, default=848)
     g.add_argument("--camera_height", type=int, default=480)
-    g.add_argument("--exposure_us", type=int, default=2000)
+    g.add_argument("--exposure_us", type=int, default=4000)
     g.add_argument("--no_emitter", action="store_true")
     g.add_argument("--camera_ready_timeout", type=float, default=8.0,
                    help="seconds to wait for the first confirmed frame before giving "
