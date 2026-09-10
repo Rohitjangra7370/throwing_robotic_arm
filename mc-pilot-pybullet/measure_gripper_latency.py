@@ -50,6 +50,30 @@ from robot_arm.kinova_hardware import (HIGH_LEVEL_MAX_HZ, HardwareThrowExecutor,
 from robot_arm.robot_profiles import get_robot_profile
 
 
+# Below this the fingers have something between them. Same rule and same
+# measured basis as pickup_and_lift.GRASP_THRESHOLD_PCT (58-59% on a real
+# tennis ball against ~99-100% closing on nothing) -- kept as one number in
+# one place would be better, but that module moves the arm on import-time
+# defaults, so the constant is mirrored here with its provenance instead.
+GRASP_THRESHOLD_PCT = 90.0
+# Fully open reads ~0.87% on this gripper. Anything above this but below
+# GRASP_THRESHOLD_PCT is the motor stalled PART-WAY, i.e. holding something.
+OPEN_PCT = 5.0
+
+
+def holding_something(pos_pct):
+    """
+    True iff the fingers are stalled on an object.
+
+    NOT the same as "less than GRASP_THRESHOLD_PCT". An OPEN gripper is also
+    below that threshold (~0.87%), so a bare `pos < 90` test refuses the one
+    state it is safe to close from. The hazardous state is stalled PART-WAY:
+    open at one end, closed-on-nothing (~99-100%) at the other, a held object
+    in between (61.4% measured on this tennis ball, 58.08% on the previous one).
+    """
+    return OPEN_PCT < float(pos_pct) < GRASP_THRESHOLD_PCT
+
+
 def sample_transition(backend, target_closed, settle_eps=0.5, timeout=3.0,
                       onset_eps=0.5, hz=1000.0):
     """
@@ -155,6 +179,23 @@ def main():
     ap.add_argument("--clear_pct", type=float, default=None,
                     help="finger travel %% at which the ball is free; if omitted, "
                          "t_clear is not reported")
+    ap.add_argument("--loaded", action="store_true",
+                    help="BALL-LOADED mode. The saved runs to date are all EMPTY "
+                         "(p_start 99.13%%, i.e. the fingers closed on nothing), so "
+                         "the compensated onset has never been measured from the "
+                         "state a real throw releases from: a 2F-85 gripping a "
+                         "tennis ball STALLS at ~58%%. This mode prompts for a ball "
+                         "reload before each cycle, verifies a real grasp happened "
+                         "(pickup_and_lift.py's rule), and refuses to re-close on an "
+                         "already-stalled gripper -- pushing again into a held ball "
+                         "is the proximate trigger of the 2026-08-22 ROBOT_IN_FAULT.")
+    ap.add_argument("--release_speed", type=float, default=1.424,
+                    help="TCP release speed (m/s) used to convert a latency into "
+                         "a landing error. Default 1.424 = what "
+                         "results_kinetic_chain_gen3_tcp/1 commands at a 0.70 m "
+                         "target, verified through run_hardware_throw.py plan. "
+                         "The old hardcoded 1.498 predates the TCP-offset "
+                         "retrain; check `plan` for your actual target.")
     ap.add_argument("--out", default="results_gripper_latency.npz")
     ap.add_argument("--probe", type=float, default=None, metavar="SECONDS",
                     help="READ-ONLY: open the UDP channel, sample for SECONDS, "
@@ -186,8 +227,32 @@ def main():
                   f"({'REAL ARM' if args.arm else 'DRY-RUN, latency is 0 by construction'})\n")
             rows, traces = [], []
             for i in range(args.trials):
+                if args.loaded:
+                    pre, _ = ex.backend.read_gripper()
+                    if holding_something(pre) and args.arm:
+                        print(f"REFUSED: gripper at {pre:.1f}% is stalled part-way, "
+                              f"i.e. still holding something (open is <{OPEN_PCT}%, "
+                              f"closed-on-nothing is >{GRASP_THRESHOLD_PCT}%). "
+                              f"Re-closing onto a stalled gripper is what preceded "
+                              f"the 2026-08-22 ROBOT_IN_FAULT. Open it first:\n"
+                              f"  run_hardware_throw.py gripper --open --arm "
+                              f"--robot kinova_gen3_dyn")
+                        return 2
+                    input(f"\n  [{i+1}/{args.trials}] place the ball between the "
+                          f"fingers, hands CLEAR, then press Enter... ")
                 # close first (grasp), then the OPEN transition is the release
                 sample_transition(ex.backend, target_closed=True)
+                if args.loaded:
+                    grip, _ = ex.backend.read_gripper()
+                    ok = holding_something(grip)
+                    print(f"       grasp check: {grip:.2f}% closed -> "
+                          f"{'BALL HELD' if ok else 'CLOSED ON NOTHING'}")
+                    if not ok and args.arm:
+                        print("       SKIPPING this cycle: an empty close measures "
+                              "the same thing the existing traces already measured.")
+                        sample_transition(ex.backend, target_closed=False)
+                        time.sleep(args.gap)
+                        continue
                 time.sleep(args.gap)
                 p0, tr = sample_transition(ex.backend, target_closed=False)
                 r = analyse(p0, tr, ball_radius_pct=args.clear_pct)
@@ -195,8 +260,10 @@ def main():
                 rows.append(r)
                 print(f"  [{i+1:2d}] rate {r.get('rate_hz', float('nan')):7.1f} Hz  "
                       f"onset {1e3*(r.get('t_onset') or float('nan')):6.1f} ms  "
+                      f"clear {1e3*(r.get('t_clear') or float('nan')):6.1f} ms  "
                       f"settle {1e3*(r.get('t_settle') or float('nan')):6.1f} ms  "
-                      f"travel {r['p_start']:.1f} -> {r['p_end']:.1f} %")
+                      f"travel {r['p_start']:.1f} -> {r['p_end']:.1f} %"
+                      f"{'  <-- EMPTY, not a loaded release' if r['p_start'] > GRASP_THRESHOLD_PCT else ''}")
                 time.sleep(args.gap)
         finally:
             ex.backend.close_realtime_feedback()
@@ -217,9 +284,25 @@ def main():
             print(f"{label}: not measured")
             continue
         print(f"{label}: {1e3*m:6.1f} +- {1e3*s:.1f} ms  (n={n})")
+        v = args.release_speed
         if key == "t_onset":
-            print(f"{'':27}  -> advance the release trigger by this much;"
-                  f" at 1.498 m/s it is {1.498*m*100:.1f} cm of landing error")
+            print(f"{'':27}  -> currently compensated (GRIPPER_RELEASE_LATENCY_S);"
+                  f" at {v:.3f} m/s it is {v*m*100:.1f} cm of landing error")
+        elif key == "t_clear":
+            m_on, _, _ = _stat("t_onset")
+            if m_on is not None:
+                print(f"{'':27}  -> the ball leaves HERE, not at onset: "
+                      f"{1e3*(m-m_on):.1f} ms past it, uncompensated.")
+                print(f"{'':27}  -> SIGN IS NOT OBVIOUS, do not assume undershoot. "
+                      f"During GRIPPER_RELEASE_PAUSE_S the arm COASTS at the held "
+                      f"joint velocity rather than decelerating, so a late "
+                      f"departure keeps the wrist SWINGING: release elevation "
+                      f"falls and the throw gets LONGER. That opposes the arm's "
+                      f"own command lag, which shortens it. Net sign depends on "
+                      f"the release state -- integrate q forward at the held qd "
+                      f"and re-solve the ballistic landing (measured 2026-09-09: "
+                      f"the two cancel near +76 ms). The pre-pause docs saying "
+                      f"'latency = undershoot' predate that coast window.")
 
     np.savez(args.out, traces=np.array(traces, dtype=object), allow_pickle=True)
     print(f"\ntraces -> {args.out}")

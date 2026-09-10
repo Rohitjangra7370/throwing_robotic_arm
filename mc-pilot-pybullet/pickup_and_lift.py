@@ -32,7 +32,8 @@ GRASP_THRESHOLD_PCT = 90.0   # below this = something is between the fingers
 
 
 def pickup_and_lift(ip, robot, pickup_pose_path="pickup_pose.json",
-                    lift_z=0.10, home_duration=6.0, lift_duration=4.0):
+                    lift_z=0.10, home_duration=6.0, lift_duration=4.0,
+                    home_speed_frac=0.25):
     profile = get_robot_profile(robot)
     q_pickup = np.asarray(json.load(open(pickup_pose_path))["q_pickup_rad"], float)
 
@@ -42,7 +43,21 @@ def pickup_and_lift(ip, robot, pickup_pose_path="pickup_pose.json",
     pos_pct = None
     try:
         with HardwareThrowExecutor(limits, dry_run=False, ip=ip) as ex:
-            ex.home(arm, q_pickup, duration=home_duration)
+            ex.home(arm, q_pickup, duration=home_duration,
+                    speed_frac=home_speed_frac)
+
+            # OPEN FULLY BEFORE CLOSING. Closing a gripper that is already
+            # stalled on an object pushes the motor into it a second time, and
+            # that is the proximate trigger of the 2026-08-22 ROBOT_IN_FAULT
+            # (root cause electrical, but this is what preceded it). It also
+            # means the fingers are actually clear when the ball is seated,
+            # rather than half-shut around wherever the last cycle left them.
+            pre, _ = ex.backend.read_gripper()
+            if pre > 1.0:
+                print(f"gripper at {pre:.1f}% -- opening fully before the grasp")
+                ex.set_gripper(closed=False)
+                pre, _ = ex.backend.read_gripper()
+                print(f"gripper now {pre:.1f}% (open)")
 
             ex.set_gripper(closed=True)
             pos_pct, _ = ex.backend.read_gripper()
@@ -62,7 +77,8 @@ def pickup_and_lift(ip, robot, pickup_pose_path="pickup_pose.json",
                     jointRanges=(arm._ik_q_hi - arm._ik_q_lo).tolist(),
                     physicsClientId=arm._cid))[:len(profile.joint_ids)]
                 print(f"lifting {lift_z*100:.0f}cm in Z, q_lift: {np.round(q_lift, 4)}")
-                ex.home(arm, q_lift, duration=lift_duration)
+                ex.home(arm, q_lift, duration=lift_duration,
+                        speed_frac=home_speed_frac)
                 print("lift done.")
     finally:
         p.disconnect(cid)
@@ -75,10 +91,15 @@ def main():
     ap.add_argument("--ip", default="192.168.1.101")
     ap.add_argument("--robot", default="kinova_gen3_dyn")
     ap.add_argument("--pickup_pose", default="pickup_pose.json")
+    ap.add_argument("--home_speed_frac", type=float, default=0.25,
+                    help="fraction of qd_max for the positioning moves; 0.25 "
+                         "default is the bring-up value and is the slowest part "
+                         "of a throw cycle")
     ap.add_argument("--lift_z", type=float, default=0.10)
     args = ap.parse_args()
 
-    grasped, pos_pct = pickup_and_lift(args.ip, args.robot, args.pickup_pose, args.lift_z)
+    grasped, pos_pct = pickup_and_lift(args.ip, args.robot, args.pickup_pose, args.lift_z,
+                                  home_speed_frac=args.home_speed_frac)
     sys.exit(0 if grasped else 2)   # distinct exit code: caller (e.g. the GUI) can refuse to throw
 
 

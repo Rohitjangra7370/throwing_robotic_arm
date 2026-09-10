@@ -32,6 +32,7 @@ clear, ball secured, e-stop in hand). Default speed_scale is a slow rehearsal.
 
 import argparse
 import os
+import time
 import sys
 import pickle as pkl
 
@@ -45,7 +46,7 @@ import pybullet_data
 
 import policy_learning.Policy as Policy
 from robot_arm.arm_controller import ArmController
-from robot_arm.robot_profiles import get_robot_profile
+from robot_arm.robot_profiles import get_robot_profile, roll_indices
 from robot_arm.kinova_hardware import (HIGH_LEVEL_MAX_HZ, HardwareThrowExecutor,
                                        SafetyLimits, SoftLimitManager)
 from simulation_class.release_solver import OptimizedReleaseSolver
@@ -194,6 +195,10 @@ def plan_throw_for_target(arm, profile, cfg, pol, target_xy, opt_pose=None,
         opt_launch_deg=float(cfg.get("opt_launch_deg",
                                      table[0]["elev_deg"] if table else 43.0)),
         tool_offset=[0.0, 0.0, tool_offset_z],
+        # MUST match what PyBulletThrowingSystem passes for this same arm --
+        # tests/test_hardware_planner.py asserts the two agree to 1e-12.
+        roll_idx=roll_indices(profile),
+        v_tcp_max=profile.v_tcp_max,
     )
     q_ovr = qd_ovr = None
     if solver.active:
@@ -223,6 +228,11 @@ def plan_throw_for_target(arm, profile, cfg, pol, target_xy, opt_pose=None,
         v_cmd, rel, t_w=t_w, t_r=t_r, T=t_arm,
         q_release_override=q_ovr, qd_release_override=qd_ovr,
         monotonic_windup=solver.active,
+        # Report the speed at the point the ball actually leaves from. Without
+        # this the returned v_ach is the bare flange's, 0.79x the real release
+        # speed on the 2F-85 -- see ArmController.plan_throw's docstring. It
+        # feeds precheck()'s quantisation budget, so it has to be the true one.
+        tool_offset=[0.0, 0.0, tool_offset_z],
     )
     return coeffs, q_release, qd_release, v_ach, speed, v_cmd, rel
 
@@ -460,18 +470,71 @@ def cmd_throw(args):
             raise RuntimeError("precheck FAILED; refuse to move.")
         print(f"\n>>> speed_scale={args.speed_scale} "
               f"({'REAL THROW' if args.speed_scale >= 0.99 else 'SLOW REHEARSAL'})")
-        ex.set_gripper(closed=True)          # grasp
-        ex.home(arm, np.array(profile.q_neutral, float), duration=args.duration)
+        # Skipping the grasp is EXPLICIT, never inferred from position.
+        #
+        # The first version of this inferred it: "position in (5, 90) => holding
+        # an object, don't re-close". That is unsound, and it misfired the same
+        # day it was written. A gripper left FROZEN PART-OPEN by a previous
+        # throw sits in exactly that band (measured: 75.44%, empty) -- because
+        # joint-speed streaming freezes the fingers wherever they got to, see
+        # GRIPPER_RELEASE_PAUSE_S. Position cannot distinguish "stalled on a
+        # ball" from "stopped in mid-air", so the check both skipped a grasp
+        # that was needed AND would have let --require_ball confirm a ball in
+        # an empty hand.
+        #
+        # The reason to skip at all is real: commanding close at a gripper
+        # already stalled on the ball pushes the motor into it a second time,
+        # which is what immediately preceded the 2026-08-22 ROBOT_IN_FAULT. So
+        # the caller -- who actually knows, because pickup_and_lift.py just
+        # verified the grasp -- says so.
+        grip_now, _ = ex.backend.read_gripper()
+        if args.ball_in_hand:
+            print(f"[grasp] --ball_in_hand: skipping the grasp command "
+                  f"(gripper reads {grip_now:.2f}%)")
+        else:
+            ex.set_gripper(closed=True)      # grasp
+        if args.require_ball:
+            # set_gripper() succeeds on "moved meaningfully, then held still",
+            # which an EMPTY close satisfies just as well as a real grasp -- it
+            # confirms the motor moved, not that anything is between the
+            # fingers. Every empty-gripper rehearsal this repo has run relied on
+            # that, so the check is opt-in; but a ball throw must not proceed on
+            # an empty hand. Same rule and same measured basis as
+            # pickup_and_lift.py: 33.3% on this tennis ball, ~99-100% on nothing.
+            grip, _ = ex.backend.read_gripper()
+            if args.ball_in_hand and not args.trust_pickup:
+                print("REFUSED: --require_ball with --ball_in_hand cannot verify "
+                      "anything on its own -- no close was commanded, so the "
+                      "gripper position could equally be a frozen part-open hand "
+                      "(measured 75.44% empty). Either drop --ball_in_hand so the "
+                      "grasp is commanded and checked here, or pass "
+                      "--trust_pickup to accept pickup_and_lift.py's own "
+                      "verified grasp.")
+                p.disconnect(cid)
+                return 2
+            if not (5.0 < grip < 90.0):
+                print(f"REFUSED: --require_ball given but the gripper closed to "
+                      f"{grip:.2f}%, which is not a grasp (open <5%, "
+                      f"closed-on-nothing >90%). No ball in the hand. "
+                      f"Not throwing.")
+                p.disconnect(cid)
+                return 2
+            print(f"[grasp] gripper stalled at {grip:.2f}% -> ball confirmed in hand")
+        ex.home(arm, np.array(profile.q_neutral, float), duration=args.duration,
+                speed_frac=args.home_speed_frac)
         # Drift tracking reads joint state every tick. Over the TCP command
         # channel a read costs ~25 ms, which at a 25 ms control period halves
         # the achieved rate -- measured: 20 Hz against a 40 Hz target. The UDP
         # feedback channel serves the same read in ~0.9 ms (measured 1122 Hz),
         # so instrumentation costs ~3.6% of the period instead of 100%.
         # Never instrument a control loop through its command channel.
-        track = None
+        # Tracked in dry-run too, so the whole record/measure/save path is
+        # exercised before the arm is live -- the dry-run backend's feedback is
+        # zero by construction and the report says so rather than printing a
+        # 0.00x ratio as if it were a measurement.
+        track = []
         if args.arm:
             ex.backend.open_realtime_feedback()
-            track = []
         try:
             ex.rehearse_or_throw(coeffs, arm, track=track)
         finally:
@@ -479,12 +542,56 @@ def cmd_throw(args):
                 ex.backend.close_realtime_feedback()
         if track:
             import numpy as _np
-            _np.savez("/tmp/drift_trace.npz",
+            from robot_arm.tcp_velocity import measured_release_velocity
+
+            # THE number this whole instrumentation exists for: the speed the
+            # ball actually left at, against the speed the policy asked for.
+            # Both go through the same Jacobian at the same tool offset (see
+            # robot_arm/tcp_velocity.py) so the difference is physics, not
+            # bookkeeping.
+            rel = measured_release_velocity(
+                arm, profile, track, coeffs["t_r"],
+                tool_offset=[0.0, 0.0, args.tool_offset_z])
+            if rel is not None and not args.arm:
+                print("\n[exec] DRY-RUN: release-velocity plumbing exercised, but "
+                      "the dry-run backend reports zero feedback by construction. "
+                      "Nothing was measured.")
+            elif rel is not None:
+                print(f"\n[exec] === MEASURED RELEASE (TCP, tool_offset_z="
+                      f"{args.tool_offset_z}) ===")
+                print(f"[exec]   planned  |v| = {rel['speed_planned']:.4f} m/s  "
+                      f"{_np.round(rel['v_planned'], 4)}")
+                print(f"[exec]   measured |v| = {rel['speed_measured']:.4f} m/s  "
+                      f"{_np.round(rel['v_measured'], 4)}")
+                print(f"[exec]   ratio measured/planned = {rel['speed_ratio']:.4f}"
+                      f"   direction error = {rel['direction_error_deg']:.2f} deg")
+                # A speed_scale < 1 rehearsal really is a physically slower
+                # throw (the stream is time-stretched), so the ratio is only
+                # meaningful against a full-speed run -- say so rather than let
+                # a 0.15 rehearsal read as an 85% shortfall.
+                if args.speed_scale < 0.99:
+                    print(f"[exec]   NOTE speed_scale={args.speed_scale}: this is a "
+                          f"REHEARSAL, released at ~{args.speed_scale:.2f}x by "
+                          f"design. Ratio is not a sim-to-real number.")
+            os.makedirs("traces", exist_ok=True)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            out = os.path.join(
+                "traces", f"throw_trace_{stamp}_scale{args.speed_scale:g}.npz")
+            _np.savez(out,
                       s=_np.array([t[0] for t in track]),
                       planned=_np.array([t[1] for t in track]),
                       actual=_np.array([t[2] for t in track]),
-                      t_r=coeffs["t_r"], T=coeffs["T"], scale=args.speed_scale)
-            print("[exec] drift trace -> /tmp/drift_trace.npz")
+                      qd_planned=_np.array([t[3] for t in track]),
+                      qd_actual=_np.array([t[4] for t in track]),
+                      wall=_np.array([t[5] for t in track]),
+                      gripper_pct=_np.array([t[6] for t in track]),
+                      gripper_vel=_np.array([t[7] for t in track]),
+                      t_r=coeffs["t_r"], T=coeffs["T"], scale=args.speed_scale,
+                      tool_offset_z=args.tool_offset_z,
+                      target=_np.array(args.target, dtype=float),
+                      commanded_speed=float(speed),
+                      exec_stats=repr(ex.last_exec_stats))
+            print(f"[exec] trace -> {out}")
     p.disconnect(cid)
     return 0
 
@@ -568,6 +675,30 @@ def build_parser():
     sp = sub.add_parser("throw"); common(sp); throw_planning(sp)
     sp.add_argument("--duration", type=float, default=4.0)
     sp.add_argument("--confirm", action="store_true", help="assert workspace clear + e-stop in hand")
+    sp.add_argument("--home_speed_frac", type=float, default=0.25,
+                    help="fraction of qd_max for the pre-throw homing move. At "
+                         "the 0.25 default, pickup pose -> neutral takes 11.2 s "
+                         "-- longer than the entire 8.5 s throw trajectory. "
+                         "0.50 halves it. Raise only with the workspace clear.")
+    sp.add_argument("--ball_in_hand", action="store_true",
+                    help="the gripper is ALREADY holding the ball (e.g. "
+                         "pickup_and_lift.py just fetched it), so skip the "
+                         "grasp command. Commanding close at a gripper already "
+                         "stalled on the ball pushes the motor into it again, "
+                         "which preceded the 2026-08-22 fault. Never inferred "
+                         "from gripper position -- a hand frozen part-open by a "
+                         "previous throw looks identical.")
+    sp.add_argument("--trust_pickup", action="store_true",
+                    help="with --require_ball --ball_in_hand, accept the "
+                         "upstream pickup step's verified grasp instead of "
+                         "re-deriving one here.")
+    sp.add_argument("--require_ball", action="store_true",
+                    help="refuse to throw unless the gripper actually stalls on "
+                         "an object after the grasp. set_gripper() succeeds on "
+                         "'moved, then held still', which an EMPTY close also "
+                         "satisfies, so without this a missing ball throws an "
+                         "empty hand and reports success. OFF by default so the "
+                         "empty-gripper rehearsal ladder still works.")
     sp.set_defaults(func=cmd_throw)
     return ap
 
