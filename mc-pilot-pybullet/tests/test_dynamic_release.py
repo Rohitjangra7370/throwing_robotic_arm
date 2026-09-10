@@ -71,7 +71,15 @@ def test_slow_throw_tracks_and_releases_dynamically():
         assert max_err < 0.035, f"joint tracking error {max_err:.4f} rad"
         # Ball velocity must be physical and in the ballpark of the command.
         assert np.all(np.isfinite(v_release))
-        assert np.linalg.norm(v_release - v_achieved) < 0.5 * np.linalg.norm(v_achieved)
+        # MEASURED 0.1288 on this trajectory. The gate was 0.5, ~4x looser than
+        # the real deviation, which is enough slack to swallow a systematic 26%
+        # error whole -- and it did: the flange-vs-TCP bug in plan_throw's
+        # v_achieved (see tests/test_release_speed_report.py) sat inside this
+        # tolerance for the entire TCP-offset track. 0.25 keeps ~2x headroom over
+        # the measured torque-tracking deviation while refusing that class of
+        # error. Raise it only with a measurement, not a guess.
+        rel_dev = np.linalg.norm(v_release - v_achieved) / np.linalg.norm(v_achieved)
+        assert rel_dev < 0.25, f"release velocity deviates {rel_dev:.4f} from plan"
         # Ball must keep flying under physics (no resetBaseVelocity happened).
         for _ in range(5):
             p.stepSimulation(physicsClientId=client)

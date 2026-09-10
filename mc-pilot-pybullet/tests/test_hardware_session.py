@@ -47,15 +47,21 @@ def test_confirm_resets_after_every_throw():
     assert s.confirmed is False
 
 
-def test_speed_scale_ladder_is_enforced_by_the_session():
+def test_speed_scale_ladder_disabled_by_user_request_2026_09_02():
+    # The escalation ladder (0.15->0.30->0.60->1.00) was disabled at the
+    # user's explicit request 2026-09-02: logged_scales only counted a rung
+    # as earned on a SUCCESSFUL landing measurement, and at speed_scale=0.15
+    # the ball drops almost vertically right next to the gripper -- a
+    # genuinely hard case for the ballistic-arc fitter -- so the ladder was
+    # stuck even after clean, safe throws. check_scale now always allows any
+    # requested speed_scale immediately; scale_allowed()/logged_scales below
+    # are unchanged and still exercised directly, they're just no longer
+    # called from SessionState.
     s = SessionState()
     s.record_startup(go=True, failures=[])
     s.camera_ready()
-    ok, why = s.check_scale(1.00)
-    assert not ok and "0.15" in why
-    s.record_throw({"speed_scale": 0.15, "landing_xy": [0.7, 0.0]})
-    assert s.check_scale(0.30)[0]
-    assert not s.check_scale(0.60)[0]
+    assert s.check_scale(1.00) == (True, "")
+    assert s.check_scale(0.15) == (True, "")
 
 
 def test_a_refused_measurement_still_counts_as_a_logged_throw():
@@ -287,7 +293,7 @@ def test_measurement_failure_that_is_not_a_runtimeerror_still_logs_a_record(monk
 
     plan = {"ex": _dry_run_executor(), "arm": _FakeArmForThrow(),
            "profile": _FakeProfile(),
-           "coeffs": {"t_w": 0.0, "t_r": 0.05, "T": 0.10}}
+           "coeffs": {"t_w": 0.0, "t_r": 0.05, "T": 0.10}, "speed": 1.4}
     extrinsic = (np.eye(3), np.zeros(3))   # already "loaded" by the caller, per the fix
 
     landing_xy, measurement, exec_stats, capture_file = cycle.step_throw_and_measure(
@@ -343,7 +349,7 @@ def test_exception_after_release_in_execution_block_still_logs_a_record():
 
     plan = {"ex": _dry_run_executor(), "arm": _FakeArmForThrow(),
            "profile": _FakeProfile(),
-           "coeffs": {"t_w": 0.0, "t_r": 0.05, "T": 0.10}}
+           "coeffs": {"t_w": 0.0, "t_r": 0.05, "T": 0.10}, "speed": 1.4}
     extrinsic = (np.eye(3), np.zeros(3))
 
     landing_xy, measurement, exec_stats, capture_file = cycle.step_throw_and_measure(
@@ -386,7 +392,7 @@ def test_exception_before_release_still_propagates():
 
     plan = {"ex": _dry_run_executor(), "arm": _FakeArmThatFailsBeforeRelease(),
            "profile": _FakeProfile(),
-           "coeffs": {"t_w": 0.0, "t_r": 0.05, "T": 0.10}}
+           "coeffs": {"t_w": 0.0, "t_r": 0.05, "T": 0.10}, "speed": 1.4}
     extrinsic = (np.eye(3), np.zeros(3))
 
     with pytest.raises(RuntimeError, match="trajectory evaluation failed"):
@@ -408,7 +414,8 @@ def test_exception_before_release_still_propagates():
 # losing the throw -- "saving must never cost a throw".
 # ---------------------------------------------------------------------------
 def test_successful_cycle_saves_recording_and_reports_capture_file(monkeypatch, tmp_path):
-    def _fake_measure_landing(rec, R, t, z_floor, ball_radius):
+    def _fake_measure_landing(rec, R, t, z_floor, ball_radius, commanded_speed=None,
+                              release_t_offset=None):
         return {"x": 0.71, "y": 0.02, "sigma_xy_m": 0.01, "n_frames": 3,
                "n_inliers": 3, "rms_px": 0.2,
                "p0": [0.0, 0.0, 0.0], "v0": [1.0, 0.0, 0.0]}
@@ -428,7 +435,7 @@ def test_successful_cycle_saves_recording_and_reports_capture_file(monkeypatch, 
 
     plan = {"ex": _dry_run_executor(), "arm": _FakeArmForThrow(),
            "profile": _FakeProfile(),
-           "coeffs": {"t_w": 0.0, "t_r": 0.05, "T": 0.10}}
+           "coeffs": {"t_w": 0.0, "t_r": 0.05, "T": 0.10}, "speed": 1.4}
     extrinsic = (np.eye(3), np.zeros(3))
 
     landing_xy, measurement, exec_stats, capture_file = cycle.step_throw_and_measure(
@@ -467,7 +474,7 @@ def test_capture_save_failure_still_logs_a_refused_record(monkeypatch, tmp_path)
 
     plan = {"ex": _dry_run_executor(), "arm": _FakeArmForThrow(),
            "profile": _FakeProfile(),
-           "coeffs": {"t_w": 0.0, "t_r": 0.05, "T": 0.10}}
+           "coeffs": {"t_w": 0.0, "t_r": 0.05, "T": 0.10}, "speed": 1.4}
     extrinsic = (np.eye(3), np.zeros(3))
 
     landing_xy, measurement, exec_stats, capture_file = cycle.step_throw_and_measure(
