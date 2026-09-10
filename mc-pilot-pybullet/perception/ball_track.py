@@ -40,7 +40,7 @@ import cv2
 import numpy as np
 
 __all__ = ["Candidate", "median_background", "detect_candidates",
-           "frame_diagnostics"]
+           "frame_diagnostics", "reject_static_candidates"]
 
 
 @dataclass(frozen=True)
@@ -152,3 +152,60 @@ def detect_candidates(frame, background, diff_thresh=18, min_area_px=20,
                              radius_px=float(np.sqrt(area / np.pi)),
                              circularity=float(circ)))
     return out
+
+
+def reject_static_candidates(per_frame, bin_px=6.0, persistence_frac=0.12,
+                             min_persistent_frames=3, dilate=1):
+    """
+    Drop candidates that recur at nearly the same pixel location across many
+    frames of ONE recording -- found 2026-09-02: a permanently-mounted ChArUco
+    calibration board sitting in the overhead camera's fixed field of view
+    (glued to the floor, not something that can be removed between throws)
+    beats against the IR emitter's dot pattern and produces persistent diff
+    noise at its corners every single frame, which `detect_candidates` reads
+    as ball-like blobs. A real flying ball's (u, v) changes every frame; this
+    board noise does not.
+
+    This is deliberately NOT a hand-drawn ROI mask (the thing this module's
+    own docstring says not to do for the arm) -- it is computed fresh from
+    THIS recording's own candidates, so it needs no per-mount tuning and
+    generalises to any other static false-positive source, not just this one
+    board. Confirmed on real recordings: filtering this way turns a "no
+    ballistic arc found" refusal (real ball detections diluted below the 60%
+    RANSAC inlier gate by ~50+ static detections) into a clean single-object
+    track, visually verified frame-by-frame against the raw IR video.
+
+    `persistence_frac` is relative to the number of frames that had ANY
+    candidate at all (not total frames), since a real ball is only visible in
+    a fraction of the window. A bin hit in >= max(min_persistent_frames,
+    persistence_frac * n_active) frames is flagged static; `dilate` grows the
+    flagged region by that many bins to catch the board's own subpixel jitter
+    around its true position.
+
+    `per_frame`: list of lists of Candidate, one list per frame (single
+    camera stream -- call once per IR sensor). Returns a same-shaped list
+    with static candidates removed.
+    """
+    from collections import defaultdict
+
+    n_active = sum(1 for c in per_frame if c)
+    if n_active == 0:
+        return [list(c) for c in per_frame]
+
+    bin_frames = defaultdict(set)
+    for k, cands in enumerate(per_frame):
+        for c in cands:
+            b = (round(c.u / bin_px), round(c.v / bin_px))
+            bin_frames[b].add(k)
+
+    threshold = max(min_persistent_frames, persistence_frac * n_active)
+    bad_bins = set()
+    for b, frames_hit in bin_frames.items():
+        if len(frames_hit) >= threshold:
+            for dx in range(-dilate, dilate + 1):
+                for dy in range(-dilate, dilate + 1):
+                    bad_bins.add((b[0] + dx, b[1] + dy))
+
+    return [[c for c in cands
+             if (round(c.u / bin_px), round(c.v / bin_px)) not in bad_bins]
+            for cands in per_frame]

@@ -9,25 +9,38 @@ That script chains base -> EE (Kortex forward kinematics) -> wrist camera
 (fixed URDF offset) -> marker (solvePnP), which needs no tape-measured board
 placement -- see feedback_extrinsic_calibration_method in project memory for
 why this is the preferred method over `calibrate_camera_extrinsics.py`'s
-tape-measured chain. This script reuses that exact composition math
-(`_rt`/`_compose`/`_invert`, imported, not copied) and only swaps the target:
+tape-measured chain. Both scripts now share one implementation of that chain
+(`perception/wrist_chain.py`, imported, never copied); this one only swaps the
+target:
 one already-printed ArUco tag (make_aruco_targets.py's loose `markers/`
 output) in place of the ChArUco board, since that is what is actually sitting
 in the lab as a static shared fiducial. A single marker's pose is noisier
 than a ChArUco board's (4 corners vs. dozens), so prefer the board via the
 other script when accuracy matters more than setup simplicity.
 
-    T_base_marker = T_base_EE  @  T_EE_wristcam  @  T_wristcam_marker
-    T_base_D435i  = T_base_marker  @  inv(T_D435i_marker)
+    T_base_marker = T_base_wristcam  @  T_wristcam_marker
+    T_base_D435i  = T_base_marker     @  inv(T_D435i_marker)
+
+FIXED 2026-08-31, SAME BUG AS THE OTHER SCRIPT
+------------------------------------------------
+This used to start from `GetMeasuredCartesianPose` and compose the URDF's
+FLANGE -> camera offset onto it. That call reports the **TOOL** frame, 0.12 m
+further out on this arm (Robotiq 2F-85 tool_transform), so the camera was placed
+12 cm out of position and the error landed directly in `T_B_C`. It now uses
+`perception.wrist_chain.base_to_wrist_camera`: measured joint angles ->
+PyBullet FK -> `camera_color_frame`, which also retires the unverified
+Euler-convention assumption. Shared with `calibrate_via_wrist_camera.py` and
+`start_of_day.py`; covered by `tests/test_wrist_chain.py`.
 
 WHAT THIS DOES NOT MAKE PERFECT
 --------------------------------
-Same caveats as calibrate_via_wrist_camera.py: T_EE_wristcam is Kinova's
-factory-nominal URDF offset (never independently verified on this unit), and
-GetMeasuredCartesianPose's Euler convention is assumed intrinsic-XYZ degrees
-(confirmed to 1.23 deg once, see project memory, but not re-verified here).
+The URDF camera offset is Kinova factory-nominal, never verified against this
+physical unit -- though it is now at least self-consistent with the kinematics
+the throw planner uses. And a single marker's 4 points are noisier than a
+board's dozens: prefer `start_of_day.py`, which uses the board, averages frames,
+and gates the result against the floor plane and the depth sensor.
 
-Reads only -- GetMeasuredCartesianPose, VisionConfig.GetIntrinsicParameters,
+Reads only -- GetMeasuredJointAngles, VisionConfig.GetIntrinsicParameters,
 an RTSP frame, a D435i colour frame. No command is sent to the arm; it must
 already be holding a pose where its wrist camera sees the marker.
 
@@ -48,8 +61,10 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # .../mc-pilot-pybullet
 sys.path.insert(0, ROOT)
 
-import calibrate_via_wrist_camera as wristcal  # reuse the proven composition math
+import calibrate_via_wrist_camera as wristcal  # Kortex backend + CLI conventions
 from perception.ray_plane import D435I_COLOR_1280x720, D435I_COLOR_1920x1080
+from perception.wrist_chain import (base_to_wrist_camera, chain_base_to_camera,
+                                    compose, save_extrinsic)
 
 DICT = cv2.aruco.DICT_4X4_50  # matches make_aruco_targets.py
 CALIB_DIR = os.path.join(ROOT, "calib")
@@ -114,12 +129,11 @@ def main():
     base = backend._base
     router = backend._router
 
-    # --- 1. EE pose, base frame, from Kortex forward kinematics -------------
-    pose = base.GetMeasuredCartesianPose()
-    R_base_ee, t_base_ee = wristcal._rt([pose.x, pose.y, pose.z],
-                                        [pose.theta_x, pose.theta_y, pose.theta_z])
-    print(f"EE pose (base frame): x={pose.x:.4f} y={pose.y:.4f} z={pose.z:.4f}  "
-          f"theta=({pose.theta_x:.1f},{pose.theta_y:.1f},{pose.theta_z:.1f}) deg")
+    # --- 1. wrist camera pose, base frame, from measured joints + FK --------
+    q, _ = backend.read_joint_state()
+    R_base_cam, t_base_cam = base_to_wrist_camera(q)
+    print(f"joint angles (rad): {np.round(q, 5)}")
+    print(f"wrist camera in base frame: {np.round(t_base_cam, 4)}")
 
     # --- 2. Wrist camera intrinsics, live off the device ---------------------
     dm = DeviceManagerClient(router)
@@ -179,15 +193,12 @@ def main():
     R_d435i_marker, t_d435i_marker, err_d435i = _detect_marker(
         gray_d435i, args.marker_id, args.marker_length_m, intr_d435i.K, np.zeros(5), "D435i")
 
-    # --- 6. Chain: base -> EE -> wrist_cam -> marker, then invert to D435i ----
-    R_ee_cam, t_ee_cam = wristcal._rt(wristcal.T_EE_CAM_XYZ, wristcal.T_EE_CAM_RPY_DEG)
-    R_base_cam, t_base_cam = wristcal._compose(R_base_ee, t_base_ee, R_ee_cam, t_ee_cam)
-    R_base_marker, t_base_marker = wristcal._compose(
-        R_base_cam, t_base_cam, R_wrist_marker, t_wrist_marker)
-
-    R_marker_d435i, t_marker_d435i = wristcal._invert(R_d435i_marker, t_d435i_marker)
-    R_base_d435i, t_base_d435i = wristcal._compose(
-        R_base_marker, t_base_marker, R_marker_d435i, t_marker_d435i)
+    # --- 6. Chain: base -> wrist_cam -> marker, then invert to D435i ---------
+    R_base_marker, t_base_marker = compose(R_base_cam, t_base_cam,
+                                           R_wrist_marker, t_wrist_marker)
+    R_base_d435i, t_base_d435i = chain_base_to_camera(
+        R_base_cam, t_base_cam, R_wrist_marker, t_wrist_marker,
+        R_d435i_marker, t_d435i_marker)
 
     print("\n--- T_base_D435i (via one shared ArUco marker + arm FK) ---")
     print(f"position (m): {t_base_d435i}")
@@ -199,19 +210,17 @@ def main():
     json_path = os.path.join(CALIB_DIR, f"{name}.json")
     canonical_path = os.path.join(CALIB_DIR, "T_B_C.npz")
 
-    np.savez(npz_path, R=R_base_d435i, t=t_base_d435i)
-    np.savez(canonical_path, R=R_base_d435i, t=t_base_d435i)
+    save_extrinsic(R_base_d435i, t_base_d435i, npz_path)
+    save_extrinsic(R_base_d435i, t_base_d435i, canonical_path)
     with open(json_path, "w") as f:
         json.dump({
             "R_B_C": R_base_d435i.tolist(), "t_B_C": t_base_d435i.tolist(),
-            "method": "single_marker_via_wrist_camera_and_FK",
+            "method": "single_marker_via_wrist_camera_and_pybullet_FK",
+            "q_measured_rad": np.asarray(q, float).tolist(),
             "marker_id": args.marker_id, "marker_length_m": args.marker_length_m,
             "reprojection_error_px": {"wrist": err_wrist, "d435i": err_d435i},
-            "ee_pose_raw": {"x": pose.x, "y": pose.y, "z": pose.z,
-                            "theta_x": pose.theta_x, "theta_y": pose.theta_y,
-                            "theta_z": pose.theta_z},
-            "assumed_euler_convention": "intrinsic xyz degrees, R = Rx@Ry@Rz -- see docstring",
-            "T_EE_wristcam_source": "URDF camera_module joint, factory nominal, UNVERIFIED",
+            "T_base_wristcam": {"R": R_base_cam.tolist(), "t": t_base_cam.tolist()},
+            "T_EE_wristcam_source": "gen3.urdf camera_color_frame via PyBullet FK",
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         }, f, indent=2)
 

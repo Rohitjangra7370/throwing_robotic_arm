@@ -40,7 +40,7 @@ __all__ = ["IRRecorder", "save_recording", "load_recording"]
 class IRRecorder:
     """Dual-IR capture into RAM. One throw per `record()` call."""
 
-    def __init__(self, width=848, height=480, fps=90, exposure_us=2000,
+    def __init__(self, width=848, height=480, fps=90, exposure_us=4000,
                  gain=None, emitter=True):
         self.width, self.height, self.fps = int(width), int(height), int(fps)
         self.exposure_us = int(exposure_us)
