@@ -726,7 +726,9 @@ def test_ring_buffer_keeps_only_its_window():
     for k in range(25):
         rb.append(k * 0.01, _frame(k), _frame(k))
     assert len(rb) == 10
-    assert rb.window(0.0, 1.0)["ts"][0] == pytest.approx(0.15)
+    # frames are filled with their own index, so the surviving frames identify
+    # themselves -- the oldest kept must be frame 15, not frame 0
+    assert rb.window(0.0, 1.0)["ir1"][0][0, 0] == 15
 
 
 def test_window_extracts_the_requested_span_inclusive():
@@ -734,18 +736,31 @@ def test_window_extracts_the_requested_span_inclusive():
     for k in range(100):
         rb.append(k * 0.01, _frame(k), _frame(k))
     w = rb.window(0.20, 0.30)
-    assert w["ts"][0] >= 0.20 - 1e-9 and w["ts"][-1] <= 0.30 + 1e-9
-    assert w["ir1"].shape[0] == w["ts"].size == w["ir2"].shape[0]
+    assert w["ir1"][0][0, 0] == 20 and w["ir1"][-1][0, 0] == 30
+    assert w["ir1"].shape[0] == w["t"].size == w["ir2"].shape[0]
     assert w["ir1"].shape[1:] == (8, 8)
 
 
-def test_window_returns_stacked_arrays_shaped_for_build_observations():
-    """measure_landing.build_observations indexes rec['ir1'][k] -- so ir1 must
-    be a stacked (N, H, W) array, not a list."""
+def test_window_timestamps_are_relative_to_the_window_like_record_is():
+    """IRRecorder.record() returns `t` zeroed to its first frame (`ts - ts[0]`).
+    window() must use the same convention or measure_landing sees two different
+    time origins."""
+    rb = RingBuffer(seconds=10.0, fps=100)
+    for k in range(100):
+        rb.append(k * 0.01, _frame(k), _frame(k))
+    w = rb.window(0.20, 0.30)
+    assert w["t"][0] == pytest.approx(0.0)
+    assert w["t"][-1] == pytest.approx(0.10)
+
+
+def test_window_returns_stacked_arrays_under_the_key_build_observations_reads():
+    """measure_landing.build_observations does `rec["ir1"], rec["ir2"], rec["t"]`
+    -- the key is `t`, NOT `ts`, and ir1 must be a stacked (N, H, W) array."""
     rb = RingBuffer(seconds=10.0, fps=100)
     for k in range(10):
         rb.append(k * 0.01, _frame(k), _frame(k))
     w = rb.window(0.0, 0.09)
+    assert set(w) >= {"t", "ir1", "ir2"}
     assert isinstance(w["ir1"], np.ndarray) and w["ir1"].ndim == 3
 
 
@@ -807,19 +822,32 @@ class RingBuffer:
 
     def window(self, t_start, t_end):
         """
-        Inclusive [t_start, t_end] slice, stacked into the dict shape
-        measure_landing.build_observations expects (`ts`, `ir1`, `ir2`).
+        Inclusive [t_start, t_end] slice, in exactly the shape
+        `measure_landing.build_observations` consumes.
+
+        Two conventions are copied from `IRRecorder.record()` rather than
+        invented, because build_observations reads its output directly:
+        the key is **`t`** (not `ts`), and `t` is zeroed to the window's first
+        frame (record() does `ts = ts[:k] - ts[0]`). Getting either wrong is a
+        KeyError or a silently shifted time origin.
+
+        Slicing is by the frames' own timestamps, which on this camera are in
+        the wall-clock domain -- measured 2026-08-31, `get_timestamp()*1e-3`
+        sat 11 ms from `time.time()` -- so a `time.time()` release instant can
+        be compared against them directly.
         """
         ts = np.asarray(self._ts, float)
+        if ts.size == 0:
+            raise ValueError("no frames: buffer is empty")
         keep = np.nonzero((ts >= t_start - 1e-9) & (ts <= t_end + 1e-9))[0]
         if keep.size == 0:
             raise ValueError(
                 f"no frames in [{t_start:.3f}, {t_end:.3f}] -- buffer holds "
-                f"{len(self)} frames spanning "
-                f"[{ts[0]:.3f}, {ts[-1]:.3f}]" if len(self) else "buffer is empty")
+                f"{len(self)} frames spanning [{ts[0]:.3f}, {ts[-1]:.3f}]")
         ir1 = np.stack([self._ir1[i] for i in keep])
         ir2 = np.stack([self._ir2[i] for i in keep])
-        return {"ts": ts[keep], "ir1": ir1, "ir2": ir2}
+        t = ts[keep] - ts[keep][0]
+        return {"t": t, "ir1": ir1, "ir2": ir2}
 
 
 class CameraThread:
@@ -902,7 +930,11 @@ class CameraThread:
             self.error = e
 ```
 
-> **Note for the implementer:** `IRRecorder` currently exposes `record(seconds)`, not `stream()`. Add a `stream()` generator to `perception/ir_capture.py` that yields `(timestamp, ir1, ir2)` per frame and have `record()` call it, so there is one capture loop rather than two. Do this as part of this task and include it in the commit.
+> **Note for the implementer:** `IRRecorder` currently exposes `record(seconds)`, not `stream()`. Add a `stream()` generator to `perception/ir_capture.py` that yields `(timestamp, ir1, ir2)` per frame and have `record()` consume it, so there is one capture loop rather than two.
+>
+> The timestamp must be the same expression `record()` already uses — `f1.get_timestamp() * 1e-3 + 0.5 * exposure_us * 1e-6` (ms → s, corrected to mid-exposure) — NOT `time.time()`. Do not zero it inside `stream()`; `record()` keeps doing its own `ts - ts[0]`, and `RingBuffer.window()` does the same at its own boundary. Verified on this camera 2026-08-31: `get_timestamp()*1e-3` is wall-clock, 11 ms from `time.time()`.
+>
+> `record()` must keep returning `{"t", "ir1", "ir2", "meta"}` byte-for-byte as it does today — `tests/test_ball_track.py` and `measure_landing.py` both depend on it. Run the existing suite to prove it.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -917,7 +949,7 @@ c = session_camera.CameraThread(); c.start(); time.sleep(3)
 print('frames buffered:', len(c.buf), 'error:', c.error)
 t = time.time(); c.mark_release(t - 0.5)
 ev = c.pop_event(timeout=5); c.stop()
-print('event frames:', None if ev is None else ev.get('rec', {}).get('ts', []).size, ev.get('error'))
+print('event frames:', None if ev is None else ev.get('rec', {}).get('t', []).size, ev.get('error'))
 "`
 Expected: several hundred frames buffered, `error: None`, event with >50 frames
 
@@ -1345,9 +1377,9 @@ class ThrowCycle:
             return None, {"refusal_reason": str(e)}, exec_stats
 ```
 
-> **Implementer note — the one change needed in existing code.** `H.build_arm`, `H.load_policy`, `H.plan_throw_for_target(arm, profile, cfg, pol, target_xy, ...)`, `H.load_pose_table`, `H.release_box_from_table`, `H.make_limits` and `HardwareThrowExecutor.precheck/check_release_pos/rehearse_or_throw` all exist today and are called above with their real signatures (verified against `run_closed_loop_throws.main()`). The only addition is an `on_release=None` keyword on `HardwareThrowExecutor.rehearse_or_throw` (`robot_arm/kinova_hardware.py:917`), invoked at the instant the release-time gripper OPEN is issued — the same point `GRIPPER_RELEASE_LATENCY_S` is applied. Default `None` keeps every existing caller unchanged. Add a regression test asserting the callback fires exactly once during a dry-run throw, and that a `None` callback is a no-op.
+> **Implementer note — the one change needed in existing code.** `H.build_arm`, `H.load_policy`, `H.plan_throw_for_target(arm, profile, cfg, pol, target_xy, ...)`, `H.load_pose_table`, `H.release_box_from_table`, `H.make_limits` and `HardwareThrowExecutor.precheck/check_release_pos/rehearse_or_throw` all exist today and are called above with their real signatures (verified against `run_closed_loop_throws.main()`). The only addition is an `on_release=None` keyword on `HardwareThrowExecutor.rehearse_or_throw` (signature at `robot_arm/kinova_hardware.py:917`: `rehearse_or_throw(self, coeffs, arm, verbose=True, track=None, track_every=1)`). Invoke it inside the existing release branch at **`kinova_hardware.py:1038-1043`** (`if (not released) and s >= s_fire:` ... `released = True`), immediately after the gripper OPEN is issued and before `released = True`. Default `None` keeps every existing caller unchanged. Add a regression test asserting the callback fires exactly once during a dry-run throw, and that a `None` callback is a no-op.
 >
-> Do **not** call `on_release` from inside the 40 Hz control loop's blocking path — the callback only timestamps and hands off to the camera thread, which is why it is safe here, unlike the gripper-confirm call that stalled the loop for 693 ms.
+> That branch sits INSIDE the 40 Hz streaming loop, so the callback must return immediately. Do **not** do work in it — the callback only timestamps and hands off to the camera thread, which is why it is safe here, unlike the gripper-confirm call that stalled the loop for 693 ms.
 
 The Tk dashboard is a thin shell over the above, following `closed_loop_gui.py`'s existing shape: entry fields (ip, checkpoint, ball_id, target, speed_scale), a confirm checkbox bound to `state.confirmed` that clears on every `record_throw`, a scrolling log pane, a table of logged throws, and four buttons — **Run start-of-day**, **Pick up & throw**, **Update model** (disabled until `can_update_model()`), **Re-optimize policy** (disabled until `can_reoptimize_policy()`). Blocking work runs on the worker thread; the GUI is updated through `root.after`.
 
@@ -1497,7 +1529,7 @@ git commit -m "feat(session): ingest real throws into the GP and report against 
 
 **Interfaces:**
 - Consumes: `SessionState.can_reoptimize_policy`, `MC_PILCO_module.MC_PILOT.reinforce_policy`
-- Produces: `reoptimize_policy(mc, out_dir, opt_steps) -> str` (the new checkpoint path)
+- Produces: `reoptimize_policy(mc, out_dir, reinforce_kwargs) -> str` (the new checkpoint path). `reinforce_kwargs` is forwarded to `mc.reinforce_policy(**kwargs)` verbatim — see `adapt_policy_height.py:223` for the proven argument set the GUI must assemble.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1507,13 +1539,51 @@ def test_reoptimize_refuses_to_overwrite_an_existing_checkpoint(tmp_path):
     from hardware_session import reoptimize_policy
     existing = tmp_path / "results_kinetic_chain_gen3_tcp" / "1"
     existing.mkdir(parents=True)
+    (existing / "config_log.pkl").write_bytes(b"pretend checkpoint")
+
+    class FakeMC:
+        def reinforce_policy(self, **kw):
+            raise AssertionError("must refuse BEFORE touching the model")
+
+    with pytest.raises(FileExistsError, match="would overwrite"):
+        reoptimize_policy(FakeMC(), str(existing), {"T_control": 1})
+
+
+def test_reoptimize_passes_the_caller_s_kwargs_through_untouched(tmp_path):
+    """
+    reinforce_policy takes ~13 required arguments (T_control, num_particles,
+    trial_index, particle init means/vars/bounds, opt_steps_list, lr_list,
+    f_optimizer, ...). This function must NOT invent or reshape them -- it
+    forwards exactly what the caller built, so there is one place that owns
+    that argument set: adapt_policy_height.py's proven call.
+    """
+    from hardware_session import reoptimize_policy
+    seen = {}
+
+    class FakeMC:
+        def reinforce_policy(self, **kw):
+            seen.update(kw)
+            return [0.1], None, None, None
+
+    out = tmp_path / "new_ckpt"
+    kwargs = {"T_control": 40, "num_particles": 200, "trial_index": 3,
+              "opt_steps_list": [50], "lr_list": [0.01]}
+    assert reoptimize_policy(FakeMC(), str(out), kwargs) == str(out)
+    assert seen == kwargs
+    assert out.is_dir()
+
+
+def test_reoptimize_accepts_an_existing_but_empty_directory(tmp_path):
+    """Pre-creating the output path is normal; only a POPULATED dir is refused."""
+    from hardware_session import reoptimize_policy
+    out = tmp_path / "empty_ckpt"
+    out.mkdir()
 
     class FakeMC:
         def reinforce_policy(self, **kw):
             return [0.1], None, None, None
 
-    with pytest.raises(FileExistsError, match="would overwrite"):
-        reoptimize_policy(FakeMC(), str(existing), opt_steps=1)
+    assert reoptimize_policy(FakeMC(), str(out), {"T_control": 1}) == str(out)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1526,11 +1596,20 @@ Expected: FAIL — `ImportError: cannot import name 'reoptimize_policy'`
 Append to `hardware_session.py`:
 
 ```python
-def reoptimize_policy(mc, out_dir, opt_steps=200):
+def reoptimize_policy(mc, out_dir, reinforce_kwargs):
     """
-    Re-optimize the policy against the updated model, following the pattern
-    adapt_policy_height.py already establishes (reuse the GP, re-optimize the
-    policy only).
+    Re-optimize the policy against the updated model, reusing the GP -- the
+    pattern adapt_policy_height.py already establishes.
+
+    `reinforce_kwargs` is forwarded to `mc.reinforce_policy(**kwargs)`
+    UNCHANGED. That call takes ~13 required arguments (T_control,
+    num_particles, trial_index, particles_initial_state_mean/var, the three
+    init flags and two bounds, opt_steps_list, lr_list, f_optimizer, ...), and
+    this function deliberately does not invent, default, or reshape any of
+    them: adapt_policy_height.py already owns how that set is built, and a
+    second opinion about it here is exactly the kind of duplicated logic this
+    repo has been bitten by. The caller assembles them the same way that script
+    does.
 
     Writes a NEW checkpoint directory. The result is NOT thrown automatically:
     its release state may differ from the one whose finger clearance the
@@ -1538,12 +1617,12 @@ def reoptimize_policy(mc, out_dir, opt_steps=200):
     escalation ladder like any other checkpoint.
     """
     import os
-    if os.path.exists(out_dir) and os.listdir(out_dir):
+    if os.path.isdir(out_dir) and os.listdir(out_dir):
         raise FileExistsError(
             f"{out_dir} exists and is not empty -- this would overwrite a "
-            f"trained checkpoint; pass a new --out_dir")
+            f"trained checkpoint; pass a new out_dir")
     os.makedirs(out_dir, exist_ok=True)
-    cost_list, *_ = mc.reinforce_policy(num_optimization_steps=opt_steps)
+    mc.reinforce_policy(**reinforce_kwargs)
     return out_dir
 ```
 
