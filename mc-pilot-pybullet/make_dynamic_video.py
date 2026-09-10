@@ -22,6 +22,9 @@ from eval_generalization import make_targets
 from robot_arm.robot_profiles import get_robot_profile
 from simulation_class.model_pybullet import PyBulletThrowingSystem
 
+_VIDS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     "status_update", "vids")
+
 WIDTH, HEIGHT = 960, 720
 
 
@@ -60,7 +63,7 @@ def main():
     ap = argparse.ArgumentParser(__doc__)
     ap.add_argument("--log_path", type=str, default="results_mc_pilot_pb_A_kinova_gen3_dyn/1")
     ap.add_argument("--out", type=str,
-                    default="/home/olympusforge/trade/throwing_robotic_arm/status_update/vids/mc_pilot_kinova_dynamic_throws.mp4")
+                    default=os.path.join(_VIDS, "mc_pilot_kinova_dynamic_throws.mp4"))
     ap.add_argument("--num_throws", type=int, default=6)
     ap.add_argument("--seed", type=int, default=99)
     ap.add_argument("--fps", type=int, default=50)

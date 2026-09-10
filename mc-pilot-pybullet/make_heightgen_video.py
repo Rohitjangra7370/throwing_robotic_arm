@@ -18,7 +18,7 @@ import policy_learning.Policy as Policy
 from simulation_class.model_pybullet import PyBulletThrowingSystem
 
 W, H = 1024, 720
-SAFE_U_CAP = 1.60
+SAFE_U_CAP = 1.60          # Gen3-specific; see robot_profiles.safe_u_cap
 
 
 def load_policy(log_path, cfg):
