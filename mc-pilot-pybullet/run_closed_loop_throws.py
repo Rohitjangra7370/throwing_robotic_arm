@@ -85,7 +85,8 @@ def load_extrinsic_any(path):
     return R, t
 
 
-def _measure(recording, extrinsic, z_floor, ball_radius, seed, target_xy):
+def _measure(recording, extrinsic, z_floor, ball_radius, seed, target_xy,
+            commanded_speed=None):
     from measure_landing import measure_landing
     from perception.ir_capture import load_recording
     from perception.trajectory import Z_FLOOR_BASE
@@ -95,7 +96,8 @@ def _measure(recording, extrinsic, z_floor, ball_radius, seed, target_xy):
     rec = load_recording(recording)
     R_bc, t_bc = load_extrinsic_any(extrinsic)
     out = measure_landing(rec, R_bc, t_bc, z_floor=z_floor,
-                          ball_radius=ball_radius, seed=seed)
+                          ball_radius=ball_radius, seed=seed,
+                          commanded_speed=commanded_speed)
     err = float(np.hypot(out["x"] - target_xy[0], out["y"] - target_xy[1]))
     print(f"\n=== LANDING (measured) ===")
     print(f"x={out['x']:+.4f}  y={out['y']:+.4f}   sigma={out['sigma_xy_m'] * 1e3:.1f} mm")
@@ -333,6 +335,15 @@ def main(argv=None):
                   "the default offline pass still applies.")
         else:
             try:
+                # commanded_speed is deliberately NOT passed here: measure_landing's
+                # sanity gate requires release_t_offset alongside it (p0/v0 are fit
+                # at the recording's local t=0, which for hardware_session.py's
+                # RingBuffer captures is PRE_S seconds before release -- see its
+                # docstring). throw_capture.py's range-gated trigger is a DIFFERENT
+                # capture mechanism (arms on ball detection, not on commanded
+                # release), so its recordings' local t=0 has no established
+                # relationship to release time -- guessing PRE_S here would silently
+                # reintroduce the exact bug that check exists to catch.
                 out, err = _measure(rec_path, args.extrinsic, args.z_floor,
                                     args.ball_radius, args.measure_seed, args.target)
                 capture_file, landing_xy = rec_path, [float(out["x"]), float(out["y"])]

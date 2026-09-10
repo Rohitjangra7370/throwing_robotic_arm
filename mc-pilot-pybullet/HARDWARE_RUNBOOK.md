@@ -55,6 +55,67 @@ jog the arm so its **wrist camera sees the same board**, leave it there, and run
 #   -> last line is GO or NO-GO; it refuses to write the extrinsic if a gate fails
 ```
 
+**The ChArUco calibration board is glued to the floor, permanently, and cannot be removed
+between calibration and throwing** (corrected 2026-09-02 — an earlier version of this note
+wrongly assumed it was a placeable board; it is not. The single ArUco tag inside the movable
+target bin is a separate, unrelated marker and is fine where it is). Found 2026-09-02: a real
+full-speed throw's landing measurement was refused (`no ballistic arc found`, best consensus
+18-20/76-79 frames) even though the ball visibly flew. Root cause: the board's checkerboard
+texture beats against the IR emitter's dot pattern and produces persistent per-frame diff noise
+at the same fixed pixel locations for the whole recording, which `detect_candidates` reads as
+ball-like blobs every frame — confirmed by plotting candidate `(u,v)` across a real recording
+(clustered at a handful of unmoving coordinates for the full 1.4s window) and by visually
+rendering the actual frames. This diluted the genuine ball track (visually confirmed: a single
+bright blob entering top-of-frame and moving smoothly down-left) below RANSAC's 60%-inlier gate.
+
+**Fixed in code, not by workaround**, since the board can't move: `perception/ball_track.py`'s
+`reject_static_candidates` drops, per camera stream and per recording, any candidate that recurs
+at nearly the same pixel location across many frames — computed fresh from each recording's own
+candidates (no hand-drawn ROI, no per-mount tuning), wired into `build_observations` as the
+default (`reject_static=False` to see the raw, unfiltered candidates for detector diagnosis).
+
+**This alone was not enough, and the first follow-up diagnosis was WRONG — corrected same day.**
+Filtering `throw_001.npz`'s board noise let RANSAC find a technically clean 18/24-frame consensus
+(0.52 px RMS), but the fitted speed came out to 7.08 m/s against a commanded 1.41 m/s. This was
+first (wrongly) attributed to the overhead camera's short stereo baseline making depth/vertical
+velocity fundamentally unmeasurable over a short track. **The real cause, found by decomposing
+the fitted velocity into `|v0_xy|` (0.87 m/s, plausible) vs `v0_z` (7.23 m/s alone, the entire
+error): `p0`/`v0` are fit parameters at the recording's local `t=0`, which for
+`session_camera.RingBuffer`'s capture is `PRE_S=0.45s` BEFORE the ball is ever released (`t` is
+zeroed to the window's first frame, and the window starts at `t_release - PRE_S`).** Comparing
+raw `v0` to a commanded RELEASE speed compares the wrong instant — backward-extrapolating a
+correctly-measured post-release arc through 0.45s of gravity the ball never experienced in free
+flight (it was still in the gripper) inflates the vertical component by `g * PRE_S ≈ 4.4 m/s` on
+its own, on top of `mark_release()` itself timestamping the commanded gripper OPEN rather than the
+ball's actual mechanical departure (`GRIPPER_RELEASE_LATENCY_S = 0.0679s`, `kinova_hardware.py`).
+Using `release_t_offset = PRE_S + GRIPPER_RELEASE_LATENCY_S ≈ 0.518s` to evaluate `v0 + g·offset`
+before comparing brought `throw_000`'s real release-time speed to 2.32 m/s against a 1.47 m/s
+commanded — inside tolerance, where the naive comparison (7.28 m/s) was 5x off. The short-baseline
+depth-degeneracy story may still contribute some residual noise, but it was not the dominant
+cause and should not be assumed without re-testing if this resurfaces.
+
+`measure_landing()` now takes `commanded_speed` **and requires `release_t_offset` alongside it**
+(raises `ValueError` if one is given without the other — silently assuming `t=0` is release is
+exactly the bug this guards against) and refuses when the release-time speed is more than 2x off.
+`hardware_session.py` passes both automatically using the constants above.
+**`run_closed_loop_throws.py` does NOT pass `commanded_speed`** — its recordings come from
+`throw_capture.py`'s range-gated trigger (arms on ball detection, not on commanded release), a
+different capture mechanism whose local-`t=0`-to-release relationship has not been established;
+guessing `PRE_S` there would silently reintroduce the same bug in a different code path. Whoever
+wires this up for that path needs to work out what its `t=0` actually means first.
+
+One real question this did NOT resolve: even with the corrected offset, `throw_000`'s solved
+landing (0.940, -0.110) vs. target (0.724, -0.009) is **24 cm off** — well beyond the checkpoint's
+~1.9-2.4 cm sim/repeat accuracy. `solve_impact`'s (x, y) math is unaffected by which `t=0`
+reference `v0` uses (it solves forward from the fit self-consistently), so this error is real, not
+an artifact of the offset bug above. It may be a genuine first-real-ball-loaded-throw sim-to-real
+gap, or a residual measurement/extrinsic issue — open, not yet investigated.
+
+Tests: `tests/test_ball_track.py` (static-filter unit tests), `tests/test_landing_pipeline.py`
+(board-noise integration test, and `release_t_offset` regression tests including one that
+reproduces this exact incident: a shifted-time-origin recording that the naive offset=0 comparison
+wrongly refuses and the correct offset accepts).
+
 **Use `/usr/bin/python3` explicitly.** Bare `python3` on this machine resolves to a Conda base env
 (3.14, no cv2/torch/pyrealsense2) — every tool on this page will fail with `ModuleNotFoundError`
 that has nothing to do with the tool.
@@ -337,8 +398,8 @@ any throw is recorded, and write the chosen values here:
 
 | Setting | Value | Chosen on | Notes |
 |---|---|---|---|
-| `exposure_us` | *(not yet run)* | | |
-| `emitter` | *(not yet run)* | | |
+| `exposure_us` | `4000` | 2026-09-02 | `tune_ir_exposure.py` sweep: 1000/2000us detected the ball in 0/N frames (too dark) at both emitter settings; 4000us was the shortest exposure with usable detections. `emitter=True` at 4000us: 127/134 frames_with_ball (94.8%), 0% saturation, med_circ 0.59. 8000us scored higher circularity (0.80) but is a longer exposure, so per the tool's own selection rule (shortest exposure, most frames_with_ball, sat%~0) 4000us wins — the circularity dip is noted but not saturation-driven. |
+| `emitter` | `True` | 2026-09-02 | Same sweep: `emitter=True` beat `emitter=False` at every exposure that detected anything (4000us: 127/134 vs 94/133; 8000us: 98/134 vs 0/135). |
 
 **Per throw:**
 
