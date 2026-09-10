@@ -68,7 +68,7 @@ Run all commands from *inside* the relevant variant directory — imports resolv
 
 ## Tests
 
-`mc-pilot-pybullet/tests/` is a real pytest regression suite (190 tests, ~25 s, no GPU, updated 2026-08-31). It is the **only** variant with one; elsewhere "tests" means `test_*.py` training scripts.
+`mc-pilot-pybullet/tests/` is a real pytest regression suite (294 tests, ~29 s, no GPU, updated 2026-09-06). It is the **only** variant with one; elsewhere "tests" means `test_*.py` training scripts.
 
 ```bash
 cd mc-pilot-pybullet/
@@ -148,7 +148,7 @@ The pre-TCP-offset-fix training run, `results_kinetic_chain_gen3/{1,2,3}` with `
 
 **Hardware throw-session app (`hardware_session.py` / `hardware_learning.py`, built 2026-09-01/02, 27 commits, 269→274 tests).** `python3 hardware_session.py` is a Tk GUI that runs a full run-day session end to end — start-of-day gates, camera bring-up, N real throws with landing measurement, then two model-update buttons, gated in order by `SessionState` (`tests/test_hardware_session.py`; GUI/hardware paths stay untested like everywhere else in this repo, only the state machine and the pure functions are). `hardware_learning.py::ingest_throws` appends each qualifying real throw's **raw RANSAC-inlier triangulated points** (never the fitted parabola — feeding that back would just teach the GP its own gravity-only assumption, the model-belief trap again) to the flight GP, and `fit_release_model` fits commanded→measured release speed/direction. **Both exclude any throw logged at `speed_scale != 1.0`, reporting the exclusion count rather than dropping it silently** — `speed_scale` is a time-stretch, so a bring-up rehearsal at 0.15 physically releases at ~0.15× commanded speed, and treating it as data would have dragged the fitted release gain toward 0.15 instead of ~0.9. Every real throw's raw dual-IR recording is saved to `throws/throw_<idx>.npz` **before** `measure_landing` runs (a save failure degrades to a logged refusal, never a lost throw) — the permanent regression fixture `HARDWARE_RUNBOOK.md`'s "keep every recording" rule refers to.
 "Update model" (button 1) runs both and reports a verdict on the flight GP: `above_noise = (mean_dev > k_se·SE) AND (mean_dev > systematic_floor)`, where `SE = σ_v/√n` and `systematic_floor` is the per-step Δv a measured 0.56° extrinsic rotation error alone would fake (0.0019 m/s — 2.5× the tennis ball's drag signal, and does not shrink with more samples). **`k_se` is not applied directly to `mean_dev`** — `mean_dev` is the norm of a 3-axis mean vector, and under pure noise that norm is χ(3)-distributed with a nonzero mean (~1.6·SE), so a bare `k·SE` scalar comparison was found (final review, verified independently 3 times via Monte Carlo) to have a **~26% false "ABOVE NOISE" rate at any sample count**. Fixed: `k` is converted to its intended one-sided normal tail probability, then the matching χ²(3) critical value gives the real threshold (`k=2` → multiplier ≈3.09, not 2) — empirically restores the ~2.3% target rate. Both `above_se` and `above_sys` are required; when `above_sys` is the blocker, the report states plainly that no sample count can resolve it (a systematic floor, unlike random noise, does not average down) rather than printing a misleading "N more throws needed."
-"Re-optimize policy" (button 2, `reoptimize_policy()`) unlocks only after button 1 has run, re-optimizes the policy against the now-updated GP by forwarding the caller's `reinforce_policy(**kwargs)` verbatim (never inventing the ~13-argument set itself), and writes the result to a **new, timestamped checkpoint directory** — refuses outright (`FileExistsError`) if that directory already exists and is non-empty, so `results_kinetic_chain_gen3_tcp/1` can never be overwritten. **The new checkpoint is never thrown automatically** — restart at start-of-day and the speed-scale ladder like any other. **`T_control` must be passed to `reinforce_policy` in seconds, not a pre-divided step count** — `reinforce_policy` divides by `T_sampling` internally (`train_mc_pilot_pb_arm.py` passes seconds correctly; **`adapt_policy_height.py:224` passes an already-divided step count and has therefore run every height-adaptation policy re-optimization over a control horizon ~50× too long** — found while building this app, confirmed by reading both call sites and the internal division, left unfixed in `adapt_policy_height.py` deliberately since it may have produced already-reported results; this needs the user's judgment on whether/how much it affected those numbers, not a silent code change).
+"Re-optimize policy" (button 2, `reoptimize_policy()`) unlocks only after button 1 has run, re-optimizes the policy against the now-updated GP by forwarding the caller's `reinforce_policy(**kwargs)` verbatim (never inventing the ~13-argument set itself), and writes the result to a **new, timestamped checkpoint directory** — refuses outright (`FileExistsError`) if that directory already exists and is non-empty, so `results_kinetic_chain_gen3_tcp/1` can never be overwritten. **The new checkpoint is never thrown automatically** — restart at start-of-day and the speed-scale ladder like any other. **`T_control` must be passed to `reinforce_policy` in seconds, not a pre-divided step count** — `reinforce_policy` divides by `T_sampling` internally. `train_mc_pilot_pb_arm.py` always passed seconds correctly; `adapt_policy_height.py` passed an already-divided step count (a control horizon ~50× too long) and **was fixed 2026-09-03 16:40**. Every height-adaptation checkpoint on disk postdates the fix (`results_kinetic_chain_gen3_tcp_h{10,20,30}` written 16:41–16:44, and their `config_log.pkl` records `T` as a duration in seconds, e.g. 0.5808), so **no reported height-generalization number was affected** — verified 2026-09-10. Nothing here is still open.
 For a tennis ball at this rig's actual release speed (≈1.44 m/s) and range, the measured numbers say **flight-drag learning sits below the noise floor** (≈5 mm drag deviation over the flight vs. ≈18 mm extrinsic + ≈10 mm triangulation noise, well under even the corrected threshold) while the **release discrepancy sits well above it** (25 ms command quantisation alone is 2.9–3.7 cm of landing error, 6–7× the flight-noise floor) — so the flight GP update is expected, and reported, as a `BELOW NOISE` no-op on this data, and the release-model fit is where a real correction is expected to come from. A high-drag ball (whiffle) would move drag above the noise floor but needs its own trained checkpoint first — out of scope here.
 **Two items this build left explicitly open, both procedural rather than code:** (1) `--wrist_roll_offset_deg` (finger clearance) was tuned for the old checkpoint's 5° release; this checkpoint releases at 15° and the angle **must be re-verified visually on the arm** at `speed_scale=0.15` with an empty gripper before any ball is loaded — the numeric precheck passing is feasibility, not proof the fingers clear. (2) `tune_ir_exposure.py` has never been run — `HARDWARE_RUNBOOK.md` §6's exposure/emitter table is still blank; run it once, camera-only, before the first real throw of a session.
 
@@ -168,7 +168,7 @@ Every variant runs the same three-module MC-PILOT loop, orchestrated by `policy_
 **`simulation_class/release_solver.py` is shared by sim and hardware.** `OptimizedReleaseSolver.solve()` turns (policy speed, target) into the release state (`q_release`, `qd_release`, release position) via the azimuth→pose table, turret-aiming correction and the direction-constrained LP. `PyBulletThrowingSystem._optimized_release` and `run_hardware_throw.py::plan_throw_for_target` both call it, and `tests/test_hardware_planner.py` asserts they agree to 1e-12. Never inline or copy this logic — every historical throw bug has lived in it, and a second copy will drift.
 
 `robot_arm/` (PyBullet variants):
-- `robot_profiles.py` — per-arm `RobotProfile` dataclass: URDF, joint ids, EE link, `q_neutral`, `qd_max`, `tau_max`, `kp`/`kd`, `windup_delta`, `speed_bounds`, `control_mode`. **`control_mode` is the thing to check first**: `kinematic` (ball velocity assigned — idealized, NOT a physical throw), `position`, `torque` (computed-torque + gravity comp + Jacobian-transpose payload term — the real one). Profiles: `kuka_iiwa`, `franka_panda`, `franka_panda_dyn`, `kinova_gen3`, `kinova_gen3_dyn`, `xarm6`. The `_dyn` suffix means torque mode.
+- `robot_profiles.py` — per-arm `RobotProfile` dataclass: URDF, joint ids, EE link, `q_neutral`, `qd_max`, `tau_max`, `kp`/`kd`, `windup_delta`, `speed_bounds`, `control_mode`. **`control_mode` is the thing to check first**: `kinematic` (ball velocity assigned — idealized, NOT a physical throw), `position`, `torque` (computed-torque + gravity comp + Jacobian-transpose payload term — the real one). Profiles: `kuka_iiwa`, `franka_panda`, `franka_panda_dyn`, `kinova_gen3`, `kinova_gen3_dyn`, `ur7e`, `ur7e_dyn`, `xarm6`. The `_dyn` suffix means torque mode. Also carries **`roll_idx`** — the joints the release LP freezes at qd=0; see the UR7e section below for why that stopped being a constant.
 - `arm_controller.py` — IK, `plan_throw` (3-phase neutral→windup→release + follow-through, with torque/velocity feasibility checks on **all** phases), gripper. Shared by sim **and** hardware.
 - `kinova_hardware.py` / `run_hardware_throw.py` — safety-gated Kortex executor (dry-run default, speed_scale time-stretch, hard qd clamp, whole-trajectory precheck that fails closed). `HARDWARE_SETUP.md` is the safety model + reference; `HARDWARE_RUNBOOK.md` is the run-day page.
 - `hw_readonly_check.py` — opens a Kortex session, reads, closes. **Zero writes** (`connect` by contrast writes the teardown `stop()`). Run it first at the lab. `measure_gripper_latency.py` — 1 kHz UDP feedback latency calibration.
@@ -190,11 +190,114 @@ Every variant runs the same three-module MC-PILOT loop, orchestrated by `policy_
   **2026-08-31: the full `measure_landing.py` path ran on real data for the first time and correctly refused all 20 recordings** (best inlier fraction 0.49 vs the 0.60 gate). Root cause is the data, not the fitter: fitting acceleration freely in the camera frame — where `T_B_C` cannot enter — gives `|a|` = 0.16–2.54 m/s² across spans of 1.4–1.7 s, against 9.81 for free flight, and `throw_001` fits a *straight line* to 0.9 cm median residual over 128 points. The 08-26 clips are a hand-carried or rolling ball. Detection and triangulation are confirmed excellent by exactly that fit; `ransac_track`/`fit_ballistic`/`solve_impact` remain untested on real data because **no recording of a genuinely airborne ball exists yet**. A deliberate hand toss with `throw_capture.py` running would close this out without any arm motion.
   Prior to 2026-08-26, this section was **verified synthetically only**: 147 tests pass, an end-to-end synthetic parabola projected through the real measured intrinsics/baseline recovers the landing point to 0.18 mm, Gauss-Newton at 0.15 px pixel noise over 40 frames/30 seeds averages 0.47 mm, RANSAC separates 40/40 true detections from 12 injected arm-like outliers. `achieved_fps` (the ~44-usable-frames-at-90fps budget) and the `IRRecorder` exposure/emitter defaults (`exposure_us=2000`, `emitter=True`) are still reasoned, not measured. **Absolute accuracy is still bounded by `T_B_C`, not by the vision** — every millimetre figure above (synthetic or the 2026-08-26 real-frame numbers) says nothing about absolute correctness against the arm's base frame until a current, on-disk extrinsic exists.
 
+## Second arm: UR7e (sim model + trained sim checkpoints 2026-09-06; no hardware)
+
+Universal Robots UR7e is being brought up alongside the Gen3. **Only the sim model, profiles and freeze-set plumbing exist** — no pose table, no checkpoint, no hardware layer. Do not treat any UR7e number below as a result.
+
+- **`scripts/install_ur7e_urdf.sh` builds the model and IS the provenance record.** Fetches `UniversalRobots/Universal_Robots_ROS2_Description` **tag 4.3.1** (pin the tag — the repo's default `ros2` branch has no `ur7e` at all, and that is where most search results and stale checkouts land), xacro-expands it against a throwaway ament overlay, and vendors the result to `pybullet_data/ur7e/` the same way `kinova_gen3/` is vendored. Idempotent; verifies the load and the mass at the end. Needs `/opt/ros/humble` for `xacro` (override with `ROS_SETUP=`).
+- **The upstream `config/ur7e` is largely inherited from the UR5e, and that is mostly legitimate.** `physical_parameters.yaml` is byte-identical to ur5e's, `default_kinematics.yaml` is ur5e's numbers, `visual_parameters.yaml` points at `meshes/ur5e/` (there is no `meshes/ur7e/`), and `joint_limits.yaml`'s header cites the *UR5e* manual. But UR themselves ship one shared "UR5e/UR7e" JT file and one shared working-area PDF — same 850 mm reach, 20.6 kg, ⌀151 mm footprint. Same mechanics, hotter joints. **Verified for the UR7e specifically: `qd_max` = 180 °/s = 3.1416 rad/s on all six** (matches the tech sheet). **Provisional, UR5e-derived: `tau_max` 150/150/150/28/28/28 Nm and every link mass/inertia.** UR's public max-joint-torque article has no UR7e row; the 7.5 kg payload says the real limits are higher, so the precheck fails closed — but measure via RTDE `actual_current`/`target_moment` before publishing any torque-headroom number for this arm.
+- **The release LP's freeze set is no longer a constant.** `(0, 2, 4, 6)` is the *7-DoF alternating roll-pitch-roll* layout of the Gen3 and Panda, and it was hardcoded in both `release_solver.py` and `find_throw_pose.py`. It is now `RobotProfile.roll_idx`, read via `robot_profiles.roll_indices()` and passed by **both** `PyBulletThrowingSystem` and `run_hardware_throw.py` (they must agree — same rule as everything else in `release_solver.py`). Every 7-DoF profile still resolves to `(0,2,4,6)` bit-identically, so no existing checkpoint, table or result moved. **On a 6-DoF arm the old constant was a latent silent bug**: index 6 is the LP's *speed slack variable*, not a joint, so freezing it pins the release speed to exactly 0 m/s and the LP still reports success. `tests/test_ur7e_profile.py` (11 tests) pins all of this.
+- **UR7e freeze set is `(0, 4, 5)`, classified numerically off the PyBullet Jacobian** at a candidate release pose — pan (all motion out-of-plane), wrist_2 (all out-of-plane), wrist_3 (`|Jv|` exactly 0). Carriers are shoulder_lift / elbow / wrist_1 — three, same count as the Gen3's, so the LP structure is unchanged. Note: the axis-vs-base→EE-vector method used for the Gen3/Panda gave the *wrong* answer here through a frame-convention slip; the Jacobian columns are convention-free, use those.
+- **`ee_link = 10` is `tool0`.** `flange`, `ft_frame` and `tool0` are co-located but differently rotated, and only `tool0` gives the z-out-along-the-tool convention that `tool_offset=(0,0,L)` assumes. `wrist_3` is the exact analogue of the Gen3 joint that `--wrist_roll_offset_deg` exploits — provably free for finger clearance, but only while the TCP offset stays purely axial.
+- **Phantom mass, again.** The generated URDF declares six bodyless links (`world`, `base_link`, `ft_frame`, `base`, `flange`, `tool0`); PyBullet gives each 1 kg, three of them at the wrist. Raw load is **26.700 kg** against 21.700 kg of real links. `urdf_fixup.repair_massless_links` handles it and `ArmController` already routes through it — the same defect the Gen3's camera frames had.
+- **This arm is TCP-speed-limited, not joint-velocity-limited — the opposite of the Gen3.** The forward-release LP sweep gives **4.157 m/s**, which *exceeds* the tech sheet's 4 m/s max TCP speed. Capped at 4 m/s that is **1.93× the Gen3's 2.07 m/s and 2.14× its range** (2.00 m vs 0.9355 m off the same 0.433 m plate). Consequences: every Gen3-trained target band, cost lengthscale and RBF lengthscale init is invalid here, the safety config will clamp before the joints do, and the lab needs ~2 m of clear floor.
+- **The throw plane does not pass through the base axis** — UR's wrist carries a 0.1333 m y-offset. Train with `--flight_targets`; that flag exists for exactly this geometry.
+- **`kp`/`kd`, `timing`, `windup_delta`, `speed_bounds` are all unvalidated placeholders.** `kp`/`kd` are scaled from the Gen3's 400/60 by the `tau_max` ratio (~3.85) on a 21.7 kg arm vs ~7 kg — same warning as `franka_panda_dyn`: gain-sweep before trusting a torque number, and remember saturation and insufficient stiffness look identical until you raise `kp`. `timing`/`windup_delta` are carried over from the Gen3 and must be checked through the real planner on all three phases.
+- **Not built yet, in order:** pose search (`find_throw_pose.py --robot ur7e_dyn`) → retrain from scratch (Gen3 checkpoints are invalid — different arm, different speed regime, and "re-search ≠ correct a checkpoint" applies doubly) → an RTDE hardware backend. On the hardware side `kinova_hardware.py` already has a clean backend seam (`_DryRunBackend`/`_KortexBackend`: `connect`/`disconnect`/`read_joint_state`/`send_joint_velocities`/`send_gripper`/`read_gripper`/`open_realtime_feedback`/`close_realtime_feedback`/`stop`), so `ur_rtde`'s `speedJ` slots in — but `HIGH_LEVEL_MAX_HZ = 40.0` is a Kinova number (RTDE is 500 Hz on e-Series, which would remove the 25 ms / 2.9–3.7 cm quantisation floor), `SoftLimitManager` is Kortex-only (UR's equivalent is pendant-gated safety config, not remotely writable), the `[0,360)` joint wrap and `home()`'s continuous-vs-limited split do not apply (all six UR joints are ±360°), and `perception/wrist_chain.py` hardcodes `gen3.urdf` links 7/10.
+
+
+### Five arm-specific assumptions the UR7e exposed
+
+All five were hardcoded 7-DoF Gen3 facts. **None produced an error** -- each silently planned a
+different throw. Every one is now derived from the profile or measured, with the legacy value as
+the default, and every 7-DoF arm is bit-identical (verified: the raw Gen3 ablation reproduces
+published Table I digit for digit after all five changes).
+
+| Where | Was | Now |
+|---|---|---|
+| `release_solver.py`, `find_throw_pose.py` | freeze set `(0,2,4,6)` | `RobotProfile.roll_idx` via `roll_indices()`; UR7e `(0,4,5)`. On a 6-DoF arm index 6 is the LP's **speed slack**, so the old constant pinned release speed to exactly 0 and reported success |
+| `find_throw_pose._fkj`, joint-limit reads | `range(N)` joint indices | `JOINT_IDS` from the profile. A UR URDF leads with two FIXED joints, so its arm joints are 2..7 |
+| `find_throw_pose`, `paper_ablation_feasibility` | literal `[0,s2,0,s4,0,s6,0]` grid | `pitch_indices()` / `sagittal_q()` |
+| `train_mc_pilot_pb_arm.py:332` | `for _j in range(7)` reading the table's release posture | indexes `profile.joint_ids`; also ran off the end of a 6-element entry |
+| `build_table_by_rotation`, `release_solver` | base rotation `q[0] -= az` | `base_rotation_sign()` measures it, stamped into the table like `floor_z`/`tool_offset`, solver defaults to -1 for unstamped legacy tables |
+
+**The base-rotation sign is the one to remember.** Measured: **Gen3 -1, but Panda +1, KUKA +1,
+UR7e +1** -- so the "verified sign" comment in both files was a Gen3 fact stated as a general one.
+Backwards, it aims the throw the wrong way round: on the UR7e landing y moved OPPOSITE target y,
+11 cm on-axis degrading to 147 cm at +-30 deg azimuth. **No published number is affected** -- all
+23 pose-table checkpoints on disk are Gen3. `franka_panda_dyn_throw_pose_table.npy` IS latently
+wrong (unstamped, so read as -1, but the Panda is +1); it was never trained through, and must be
+re-searched before use.
+
+### Cartesian TCP-speed ceiling (`RobotProfile.v_tcp_max`)
+
+The release LP was bounded by joint velocity only. On the UR7e that returns **4.65 m/s against a
+rated 4.0** -- the first search produced 23/23 table entries the controller would clamp or refuse,
+i.e. the arm executing a different throw than the simulator trained. Never bound on the Gen3
+(2.07 m/s), so it went unnoticed until a second arm. `v_tcp_max` is 4.0 for the UR7e and **None
+everywhere else**, leaving every existing LP bit-identical. Applied in BOTH LP implementations
+(`aimed_speed` and `OptimizedReleaseSolver`) and passed by both the sim and hardware call sites.
+
+Useful consequence: once the cap binds, the UR7e search is speed-limited rather than
+torque-limited, so its raw and repaired pose tables come out **bit-identical**. UR7e results do not
+depend on the phantom-mass decision below.
+
+### kp/kd came from a real sweep, and kd was the trap
+
+The first guess (Gen3's 400/60 scaled by the tau_max ratio to 1500/150) was **unstable**: measured
+release speed 9.5 m/s against a commanded 4.0 -- the controller injecting energy, not tracking,
+with `time_scale`/`clip_scale` both reporting 1.0 and nothing flagging it. A 2-D sweep shows
+**kd, not kp, is the sensitive axis**: every kd >= 160 blows up at every kp from 100-800, while kp
+is nearly flat over 200-800 once kd <= 80. Shipped values keep the Gen3's proven kd/kp = 0.15 and
+scale the wrists by the tau ratio. Re-sweep if the timing or pose table changes.
+
+Note this is the documented "raising gains hurts => check torque headroom" diagnostic giving a
+*third* answer: neither saturation nor stiffness, but integrator instability at 50 Hz.
+
 `gpr_lib/` is the upstream GP math layer — library code, rarely edited.
 
 ## Things that will bite you
 
 **Methodology**
+
+- **The pose search runs under PHANTOM MASS, and it changes the paper (found 2026-09-06).**
+  `find_throw_pose.py` and `paper_ablation_feasibility.py` load the URDF **raw**, while
+  `ArmController` (and therefore every rollout, eval and hardware precheck) repairs bodyless links.
+  On the Gen3 that is **+3.00 kg / +46%** hung off the wrist: 9.491 kg vs a real 6.491, mean peak
+  gravity torque 0.696 of limit vs 0.324 (**2.15x**, matching the 2.1-2.4x measured against the
+  arm's own torque sensors), and 16.8% of postures rejected at the very first gate that are in fact
+  feasible. **The KUKA and Panda have no bodyless links at all**, so the paper's Gen3-vs-Panda
+  feasibility contrast is partly an artifact of a defect present on only one side.
+  Measured A/B (the raw column reproduces published Table I digit for digit):
+  survival after the full cascade **16.6% -> 82.3%**, windup-path rejection **54.4% -> 0.0%**,
+  best safe-throw range **0.824 -> 1.031 m** (i.e. equal to the instant-only best -- the "range
+  decreases after whole-trajectory validation" claim does not survive). The torque sweep moves too:
+  saturation begins at **k=1.00 instead of k=2.25**, so the real Gen3 is *already at* the kinematic
+  residual rather than torque-starved. **What survives exactly** is the section's actual
+  conclusion -- rejection saturates at **17.7%**, entirely follow-through, kinematic in origin --
+  and the corrected sweep shows the windup->ramp->follow-through handoff that the published
+  version could not (its k=0.50/0.75 rows had 0% survival, so no decomposition existed).
+  The Panda control run reproduces its published numbers **exactly** (152,844 -> 152,844, 100%),
+  confirming phantom mass is the only variable. `REPAIR_INERTIALS` / `--repair_inertials` toggles
+  it, **default False = bug-compatible with every existing table and paper number**; the error is
+  conservative, so no shipped checkpoint is unsafe. Regenerated JSONs live in
+  `mc-pilot-pybullet/paper_icra2027_ablation/`. **ADOPTED into the paper 2026-09-10**:
+  Tables I/II, Fig. 3 and the range-ceiling figure now all report the repaired
+  numbers, with the raw ones kept in an explicit provenance paragraph. Two
+  further provenance gaps were found and closed while adopting them:
+  `paper_ablation_feasibility.py` did not record its `t_throw` and defaulted to
+  1.1 s while the deployed planner uses `T_R` = 1.6 s (now a `--t_throw` flag,
+  recorded in the output JSON), and `paper_range_speed_sweep{,_tcp}.py` called
+  `loadURDF` directly instead of `find_throw_pose.load_arm()`, so they could not
+  honour `REPAIR_INERTIALS` at all (now routed through the loader, with a
+  `--repair_inertials` flag). Figure provenance is selected by
+  `ABLATION_VARIANT` in `paper_icra2027/figures/make_figures.py`.
+- **Training cost is not accuracy, and neither is a clean planner report.** On the UR7e the planner
+  reported `time_scale=1.0`, `clip_scale=1.0` and `v_planned == v_cmd` while the arm actually
+  released 11-24 cm away from the intended point with the velocity pointing *downward*. Three
+  independently-trained seeds then evaluated to byte-identical numbers -- the tell that the policy
+  was not reaching the ball at all. Check `last_release_info`'s `release_pos_err` and
+  `v_release` vs `v_planned`, not just the scale factors.
 
 - **The model-belief trap.** `cost_trial_list` / "Final trial cost" is computed by simulating particles through the *learned GP model*, not real physics. It can sit near zero while real accuracy is off by 17–28%. Never report training cost as accuracy — always re-evaluate through `PyBulletThrowingSystem.rollout` (`eval_baseline.py` etc.) with **fresh, previously-unused RNG seeds**.
 - **Assigned vs real dynamics.** `kinematic`-mode profiles set the ball's velocity directly (`resetBaseVelocity`); the arm is cosmetic. Never present those numbers or videos as a physical throw. Label kin vs dyn explicitly, every time.

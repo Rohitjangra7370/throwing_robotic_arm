@@ -24,3 +24,12 @@ mc-pilot-pybullet/robot_arm/_urdf_cache/
 # large uncompressed frame arrays, regenerable from the camera, not source.
 mc-pilot-pybullet/throws/
 mc-pilot-pybullet/throws_live/
+# per-throw 1 kHz joint position+velocity traces (run_hardware_throw.py throw)
+mc-pilot-pybullet/traces/
+
+# Personal / unrelated files that landed in the working tree. This repo is
+# PUBLIC -- keep scanned forms, call recordings and stray downloads out of it.
+fee_form_filled*.jpeg
+instructions/
+Screencast from *.webm
+post-the-best-cat-memes-*.webp

@@ -1960,7 +1960,9 @@ Then run `measure_landing.py` against the printed directory:
 python3 measure_landing.py --recording <dir>/rec.npz --extrinsic <dir>/ext.npz
 ```
 
-Expected: `x` near `+0.976`, `y` near `0.000`, sigma a few mm, inliers >= 36.
+Expected: `x` near `+0.9667`, `y` near `0.000`, sigma a few mm, inliers >= 36.
+(0.9667, not 0.976: `measure_landing` defaults to `ball_radius = 0.0327`, so it solves
+for the centre reaching `z_floor + r`, which lands 9.6 mm shorter than a zero-radius solve.)
 
 - [ ] **Step 4: Run the full suite once more**
 
