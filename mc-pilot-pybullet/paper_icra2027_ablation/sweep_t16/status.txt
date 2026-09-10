@@ -1,0 +1,10 @@
+EXIT 0 franka_panda_dyn
+EXIT 0 kinova_gen3_dyn_tau0.50
+EXIT 0 kinova_gen3_dyn_tau0.75
+EXIT 0 kinova_gen3_dyn_tau1.00
+EXIT 0 kinova_gen3_dyn_tau1.50
+EXIT 0 kinova_gen3_dyn_tau2.25
+EXIT 0 kinova_gen3_dyn_tau3.33
+ABLATION_T16_COMPLETE
+EXIT 0 ur7e_dyn
+UR7E_ABL_DONE

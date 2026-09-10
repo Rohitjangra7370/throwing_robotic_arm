@@ -1,0 +1,31 @@
+{
+  "robot": "ur7e_dyn",
+  "pitch_joints": [
+    1,
+    2,
+    3
+  ],
+  "repair_inertials": true,
+  "elapsed_s": 3883.2223427295685,
+  "stats": {
+    "n_postures": 44914,
+    "n_static_feasible": 44914,
+    "n_lp_success": 731409,
+    "n_windup_kin_ok": 541590,
+    "n_release_instant_ok": 541590,
+    "n_windup_path_fail": 0,
+    "n_ramp_fail": 0,
+    "n_follow_fail": 21,
+    "n_full_ok": 541569
+  },
+  "best_release_instant_only": {
+    "land": 2.550698235273821,
+    "speed": 4.648334721371011,
+    "elev_deg": 25
+  },
+  "best_full_trajectory": {
+    "land": 2.550698235273821,
+    "speed": 4.648334721371011,
+    "elev_deg": 25
+  }
+}
