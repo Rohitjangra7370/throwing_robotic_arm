@@ -151,6 +151,9 @@ calling the exact same planner/executor as §1/§2/§7 (`run_hardware_throw.py`,
 /usr/bin/python3 hardware_session.py --ip 192.168.1.101 --robot kinova_gen3_dyn \
     --log_path results_kinetic_chain_gen3_tcp/1 --opt_pose throw_pose_table_tcp.npy \
     --tool_offset_z 0.12 --base_height 0.433
+#   --gripper_close 0.85   # optional, default 1.0 (fully closed). Lighter grip for a
+#                          # softer/larger ball; applies to the pickup grasp AND the
+#                          # pre-swing re-grip. Below 0.70 it is REFUSED -- see step 2.
 #   --dry_run forces args.arm=False, but ONLY for the throw cycle's plan/execute path --
 #   step_pickup() always calls the real pickup_and_lift(), which always moves the real
 #   arm and grasps for real, regardless of this flag. Read --help before trusting it.
@@ -173,6 +176,13 @@ authority — read it, not this table, if the two ever disagree:
    a real ball** (position and velocity both stall) vs **99–100% closing on nothing**
    (`pickup_and_lift.py`, §2's R3). A false grasp refuses right here, before any throw motion —
    reload the ball and retry.
+   **Grip force is settable** — `--gripper_close` / the "Gripper close (0-1)" field, default
+   **1.0** = the historical fully-closed command. The check scales with it: a gripper closing on
+   *nothing* reaches exactly what it was commanded, so "grasped" means it stalled **10 percentage
+   points below the commanded close** (`grasp_threshold_pct`), which is the same 90% as before at
+   a command of 1.0. Below **0.70** that threshold lands inside the ball's own 58% stall band,
+   grasped and empty become indistinguishable, and the app refuses the setting outright rather
+   than checking it badly. The log line prints all three numbers — measured, commanded, threshold.
 3. **Plan** (`step_plan()`) → read **two separate lines**, the same trap §1/§2/§7 already warn
    about: `PRECHECK: PASS/FAIL` (trajectory feasibility only) and `release pos in safe box:
    True/False` (a different check — `PRECHECK: PASS` alone does not mean throw). Both must be true.
@@ -406,6 +416,9 @@ any throw is recorded, and write the chosen values here:
 ```bash
 python3 record_throw_ir.py ...     # ring-buffers the dual-IR window to disk; keep every recording,
                                     # it is a permanent regression fixture, not a scratch file
+                                    # (recordings are session-stamped since 2026-09-11 --
+                                    #  before that every session overwrote the last, and 13
+                                    #  logged throws' raw data no longer exists)
 python3 measure_landing.py ...     # offline: recording -> first-contact (x, y) in base frame
 ```
 
@@ -413,8 +426,25 @@ python3 measure_landing.py ...     # offline: recording -> first-contact (x, y) 
 track pass:**
 
 - fewer than **12** usable frames on the track (of ~44 expected)
-- RANSAC inlier fraction below **0.6**
+- RANSAC inlier fraction below **0.6** — **measured over the winning arc's OWN time span, not
+  over the whole recording** (fixed 2026-09-10). Taken globally this gate was unreachable: the
+  ball enters the overhead FOV ~0.2 s before first contact while the window runs `POST_S` = 1.0 s
+  past release, so most rows in any recording belong to the post-bounce arc that RANSAC exists to
+  reject — and rejecting it counted against the arc it had correctly found. Four real run-day
+  sessions were refused at 0.43–0.55 while the flight arc itself fitted to **0.81 px over 16
+  frames**. The refusal message now prints both fractions, so "something else is moving alongside
+  the ball" and "the ball entered late / bounced" are distinguishable at a glance.
 - RMS reprojection residual above **1.0 px**
+- more than **0.30 m of drop left unseen** between the last frame the ball was detected in and the
+  floor, or **less than 0.30 m of fall actually seen** across the tracked frames, or the ball
+  still **rising** in its last detected frame. These three replace the job the global inlier
+  fraction had been doing by accident — refusing fits to motion that never fell. They are needed
+  because a clean parabola fit is *not* evidence of a flight: the known hand-carried recordings
+  fit g = 9.81 at 0.9 px with a span-local inlier fraction of **1.00**, and a ball sitting still
+  on the floor (3 cm of travel in 0.16 s) fits at **0.55 px, descending, 0.22 m above the floor**
+  by putting its apex inside the observed span. A real throw is seen falling **1.01 m** with
+  **0.12 m** unseen. If one of these fires and the throw was real, the camera is not covering the
+  descent — that is an aim problem, not a threshold to lower.
 
 Each of these raises with a diagnostic identifying which one fired, in the style of
 `ball_detector.py`'s `detect_ball_bgsub` — the pipeline is built to fail loudly rather than

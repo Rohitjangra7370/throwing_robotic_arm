@@ -8,9 +8,9 @@ import time
 import numpy as np
 import pytest
 
-from hardware_session import (SessionState, Stage, ThrowCycle, build_argparser,
-                              build_cycle_args, build_stage_zero_args,
-                              finalize_throw_record)
+from hardware_session import (SessionApp, SessionState, Stage, ThrowCycle,
+                              build_argparser, build_cycle_args,
+                              build_stage_zero_args, finalize_throw_record)
 from perception.ir_capture import load_recording
 from robot_arm.kinova_hardware import HardwareThrowExecutor, SafetyLimits
 
@@ -311,7 +311,11 @@ def test_measurement_failure_that_is_not_a_runtimeerror_still_logs_a_record(monk
     # which is the whole point of saving first (see step_throw_and_measure's
     # capture-save comment): a future, improved fitter can be re-run against
     # this exact recording even though this fit failed.
-    assert capture_file == os.path.join(str(tmp_path), "throw_000.npz")
+    # Session-stamped, not "throw_000.npz" -- see capture_filename's docstring
+    # for the data loss that naming caused.
+    assert os.path.dirname(capture_file) == str(tmp_path)
+    assert os.path.basename(capture_file).startswith("throw_")
+    assert os.path.basename(capture_file).endswith("_000.npz")
     assert os.path.isfile(capture_file)
 
 
@@ -442,7 +446,8 @@ def test_successful_cycle_saves_recording_and_reports_capture_file(monkeypatch, 
         plan, target=[0.7, 0.0], speed_scale=1.0, throw_index=7, extrinsic=extrinsic)
 
     assert landing_xy == [pytest.approx(0.71), pytest.approx(0.02)]
-    assert capture_file == os.path.join(str(tmp_path), "throw_007.npz")
+    assert os.path.dirname(capture_file) == str(tmp_path)
+    assert os.path.basename(capture_file).endswith("_007.npz")
     assert os.path.isfile(capture_file)
 
     loaded = load_recording(capture_file)
@@ -703,3 +708,229 @@ def test_finalize_throw_record_never_raises_even_when_everything_fails(monkeypat
     assert record is not None
     assert record["throw_index"] == 5
     assert warning is not None
+
+
+# ---------------------------------------------------------------------------
+# Gripper close amount (added 2026-09-10)
+#
+# `HardwareThrowExecutor` always took `gripper_closed` (0..1); nothing on the
+# run-day path ever set it, so every grasp was commanded fully closed. Exposing
+# it needs one non-obvious thing to move with it: the grasp check.
+#
+# pickup_and_lift decides "grasped a ball" vs "closed on nothing" from where
+# the fingers STOPPED. Closing on nothing reaches the commanded position;
+# closing on a tennis ball stalls at 58.08% (measured 2026-08-22, position and
+# velocity both dead stable). The old test was the constant 90.0, which is only
+# correct because the command was always 100%. Command 75% and the fingers stop
+# at 75% on an EMPTY hand -- still under 90 -- and the app reports a grasp that
+# did not happen, then throws an empty gripper.
+# ---------------------------------------------------------------------------
+from pickup_and_lift import BALL_STALL_PCT, GRASP_MARGIN_PCT, grasp_threshold_pct
+
+
+def test_grasp_threshold_is_unchanged_for_a_fully_closed_command():
+    """The historical constant, now derived. Any drift here changes behaviour
+    for every existing run-day command line, all of which omit the flag."""
+    assert grasp_threshold_pct(1.0) == pytest.approx(90.0)
+
+
+def test_grasp_threshold_tracks_the_commanded_close_amount():
+    assert grasp_threshold_pct(0.85) == pytest.approx(85.0 - GRASP_MARGIN_PCT)
+    assert grasp_threshold_pct(0.75) == pytest.approx(75.0 - GRASP_MARGIN_PCT)
+
+
+def test_a_close_amount_too_light_to_detect_a_grasp_is_refused():
+    """
+    Below ~0.70 the threshold falls to where a real ball's stall sits, and
+    "grasped" and "closed on nothing" stop being distinguishable -- so the
+    check silently starts passing empty hands. Refuse instead.
+    """
+    with pytest.raises(ValueError, match="grasp"):
+        grasp_threshold_pct(0.60)
+    assert grasp_threshold_pct(0.60, strict=False) < BALL_STALL_PCT
+
+
+def test_close_amount_outside_zero_to_one_is_refused():
+    for bad in (-0.1, 1.5):
+        with pytest.raises(ValueError, match="0.0"):
+            grasp_threshold_pct(bad)
+
+
+def _fields(**over):
+    f = {"ip": "10.0.0.5", "robot": "kinova_gen3_dyn",
+         "log_path": "results_kinetic_chain_gen3_tcp/1",
+         "opt_pose": "throw_pose_table_tcp.npy", "tool_offset_z": "0.12",
+         "gripper_close": "1.0"}
+    f.update(over)
+    return f
+
+
+def test_cycle_args_carry_the_gripper_close_amount():
+    base_args = build_argparser().parse_args(["--dry_run"])
+    value, error = _run_in_thread(lambda: build_cycle_args(base_args, _fields(gripper_close="0.8")))
+    assert error is None, f"build_cycle_args raised off the main thread: {error!r}"
+    assert value.gripper_close == pytest.approx(0.8)
+
+
+def test_cycle_args_default_to_a_fully_closed_gripper():
+    base_args = build_argparser().parse_args(["--dry_run"])
+    assert base_args.gripper_close == pytest.approx(1.0)
+
+
+def test_bad_gripper_close_field_is_reported_by_name():
+    base_args = build_argparser().parse_args(["--dry_run"])
+    with pytest.raises(ValueError, match="gripper_close"):
+        build_cycle_args(base_args, _fields(gripper_close="tight"))
+    with pytest.raises(ValueError, match="gripper_close"):
+        build_cycle_args(base_args, _fields(gripper_close="0.5"))
+
+
+# ---------------------------------------------------------------------------
+# DATA LOSS (found 2026-09-11): the capture filename was `throw_<index>.npz`
+# and `throw_index` restarts at 0 every time the app is launched, so every
+# session silently overwrote the previous session's recordings. Measured on the
+# real log at the time it was found: 34 logged throws had written to only 21
+# distinct paths -- `throws/throw_000.npz` had been written TEN times across
+# five separate dates, and 13 raw recordings no longer existed. That directly
+# contradicts HARDWARE_RUNBOOK.md's "keep every recording" rule and the
+# save-before-measure design, whose whole purpose is that an improved fitter
+# can be re-run against a throw from weeks ago.
+#
+# `run_hardware_throw.py` already had the right pattern (a timestamp in the
+# trace filename); this makes the capture path follow it.
+# ---------------------------------------------------------------------------
+def test_capture_filename_carries_the_session_stamp():
+    from hardware_session import capture_filename
+    p = capture_filename("/tmp/throws", 7, "20260911_004630")
+    assert p == os.path.join("/tmp/throws", "throw_20260911_004630_007.npz")
+
+
+def test_two_sessions_reusing_throw_index_zero_do_not_collide(tmp_path):
+    """The exact real-world failure: two app launches, both starting at 0."""
+    from hardware_session import capture_filename
+    a = capture_filename(str(tmp_path), 0, "20260910_232400")
+    b = capture_filename(str(tmp_path), 0, "20260911_000352")
+    assert a != b, "a second session would overwrite the first session's throw 0"
+
+
+def test_capture_filename_never_returns_an_existing_path(tmp_path):
+    """
+    Belt and braces. A stamp collision should be impossible, but a recording
+    that already exists must never be overwritten -- losing it is worse than
+    an odd filename, and this is the one thing the save path cannot get wrong.
+    """
+    from hardware_session import capture_filename
+    first = capture_filename(str(tmp_path), 3, "20260911_004630")
+    open(first, "wb").write(b"x")
+    second = capture_filename(str(tmp_path), 3, "20260911_004630")
+    assert second != first
+    assert not os.path.exists(second)
+
+
+def test_a_session_without_a_stamp_still_gets_a_unique_name(tmp_path):
+    """
+    `capture_filename` must not depend on main() having set the stamp -- a
+    caller that constructs args itself (tests, an embedding script) still must
+    not be able to overwrite anything.
+    """
+    from hardware_session import capture_filename
+    a = capture_filename(str(tmp_path), 0, None)
+    open(a, "wb").write(b"x")
+    b = capture_filename(str(tmp_path), 0, None)
+    assert a != b
+
+
+# ---------------------------------------------------------------------------
+# Regression (2026-09-11): `_log_aim` referenced `json` without importing it,
+# so the very first real "Aim at bin" click printed
+#   [aim] WARNING: could not write bin_game_log.jsonl: name 'json' is not defined
+# and the game log stayed empty. The handler catches every exception around the
+# write so a logging failure can never cost a reading -- which is right, and is
+# also why a missing import surfaced as a warning line instead of a traceback.
+# This exercises the record-building and the write for real.
+# ---------------------------------------------------------------------------
+def test_aim_log_record_is_written_and_is_valid_json(tmp_path):
+    import json as _json
+
+    from perception.floor_marker import FloorMarker
+
+    class _Stub:
+        """Just enough SessionApp for _log_aim -- no Tk, no camera, no arm."""
+        def __init__(self, path):
+            self.args = argparse.Namespace(bin_game_log=str(path),
+                                           session_stamp="20260911_030000",
+                                           aim_model="additive")
+            self.throw_index = 4
+            self.lines = []
+        _append = lambda self, t: self.lines.append(t)
+        _log_aim = SessionApp._log_aim
+
+    log = tmp_path / "bin_game_log.jsonl"
+    app = _Stub(log)
+    marker = FloorMarker(marker_id=1, centre_xy=np.array([1.127, -0.497]),
+                         corners_xy=np.zeros((4, 2)), side_m=0.081,
+                         side_error_m=0.001, pixel_side=16.0,
+                         centre_px=np.array([350.0, 300.0]))
+    app._log_aim(marker, [0.6988, -0.2976],
+                 {"predicted_landing": [1.127, -0.497], "commanded_speed": 1.534}, [])
+
+    assert not app.lines, f"a successful write must log no warning: {app.lines}"
+    rec = _json.loads(log.read_text().strip())
+    assert rec["marker_id"] == 1
+    assert rec["marker_xy"] == [pytest.approx(1.127), pytest.approx(-0.497)]
+    assert rec["command_target"] == [pytest.approx(0.6988), pytest.approx(-0.2976)]
+    assert rec["commanded_speed"] == pytest.approx(1.534)
+    assert rec["refusals"] == []
+
+
+def test_a_refused_aim_is_logged_too(tmp_path):
+    """A session of moving the bin is only a dataset if the misses are in it."""
+    import json as _json
+
+    class _Stub:
+        def __init__(self, path):
+            self.args = argparse.Namespace(bin_game_log=str(path),
+                                           session_stamp=None, aim_model="additive")
+            self.throw_index = 0
+            self.lines = []
+        _append = lambda self, t: self.lines.append(t)
+        _log_aim = SessionApp._log_aim
+
+    log = tmp_path / "g.jsonl"
+    app = _Stub(log)
+    app._log_aim(None, None, None, ["commanded speed 1.115 m/s is outside the band"])
+    rec = _json.loads(log.read_text().strip())
+    assert rec["marker_id"] is None and rec["command_target"] is None
+    assert "outside the band" in rec["refusals"][0]
+
+
+def test_nan_size_check_is_logged_as_null_not_nan(tmp_path):
+    """
+    `side_error_m` is NaN when no printed size was given, and bare NaN is not
+    valid JSON -- json.dumps emits it anyway and json.loads in most other
+    languages then chokes. It must serialise as null.
+    """
+    import json as _json
+
+    from perception.floor_marker import FloorMarker
+
+    class _Stub:
+        def __init__(self, path):
+            self.args = argparse.Namespace(bin_game_log=str(path),
+                                           session_stamp=None, aim_model="additive")
+            self.throw_index = 0
+            self.lines = []
+        _append = lambda self, t: self.lines.append(t)
+        _log_aim = SessionApp._log_aim
+
+    log = tmp_path / "g.jsonl"
+    app = _Stub(log)
+    marker = FloorMarker(marker_id=1, centre_xy=np.array([1.1, -0.5]),
+                         corners_xy=np.zeros((4, 2)), side_m=0.081,
+                         side_error_m=float("nan"), pixel_side=16.0,
+                         centre_px=np.array([1.0, 2.0]))
+    app._log_aim(marker, [0.7, -0.3],
+                 {"predicted_landing": [1.1, -0.5], "commanded_speed": 1.5}, [])
+    text = log.read_text()
+    assert "NaN" not in text, f"NaN leaked into the log: {text}"
+    assert _json.loads(text.strip())["marker_side_error_m"] is None

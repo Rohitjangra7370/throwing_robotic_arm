@@ -229,6 +229,31 @@ def ransac_track(obs, rig, R_bc, t_bc, g=G_BASE, thresh_px=2.0,
     Minimal sample is 2 timed 3-D points (6 equations, 6 unknowns). Scoring is
     in pixels, consistent with `fit_ballistic`'s objective.
 
+    `min_inlier_frac` IS MEASURED OVER THE WINNING ARC'S OWN TIME SPAN, NOT
+    OVER THE WHOLE RECORDING -- found 2026-09-10, after every real run-day
+    recording was refused as "not a clean throw" while its flight arc fitted
+    to 0.81 px over 16 frames. Taken globally the gate is unreachable by
+    construction, and for the very reason this function exists: the ball
+    enters the overhead FOV ~0.2 s before first contact while the capture
+    window runs POST_S = 1.0 s past release, so most rows in any recording
+    belong to the BOUNCE -- a second, perfectly good, completely different
+    parabola that the paragraph above promises to reject. Rejecting it then
+    counted against the arc that was correctly found (real: 16/37 = 0.43,
+    0.50, 0.55, 0.43 across four sessions; nothing could ever pass).
+
+    The span-local question -- "is this arc clean where it actually lives?" --
+    is the one the gate was always meant to ask, and it still refuses the
+    case it was written for: outliers that overlap the arc in time (a moving
+    arm, reflections) sit inside the span and dilute it exactly as before.
+    What it deliberately stops punishing is detections BEFORE the ball
+    arrives and AFTER it has already landed.
+
+    A span-local fraction alone cannot tell a real landing from a
+    well-conditioned fit to something that never fell -- the known-bad
+    hand-carried recordings score 1.00 here at 0.9 px. That discrimination is
+    `measure_landing`'s unobserved-drop gate, which needs the floor height
+    this function does not have.
+
     Returns (inlier_indices_into_obs, FitResult).
     """
     obs = np.asarray(obs, float)
@@ -279,13 +304,25 @@ def ransac_track(obs, rig, R_bc, t_bc, g=G_BASE, thresh_px=2.0,
         if inl.size > best_idx.size:
             best_idx = inl
 
-    frac = best_idx.size / float(n)
-    if best_idx.size < MIN_INLIER_FRAMES or frac < min_inlier_frac:
+    if best_idx.size < MIN_INLIER_FRAMES:
         raise RuntimeError(
-            f"no ballistic arc found: best inlier consensus {best_idx.size}/{n} "
-            f"frames (inlier fraction {frac:.2f}, need >= {min_inlier_frac} and "
-            f">= {MIN_INLIER_FRAMES} frames) -- this recording does not contain "
-            f"a clean throw")
+            f"no ballistic arc found: the largest set of observations agreeing "
+            f"on one g = 9.81 parabola is {best_idx.size} of {n}, below the "
+            f"{MIN_INLIER_FRAMES}-frame minimum (2x redundancy over 6 unknowns) "
+            f"-- too little of a flight was seen to fit one")
+
+    t_lo, t_hi = float(obs[best_idx, 0].min()), float(obs[best_idx, 0].max())
+    in_span = int(np.count_nonzero((obs[:, 0] >= t_lo) & (obs[:, 0] <= t_hi)))
+    frac = best_idx.size / float(in_span)
+    if frac < min_inlier_frac:
+        raise RuntimeError(
+            f"no clean ballistic arc: {best_idx.size} of the {in_span} "
+            f"observations inside the arc's own time span [{t_lo:.3f}, "
+            f"{t_hi:.3f}] s fit it (inlier fraction {frac:.2f}, need "
+            f">= {min_inlier_frac}) -- something else is moving in frame "
+            f"alongside the ball. ({best_idx.size}/{n} over the whole "
+            f"recording; rows outside the span are not counted -- they are "
+            f"the pre-arrival and post-bounce frames this rejects by design.)")
 
     fit = fit_ballistic(obs[best_idx], rig, R_bc, t_bc, g=g)
     if fit.rms_px > MAX_RMS_PX:

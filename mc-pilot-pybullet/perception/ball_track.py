@@ -155,7 +155,8 @@ def detect_candidates(frame, background, diff_thresh=18, min_area_px=20,
 
 
 def reject_static_candidates(per_frame, bin_px=6.0, persistence_frac=0.12,
-                             min_persistent_frames=3, dilate=1):
+                             min_persistent_frames=3, dilate=1,
+                             spare_area_ratio=2.0):
     """
     Drop candidates that recur at nearly the same pixel location across many
     frames of ONE recording -- found 2026-09-02: a permanently-mounted ChArUco
@@ -182,6 +183,24 @@ def reject_static_candidates(per_frame, bin_px=6.0, persistence_frac=0.12,
     flagged region by that many bins to catch the board's own subpixel jitter
     around its true position.
 
+    `spare_area_ratio` KEEPS THE BALL WHEN IT FLIES THROUGH A FLAGGED SPOT --
+    found 2026-09-11, and it was costing most of a run day. A flagged bin says
+    "small blobs keep appearing HERE", which is true of the noise source and
+    equally true of the ball on the frame it passes over that pixel. On one
+    real session a persistent source at (486, 281) sat squarely on the descent
+    path, and the last five frames of the fall were deleted from throw after
+    throw: the fit then had no data below ~0.4 m, so `measure_landing` refused
+    it as "0.41 m of unobserved drop", or locked onto the bounce instead and
+    refused it as "still RISING". 11 of 18 refusals in that session were this.
+
+    The discriminator is in the data already. There, the static source measured
+    24-54 px of area and the ball crossing it measured 104-168 -- 3-5x. So a
+    candidate in a flagged bin is SPARED when its area exceeds
+    `spare_area_ratio` times the median area of the candidates that made that
+    bin persistent in the first place. This can only ever spare, never reject
+    more, so it cannot reintroduce the board noise it was written for: the
+    noise's own area IS the median, so its ratio is 1.
+
     `per_frame`: list of lists of Candidate, one list per frame (single
     camera stream -- call once per IR sensor). Returns a same-shaped list
     with static candidates removed.
@@ -193,19 +212,30 @@ def reject_static_candidates(per_frame, bin_px=6.0, persistence_frac=0.12,
         return [list(c) for c in per_frame]
 
     bin_frames = defaultdict(set)
+    bin_areas = defaultdict(list)
     for k, cands in enumerate(per_frame):
         for c in cands:
             b = (round(c.u / bin_px), round(c.v / bin_px))
             bin_frames[b].add(k)
+            bin_areas[b].append(float(c.area_px))
 
     threshold = max(min_persistent_frames, persistence_frac * n_active)
-    bad_bins = set()
+    # Every flagged bin carries the typical size of the thing that flagged it,
+    # so a candidate landing there can be compared against it rather than
+    # deleted on position alone. The dilated neighbours inherit that size.
+    bad_bins = {}
     for b, frames_hit in bin_frames.items():
         if len(frames_hit) >= threshold:
+            med = float(np.median(bin_areas[b]))
             for dx in range(-dilate, dilate + 1):
                 for dy in range(-dilate, dilate + 1):
-                    bad_bins.add((b[0] + dx, b[1] + dy))
+                    nb = (b[0] + dx, b[1] + dy)
+                    bad_bins[nb] = min(bad_bins.get(nb, med), med)
 
-    return [[c for c in cands
-             if (round(c.u / bin_px), round(c.v / bin_px)) not in bad_bins]
-            for cands in per_frame]
+    def keep(c):
+        b = (round(c.u / bin_px), round(c.v / bin_px))
+        if b not in bad_bins:
+            return True
+        return float(c.area_px) > spare_area_ratio * bad_bins[b]
+
+    return [[c for c in cands if keep(c)] for cands in per_frame]
