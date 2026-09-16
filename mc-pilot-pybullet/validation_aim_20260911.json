@@ -1,0 +1,201 @@
+{
+ "model": "additive",
+ "speed_band": [
+  1.403,
+  1.668
+ ],
+ "solutions": [
+  {
+   "wanted_landing": [
+    1.15,
+    0.0
+   ],
+   "command_target": [
+    0.7051305493811751,
+    0.009622696096450348
+   ],
+   "commanded_speed": 1.4330315419262405,
+   "predicted_landing": [
+    1.1500552865531743,
+    6.929626119315385e-06
+   ],
+   "solver_miss_m": 5.571914105640453e-05,
+   "refusals": [],
+   "visibility": {
+    "n_frames": 26,
+    "observed_drop_m": 1.2297723851691824,
+    "unobserved_drop_m": 0.006579164023057138,
+    "t_first": 0.3666666666666667,
+    "t_last": 0.6444444444444445
+   }
+  },
+  {
+   "wanted_landing": [
+    1.3,
+    0.0
+   ],
+   "command_target": [
+    0.8264845573691595,
+    0.009056151543111008
+   ],
+   "commanded_speed": 1.6191277057979043,
+   "predicted_landing": [
+    1.300002351781978,
+    -2.9221635260839873e-08
+   ],
+   "solver_miss_m": 2.3519635150752966e-06,
+   "refusals": [],
+   "visibility": {
+    "n_frames": 28,
+    "observed_drop_m": 1.2781589153301347,
+    "unobserved_drop_m": 0.043731946165641244,
+    "t_first": 0.34444444444444444,
+    "t_last": 0.6444444444444445
+   }
+  },
+  {
+   "wanted_landing": [
+    1.2,
+    0.45
+   ],
+   "command_target": [
+    0.7455036798403013,
+    0.28953601252658495
+   ],
+   "commanded_speed": 1.5962943989750085,
+   "predicted_landing": [
+    1.1998627122000665,
+    0.44993282276327456
+   ],
+   "solver_miss_m": 0.00015284214453038078,
+   "refusals": [],
+   "visibility": {
+    "n_frames": 26,
+    "observed_drop_m": 1.2157215970449675,
+    "unobserved_drop_m": 0.0391766348433672,
+    "t_first": 0.3666666666666667,
+    "t_last": 0.6444444444444445
+   }
+  },
+  {
+   "wanted_landing": [
+    1.2,
+    -0.45
+   ],
+   "command_target": [
+    0.7466089114615212,
+    -0.26988302849295426
+   ],
+   "commanded_speed": 1.596377568871643,
+   "predicted_landing": [
+    1.1999211490027561,
+    -0.44998477908923273
+   ],
+   "solver_miss_m": 8.030663665556065e-05,
+   "refusals": [],
+   "visibility": {
+    "n_frames": 27,
+    "observed_drop_m": 1.2486017488956889,
+    "unobserved_drop_m": 0.03918675089076473,
+    "t_first": 0.35555555555555557,
+    "t_last": 0.6444444444444445
+   }
+  },
+  {
+   "wanted_landing": [
+    1.25,
+    0.2
+   ],
+   "command_target": [
+    0.7753735145208992,
+    0.1335747278572051
+   ],
+   "commanded_speed": 1.5769658685558636,
+   "predicted_landing": [
+    1.2498859611337547,
+    0.19995942312583825
+   ],
+   "solver_miss_m": 0.0001210427434059891,
+   "refusals": [],
+   "visibility": {
+    "n_frames": 27,
+    "observed_drop_m": 1.2503367105263936,
+    "unobserved_drop_m": 0.035316094240555373,
+    "t_first": 0.35555555555555557,
+    "t_last": 0.6444444444444445
+   }
+  },
+  {
+   "wanted_landing": [
+    1.16,
+    -0.25
+   ],
+   "command_target": [
+    0.7160315895834658,
+    -0.14453572104377232
+   ],
+   "commanded_speed": 1.4787593279751912,
+   "predicted_landing": [
+    1.1600060964881016,
+    -0.24999576366573145
+   ],
+   "solver_miss_m": 7.423859859184771e-06,
+   "refusals": [],
+   "visibility": {
+    "n_frames": 27,
+    "observed_drop_m": 1.259127314354334,
+    "unobserved_drop_m": 0.015706524119882048,
+    "t_first": 0.35555555555555557,
+    "t_last": 0.6444444444444445
+   }
+  },
+  {
+   "wanted_landing": [
+    1.28,
+    -0.1
+   ],
+   "command_target": [
+    0.8007653144853807,
+    -0.05320876274133777
+   ],
+   "commanded_speed": 1.599313067661757,
+   "predicted_landing": [
+    1.2800015787394619,
+    -0.10000011006792503
+   ],
+   "solver_miss_m": 1.58257171605256e-06,
+   "refusals": [],
+   "visibility": {
+    "n_frames": 28,
+    "observed_drop_m": 1.280000798837388,
+    "unobserved_drop_m": 0.03977542672972001,
+    "t_first": 0.34444444444444444,
+    "t_last": 0.6444444444444445
+   }
+  },
+  {
+   "wanted_landing": [
+    1.22,
+    0.0
+   ],
+   "command_target": [
+    0.7506973938273562,
+    0.009566592247794227
+   ],
+   "commanded_speed": 1.5202129170751708,
+   "predicted_landing": [
+    1.2199478393718053,
+    5.667056009982241e-06
+   ],
+   "solver_miss_m": 5.246757720235016e-05,
+   "refusals": [],
+   "visibility": {
+    "n_frames": 27,
+    "observed_drop_m": 1.2554165299061864,
+    "unobserved_drop_m": 0.023984308679537603,
+    "t_first": 0.35555555555555557,
+    "t_last": 0.6444444444444445
+   }
+  }
+ ]
+}
