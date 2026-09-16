@@ -19,7 +19,9 @@ does not add a new way to move the arm.
 from __future__ import annotations
 
 import argparse
+import datetime
 import enum
+import os
 import queue
 import sys
 import threading
@@ -354,11 +356,17 @@ class ThrowCycle:
         self.state, self.camera, self.args = state, camera, args
 
     def step_pickup(self):
-        from pickup_and_lift import pickup_and_lift
+        from pickup_and_lift import grasp_threshold_pct, pickup_and_lift
+        close = float(self.args.gripper_close)
+        thresh = grasp_threshold_pct(close)   # raises before anything moves
         grasped, pct = pickup_and_lift(self.args.ip, self.args.robot,
-                                       self.args.pickup_pose, self.args.lift_z)
-        return grasped, (f"grasped a ball ({pct:.1f}% closed)" if grasped else
-                         f"CLOSED ON NOTHING ({pct:.1f}%) -- place a ball and retry")
+                                       self.args.pickup_pose, self.args.lift_z,
+                                       gripper_close=close)
+        return grasped, (f"grasped a ball ({pct:.1f}% closed, commanded "
+                         f"{close * 100:.0f}%)" if grasped else
+                         f"CLOSED ON NOTHING ({pct:.1f}%, commanded "
+                         f"{close * 100:.0f}%, grasp needs < {thresh:.1f}%) -- "
+                         f"place a ball and retry")
 
     def step_plan(self, target, speed_scale):
         """
@@ -384,7 +392,13 @@ class ThrowCycle:
             arm, table, tool_offset=[0.0, 0.0, a.tool_offset_z]) if table else None
         limits = H.make_limits(profile, speed_scale, release_box=box, arm=arm,
                                positioning_scale=a.positioning_scale)
-        ex = HardwareThrowExecutor(limits, dry_run=not a.arm, ip=a.ip)
+        # Same close amount the pickup used. rehearse_or_throw re-commands a
+        # grasp before the swing; letting that default to a full close would
+        # squeeze the ball harder than the operator asked for, and re-closing
+        # an already-stalled gripper is the move that preceded the 2026-08-22
+        # ROBOT_IN_FAULT.
+        ex = HardwareThrowExecutor(limits, dry_run=not a.arm, ip=a.ip,
+                                   gripper_closed=float(a.gripper_close))
 
         release_box_ok = ex.check_release_pos(rel)
         precheck_ok, report = ex.precheck(coeffs, arm,
@@ -508,7 +522,8 @@ class ThrowCycle:
                 "t_release": float(event.get("t_release", 0.0)),
             }
             os.makedirs(self.args.throws_dir, exist_ok=True)
-            path = os.path.join(self.args.throws_dir, f"throw_{int(throw_index):03d}.npz")
+            path = capture_filename(self.args.throws_dir, throw_index,
+                                    getattr(self.args, "session_stamp", None))
             save_recording(path, {**rec, "meta": meta})
             capture_file = path
         except Exception as e:
@@ -637,6 +652,31 @@ def build_argparser():
 
     g = ap.add_argument_group("throw cycle")
     g.add_argument("--pickup_pose", default="pickup_pose.json")
+    g.add_argument("--marker_id", type=int, default=None,
+                   help="ArUco id (DICT_4X4_50) on the target bin. Omit only if "
+                        "exactly one marker is ever in view -- with more than "
+                        "one the reading is refused rather than guessed.")
+    g.add_argument("--marker_size", type=float, default=None,
+                   help="MEASURED printed side of that marker, metres. Optional "
+                        "but strongly recommended: it is the only check that "
+                        "catches a rescaled printout, a wrong floor height or a "
+                        "stale extrinsic, none of which the detector can see.")
+    g.add_argument("--marker_exclude", type=int, nargs="*", default=(),
+                   help="ids to ignore -- the ChArUco board glued to this floor "
+                        "shares the dictionary.")
+    g.add_argument("--aim_model", choices=("gain", "additive"), default="additive",
+                   help="which fitted release-speed correction to aim with")
+    g.add_argument("--bin_game_log", default="bin_game_log.jsonl",
+                   help="every 'Aim at bin' reading is appended here, so a "
+                        "session of moving the bin around is a dataset")
+    g.add_argument("--gripper_close", type=float, default=1.0,
+                   help="how far to close the fingers on the ball, 0.0 (open) "
+                        "to 1.0 (fully closed). 1.0 is the historical "
+                        "behaviour and the default. Lower it for a lighter "
+                        "grip; below 0.70 the grasp check cannot tell a ball "
+                        "from an empty hand and refuses. Applies to the pickup "
+                        "grasp AND the pre-swing re-grip -- one number, one "
+                        "grip force, for the whole cycle.")
     g.add_argument("--lift_z", type=float, default=0.10)
     g.add_argument("--duration", type=float, default=4.0)
     g.add_argument("--positioning_scale", type=float, default=1.0)
@@ -719,8 +759,98 @@ def build_stage_zero_args(base_args, fields):
     return ns
 
 
+def aim_at_bin(ir1, args, extrinsic, marker_id=None, marker_size_m=None,
+               exclude_ids=()):
+    """
+    One IR1 frame -> (marker, commanded target, prediction, refusals).
+
+    THE FRAME MATTERS. `ir1` must be the LEFT INFRARED image, not colour, and
+    `extrinsic` must be the same T_B_C the landing measurement uses. That pair
+    makes the marker and the ball share a frame, so the known colour-vs-IR1
+    offset in T_B_C cancels out of "did the ball land on the marker" instead of
+    being added to it -- see perception/floor_marker.py's module docstring.
+
+    Refusals come back as a list rather than an exception: a refused round
+    still wants to show the operator what it computed and why it must not be
+    thrown. A DETECTION failure does raise -- there is no number to show.
+
+    Kept module-level and Tk-free on purpose: it is the whole content of the
+    "Aim at bin" button, and the button itself must stay a thin shell (same
+    rule as build_cycle_args -- see the threading note above it).
+    """
+    import numpy as np
+
+    from aim_at import Aimer
+    from perception.floor_marker import detect_bin_marker
+    from perception.ray_plane import D435I_IR_848x480
+
+    R_bc, t_bc = extrinsic
+    marker = detect_bin_marker(
+        ir1, D435I_IR_848x480, R_bc, t_bc, z_floor=-float(args.base_height),
+        marker_size_m=marker_size_m, marker_id=marker_id,
+        exclude_ids=tuple(exclude_ids))
+    with Aimer(args, extrinsic=(R_bc, t_bc)) as aimer:
+        target, pred, refusals = aimer.aim(marker.centre_xy)
+    return marker, (None if target is None else [float(target[0]), float(target[1])]), \
+        pred, list(refusals)
+
+
+def aimer_args(base_args):
+    """
+    `Aimer` needs a few knobs the session app has no reason to expose. Filled
+    in from the session's own values so there is one source of truth for the
+    checkpoint, pose table and tool offset, and never a second set that can
+    drift out of step with what the arm is about to execute.
+    """
+    from aim_at import SPEED_MAX, SPEED_MIN
+
+    ns = argparse.Namespace(**vars(base_args))
+    ns.extrinsic = None                       # supplied as an (R, t) pair instead
+    ns.model = getattr(base_args, "aim_model", "additive")
+    ns.speed_min = getattr(base_args, "aim_speed_min", SPEED_MIN)
+    ns.speed_max = getattr(base_args, "aim_speed_max", SPEED_MAX)
+    ns.floor_z = -float(base_args.base_height)
+    return ns
+
+
+def capture_filename(throws_dir, throw_index, session_stamp):
+    """
+    Path for one throw's raw dual-IR recording. UNIQUE ACROSS SESSIONS.
+
+    DATA LOSS, found 2026-09-11. This used to be `throw_<index>.npz`, and
+    `throw_index` restarts at 0 every time the app is launched -- so every
+    session silently overwrote the last one's recordings. On the real log when
+    it was found, 34 logged throws had written to 21 distinct paths;
+    `throws/throw_000.npz` had been written TEN times across five dates. The
+    recordings behind the 2026-08-26 ball-tracking validation and the
+    2026-09-10 first real landing measurement were both gone.
+
+    That is not a tidiness problem. HARDWARE_RUNBOOK.md's "keep every
+    recording" rule and the save-BEFORE-measure ordering in
+    step_throw_and_measure exist for one reason: a recording is a permanent
+    regression fixture, so an improved fitter can be re-run against a throw
+    from weeks ago. A filename that collides across sessions destroys exactly
+    that. `run_hardware_throw.py` already stamped its trace files with a
+    timestamp; this follows it.
+
+    The existence check after the stamp is belt and braces -- a collision
+    should be impossible now -- but overwriting a recording is the one failure
+    this path must never have, and an odd filename is a much cheaper outcome.
+    """
+    stamp = session_stamp or datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    base = f"throw_{stamp}_{int(throw_index):03d}"
+    path = os.path.join(throws_dir, base + ".npz")
+    n = 1
+    while os.path.exists(path):
+        path = os.path.join(throws_dir, f"{base}_{n}.npz")
+        n += 1
+    return path
+
+
 def build_cycle_args(base_args, fields):
     """Same contract as build_stage_zero_args -- see its docstring."""
+    from pickup_and_lift import grasp_threshold_pct
+
     ns = argparse.Namespace(**vars(base_args))
     ns.ip = fields["ip"]
     ns.robot = fields["robot"]
@@ -730,6 +860,18 @@ def build_cycle_args(base_args, fields):
         ns.tool_offset_z = float(fields["tool_offset_z"])
     except ValueError as e:
         raise ValueError(f"bad numeric field 'tool_offset_z': {e}") from e
+    if "gripper_close" in fields:
+        try:
+            ns.gripper_close = float(fields["gripper_close"])
+        except ValueError as e:
+            raise ValueError(f"bad numeric field 'gripper_close': {e}") from e
+        # Validate HERE, on the main thread, where the button handler turns a
+        # ValueError into a dialog -- not once the worker has already homed
+        # the arm over the pickup stand.
+        try:
+            grasp_threshold_pct(ns.gripper_close)
+        except ValueError as e:
+            raise ValueError(f"bad field 'gripper_close': {e}") from e
     return ns
 
 
@@ -916,9 +1058,17 @@ class SessionApp:
         self.opt_pose_var = self._field(frm, r, "Pose table", self.args.opt_pose); r += 1
         self.tool_offset_var = self._field(
             frm, r, "Tool offset z (m)", self.args.tool_offset_z); r += 1
+        self.gripper_close_var = self._field(
+            frm, r, "Gripper close (0-1)", self.args.gripper_close); r += 1
         self.target_x_var = self._field(frm, r, "Target X (m)", self.args.target[0]); r += 1
         self.target_y_var = self._field(frm, r, "Target Y (m)", self.args.target[1]); r += 1
         self.ball_id_var = self._field(frm, r, "Ball ID", self.args.ball_id); r += 1
+        self.marker_id_var = self._field(
+            frm, r, "Bin marker id (blank=any)",
+            "" if self.args.marker_id is None else self.args.marker_id); r += 1
+        self.marker_size_var = self._field(
+            frm, r, "Marker size m (blank=skip)",
+            "" if self.args.marker_size is None else self.args.marker_size); r += 1
 
         ttk.Label(frm, text="speed_scale").grid(row=r, column=0, sticky="w", pady=2)
         self.speed_scale_var = tk.StringVar(value=str(self.args.speed_scale))
@@ -947,6 +1097,10 @@ class SessionApp:
         self.throw_btn = ttk.Button(frm, text="Pick up & throw", command=self.on_throw,
                                     state="disabled")
         self.throw_btn.grid(row=r, column=1, sticky="ew", pady=4)
+        r += 1
+        self.aim_btn = ttk.Button(frm, text="Aim at bin (read marker)",
+                                  command=self.on_aim_at_bin, state="disabled")
+        self.aim_btn.grid(row=r, column=0, columnspan=2, sticky="ew", pady=4)
         r += 1
         self.update_btn = ttk.Button(frm, text="Update model", command=self.on_update_model,
                                      state="disabled")
@@ -1036,6 +1190,7 @@ class SessionApp:
             "log_path": self.log_path_var.get(),
             "opt_pose": self.opt_pose_var.get(),
             "tool_offset_z": self.tool_offset_var.get(),
+            "gripper_close": self.gripper_close_var.get(),
         }
 
     def _safe_after(self, fn, context):
@@ -1060,9 +1215,149 @@ class SessionApp:
             print(f"[hardware_session] could not schedule GUI update ({context}): {e!r}",
                  file=sys.stderr)
 
+    # -- aim at the bin ------------------------------------------------------ #
+    def on_aim_at_bin(self):
+        """
+        Read the bin's marker off a live IR frame and fill in Target X/Y.
+
+        THREADING (see the class docstring): every Tk read happens here, on the
+        main thread, and the worker is handed plain values. `camera.latest()`
+        returns owned copies, so the frame is safe to hand across.
+        """
+        from tkinter import messagebox
+
+        import numpy as np
+
+        if self.camera is None:
+            messagebox.showwarning("No camera", "Run start-of-day first -- the "
+                                                "camera has to be streaming.")
+            return
+        latest = self.camera.latest()
+        if latest is None:
+            messagebox.showwarning("No frame yet", "The camera is up but no frame "
+                                                   "has arrived yet. Try again in "
+                                                   "a moment.")
+            return
+        _ts, ir1, _ir2 = latest
+
+        try:
+            mid = self.marker_id_var.get().strip()
+            marker_id = int(mid) if mid else None
+            msz = self.marker_size_var.get().strip()
+            marker_size = float(msz) if msz else None
+        except ValueError:
+            messagebox.showerror("Bad input", "Bin marker id must be a whole "
+                                              "number and marker size a number "
+                                              "in metres (or blank).")
+            return
+
+        fields = self._read_shared_fields()
+        try:
+            cycle_args = build_cycle_args(self.args, fields)
+        except ValueError as e:
+            messagebox.showerror("Bad input", str(e))
+            return
+
+        self._busy = True
+        self._refresh_buttons()
+        self.aim_btn.configure(state="disabled")
+        self._set_status("reading the bin marker ...", "orange")
+        threading.Thread(target=self._do_aim,
+                         args=(np.array(ir1, copy=True), cycle_args,
+                               marker_id, marker_size),
+                         daemon=True).start()
+
+    def _do_aim(self, ir1, cycle_args, marker_id, marker_size):
+        """Worker thread. Must not read a Tk variable or touch a widget."""
+        try:
+            from perception import base_frame
+            extrinsic = base_frame.load_extrinsic()
+            marker, target, pred, refusals = aim_at_bin(
+                ir1, aimer_args(cycle_args), extrinsic,
+                marker_id=marker_id, marker_size_m=marker_size,
+                exclude_ids=tuple(self.args.marker_exclude or ()))
+        except Exception as e:
+            self._safe_after(lambda: self._finish_aim(None, None, None, [str(e)]),
+                             "aim failure")
+            return
+        self._safe_after(lambda: self._finish_aim(marker, target, pred, refusals),
+                         "aim result")
+
+    def _finish_aim(self, marker, target, pred, refusals):
+        """Main thread. Fills the target fields only when nothing refused."""
+        from tkinter import messagebox
+
+        self._busy = False
+        if marker is not None:
+            size = ("" if marker.side_error_m != marker.side_error_m
+                    else f", size check {marker.side_error_m * 1000:+.0f} mm")
+            self._append(f"[aim] marker {marker.marker_id} at "
+                         f"({marker.x:+.3f}, {marker.y:+.3f}) m, "
+                         f"{marker.pixel_side:.0f} px across{size}\n")
+        if refusals or target is None:
+            for r in refusals:
+                self._append(f"[aim] REFUSED: {r}\n")
+            self._set_status("aim refused -- target fields left unchanged", "red")
+            messagebox.showwarning("Aim refused", "\n\n".join(refusals) or
+                                   "no solution")
+            self._refresh_buttons()
+            self._log_aim(marker, target, pred, refusals)
+            return
+
+        # Filling these is the whole point, so turn OFF the auto-cycle that
+        # would otherwise ignore them on the next throw.
+        self.auto_targets_var.set(False)
+        self.target_x_var.set(f"{target[0]:.4f}")
+        self.target_y_var.set(f"{target[1]:.4f}")
+        lx, ly = pred["predicted_landing"]
+        self._append(f"[aim] type target ({target[0]:.4f}, {target[1]:+.4f}) "
+                     f"-> predicts landing ({lx:+.3f}, {ly:+.3f}) at "
+                     f"{pred['commanded_speed']:.3f} m/s "
+                     f"(solver miss {pred['solver_miss_m'] * 1000:.1f} mm)\n")
+        self._append("[aim] auto-cycle turned OFF so the throw uses these fields.\n")
+        self._set_status(f"aimed at marker {marker.marker_id} -- confirm and throw",
+                         "green")
+        self._refresh_buttons()
+        self._log_aim(marker, target, pred, refusals)
+
+    def _log_aim(self, marker, target, pred, refusals):
+        """
+        Append the reading. A refused one is logged too -- a session of moving
+        the bin around is only a dataset if the misses are in it.
+        """
+        import datetime
+        import json
+
+        rec = {
+            "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+            "session_stamp": getattr(self.args, "session_stamp", None),
+            "throw_index": self.throw_index,
+            "marker_id": None if marker is None else marker.marker_id,
+            "marker_xy": None if marker is None else [marker.x, marker.y],
+            "marker_side_m": None if marker is None else marker.side_m,
+            "marker_side_error_m": (None if marker is None
+                                    else (None if marker.side_error_m != marker.side_error_m
+                                          else marker.side_error_m)),
+            "marker_pixel_side": None if marker is None else marker.pixel_side,
+            "command_target": target,
+            "predicted_landing": None if pred is None else pred["predicted_landing"],
+            "commanded_speed": None if pred is None else pred["commanded_speed"],
+            "aim_model": getattr(self.args, "aim_model", None),
+            "refusals": list(refusals),
+        }
+        try:
+            with open(self.args.bin_game_log, "a") as f:
+                f.write(json.dumps(rec) + "\n")
+        except Exception as e:
+            self._append(f"[aim] WARNING: could not write {self.args.bin_game_log}: {e}\n")
+
     def _refresh_buttons(self):
         self.throw_btn.configure(state=("normal" if (self.state.can_throw() and not self._busy)
                                         else "disabled"))
+        # Aiming needs a live IR frame and nothing else -- it moves no hardware,
+        # so it is deliberately NOT gated on the throw-readiness state machine.
+        self.aim_btn.configure(state=("normal" if (self.camera is not None
+                                                   and not self._busy) else "disabled"))
         self.update_btn.configure(state=("normal" if self.state.can_update_model() else "disabled"))
         self.reopt_btn.configure(state=("normal" if self.state.can_reoptimize_policy() else "disabled"))
 
@@ -1694,6 +1989,9 @@ def main(argv=None):
     args = build_argparser().parse_args(argv)
     if args.floor_z is None:
         args.floor_z = -args.base_height
+    # One stamp for the whole session, so every recording this launch writes is
+    # unique against every other launch -- see capture_filename's docstring.
+    args.session_stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     if args.dry_run:
         args.arm = False   # explicit and cannot be overridden by also passing --arm
 

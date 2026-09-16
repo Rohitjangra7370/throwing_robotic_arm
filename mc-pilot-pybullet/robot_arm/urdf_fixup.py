@@ -100,7 +100,17 @@ def repair_massless_links(urdf_path: str, cache_dir: str | None = None,
 
     def _abs(m):
         fn = m.group(1)
-        if os.path.isabs(fn) or "://" in fn:
+        if fn.startswith("package://"):
+            # ROS package:// URIs resolve (when they do at all) relative to
+            # wherever the referencing URDF's own directory sits -- e.g.
+            # xarm6_robot.urdf lives in pybullet_data/xarm/, and
+            # "package://xarm_description/meshes/..." only resolves because
+            # pybullet_data/xarm/xarm_description/meshes/... exists. The
+            # repaired copy sits in a different directory, so that relative
+            # resolution breaks unless rewritten the same way plain relative
+            # filenames are, just with the URI scheme stripped first.
+            fn = fn[len("package://"):]
+        elif os.path.isabs(fn) or "://" in fn:
             return m.group(0)
         return 'filename="%s"' % os.path.join(src_dir, fn)
 

@@ -42,6 +42,7 @@ Recordings are written in the exact format perception.ir_capture.load_recording
 expects, so analyze_throw.py and measure_landing.py read them unchanged.
 """
 import argparse
+import datetime as _dt
 import os
 import time
 
@@ -88,6 +89,13 @@ def disparity_window(min_range_m, max_range_m):
     """Range window -> the disparity band a real ball must fall inside."""
     fxb = INTR.fx * D435I_IR_BASELINE_M
     return fxb / max_range_m, fxb / min_range_m
+
+
+# One stamp per invocation. Imported rather than reimplemented: a second copy
+# of a "do not overwrite recordings" rule is a second place for it to drift.
+from hardware_session import capture_filename
+
+SESSION_STAMP = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
 def main():
@@ -209,7 +217,12 @@ def main():
                                 "gain": args.gain, "emitter": args.emitter,
                                 "n_frames": int(m),
                                 "achieved_fps": float((m - 1) / max(tt[-1], 1e-9))}}
-                path = os.path.join(args.out, f"throw_{len(events):03d}.npz")
+                # Session-stamped and never overwriting -- `len(events)` alone
+                # restarts at 0 every invocation, and that silently destroyed
+                # the whole 2026-08-26 capture set when a later run reused the
+                # same numbers (found 2026-09-11; see
+                # hardware_session.capture_filename for the full account).
+                path = capture_filename(args.out, len(events), SESSION_STAMP)
                 save_recording(path, rec)
                 events.append(path)
                 print(f"  saved {path}  ({m} frames, "

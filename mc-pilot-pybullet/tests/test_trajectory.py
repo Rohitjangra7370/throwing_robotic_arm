@@ -1,6 +1,10 @@
 """
-Ballistic fitting and the impact solve. Pure math -- no camera, no arm.
+Ballistic fitting and the impact solve. No camera, no arm -- pure math against
+synthetic projections, plus a few real observation sets under fixtures/ (rows
+extracted from actual dual-IR recordings; see scripts/make_trajectory_fixtures.py).
 """
+import os
+
 import numpy as np
 import pytest
 
@@ -188,3 +192,55 @@ def test_ransac_is_deterministic_for_a_fixed_seed():
     a, _ = ransac_track(obs, RIG, R_BC, T_BC, seed=11)
     b, _ = ransac_track(obs, RIG, R_BC, T_BC, seed=11)
     assert np.array_equal(a, b)
+
+
+REAL_FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+
+
+def _load_real(name):
+    """
+    Observation rows extracted from a real dual-IR recording.
+
+    These are the (N, 5) [t, u1, v1, u2, v2] arrays `build_observations`
+    produces, not the 106 MB recordings themselves -- same principle as the
+    recordings ("every recording is a permanent regression fixture"), small
+    enough to commit. Regenerate with scripts/make_trajectory_fixtures.py if
+    the detector or the pairing ever changes.
+    """
+    z = np.load(os.path.join(REAL_FIXTURES, name))
+    return np.asarray(z["obs"], float), np.asarray(z["R"], float), np.asarray(z["t"], float)
+
+
+def test_ransac_accepts_a_real_flight_that_shares_its_recording_with_a_bounce():
+    """
+    REGRESSION (2026-09-10), real data. Every run-day recording was refused
+    with "no ballistic arc found" at 0.43-0.55 inlier fraction while the
+    flight arc itself fitted to 0.81 px over 16 frames.
+
+    Root cause: the inlier fraction was taken over EVERY observation row in
+    the recording, including the post-bounce arc -- which is exactly what
+    RANSAC is there to reject. The ball enters the overhead FOV ~0.2 s before
+    impact and the capture window runs POST_S = 1.0 s past release, so the
+    bounce is always a large share of the rows and 0.6 was unreachable BY
+    CONSTRUCTION, no matter how good the throw was.
+    """
+    obs, R, t = _load_real("obs_real_throw.npz")
+    idx, fit = ransac_track(obs, RIG, R, t)
+    assert idx.size >= 14, f"kept only {idx.size} of {obs.shape[0]} rows"
+    assert fit.rms_px < 1.0, f"{fit.rms_px:.2f} px"
+    # The arc it locks onto is the flight, not the bounce: it must end at
+    # first contact, not run to the end of the window (1.447 s).
+    assert obs[idx, 0].max() < 1.30, "the fitted arc ran past first contact"
+    assert idx.size / obs.shape[0] < 0.6, \
+        "fixture no longer reproduces the bug -- the global fraction now passes"
+
+
+def test_ransac_still_refuses_when_the_arc_itself_is_mostly_junk():
+    """
+    The span-local fraction must not become a rubber stamp: outliers that
+    overlap the arc's own time window still dilute it and still refuse.
+    """
+    good = _synth_obs(np.linspace(0.13, 0.55, 14), noise_px=0.15, seed=2)
+    obs = np.vstack([good, _arm_like_outliers(40)])
+    with pytest.raises(RuntimeError, match="inlier"):
+        ransac_track(obs, RIG, R_BC, T_BC)

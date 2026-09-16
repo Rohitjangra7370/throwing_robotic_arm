@@ -51,10 +51,12 @@ from robot_arm.robot_profiles import get_robot_profile
 
 
 # Below this the fingers have something between them. Same rule and same
-# measured basis as pickup_and_lift.GRASP_THRESHOLD_PCT (58-59% on a real
+# measured basis as pickup_and_lift.grasp_threshold_pct (58-59% on a real
 # tennis ball against ~99-100% closing on nothing) -- kept as one number in
 # one place would be better, but that module moves the arm on import-time
 # defaults, so the constant is mirrored here with its provenance instead.
+# This tool always commands a FULL close, so the fixed 90.0 is exactly
+# grasp_threshold_pct(1.0); it does not take a settable close amount.
 GRASP_THRESHOLD_PCT = 90.0
 # Fully open reads ~0.87% on this gripper. Anything above this but below
 # GRASP_THRESHOLD_PCT is the motor stalled PART-WAY, i.e. holding something.
