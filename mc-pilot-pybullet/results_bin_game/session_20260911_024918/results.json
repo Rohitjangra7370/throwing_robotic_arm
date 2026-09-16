@@ -1,0 +1,552 @@
+{
+ "summary": {
+  "n_throws": 22,
+  "n_measured": 14,
+  "mean_error_m": 0.019062757330199236,
+  "median_error_m": 0.01827214377075766,
+  "max_error_m": 0.036773782212487005,
+  "model": "additive",
+  "tool_offset_m": 0.22,
+  "release_speed_delta": 0.335,
+  "release_speed_gain": null,
+  "checkpoint": "results_kinetic_chain_gen3_tcp/1",
+  "pose_table": "throw_pose_table_tcp.npy",
+  "extrinsic_t": [
+   0.8938656756253917,
+   -0.19083780710895087,
+   1.3281316332862456
+  ]
+ },
+ "throws": [
+  {
+   "throw_index": 0,
+   "timestamp": "2026-09-11T02:57:03",
+   "command_target": [
+    0.6988,
+    -0.2976
+   ],
+   "commanded_speed": 1.5342250766133914,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_000.npz",
+   "aim_point": [
+    1.1266548349042618,
+    -0.4965954188060634
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": [
+    1.11144972628403,
+    -0.49800126117397364
+   ],
+   "refusal": null,
+   "error_m": 0.015269961392107706,
+   "error_xy_m": [
+    -0.015205108620231833,
+    -0.0014058423679102483
+   ]
+  },
+  {
+   "throw_index": 1,
+   "timestamp": "2026-09-11T02:58:38",
+   "command_target": [
+    0.8065,
+    0.1741
+   ],
+   "commanded_speed": 1.622402350040181,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_001.npz",
+   "aim_point": [
+    1.2762931502482218,
+    0.26079029663783665
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": [
+    1.3130178040570466,
+    0.26269052315943686
+   ],
+   "refusal": null,
+   "error_m": 0.036773782212487005,
+   "error_xy_m": [
+    0.036724653808824836,
+    0.0019002265216002123
+   ]
+  },
+  {
+   "throw_index": 2,
+   "timestamp": "2026-09-11T03:00:28",
+   "command_target": [
+    0.7679,
+    -0.0481
+   ],
+   "commanded_speed": 1.5532121359867004,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_002.npz",
+   "aim_point": [
+    1.2430686195790908,
+    -0.09331450786189666
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": null,
+   "refusal": "the ball is still RISING (+2.19 m/s) in the last frame it was detected in (t = 1.424 s) -- everything between there and the floor is unobserved, so this is not a landing measurement. Re-aim the camera to cover the descent, or re-throw.  [6 candidate arc(s) examined; none was a measurable descent]"
+  },
+  {
+   "throw_index": 3,
+   "timestamp": "2026-09-11T03:01:56",
+   "command_target": [
+    0.7725,
+    -0.1614
+   ],
+   "commanded_speed": 1.583152243466865,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_003.npz",
+   "aim_point": [
+    1.2407423242582585,
+    -0.2747326116370406
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": [
+    1.247330091265428,
+    -0.2765071551445211
+   ],
+   "refusal": null,
+   "error_m": 0.006822585932085549,
+   "error_xy_m": [
+    0.006587767007169454,
+    -0.0017745435074805194
+   ]
+  },
+  {
+   "throw_index": 4,
+   "timestamp": "2026-09-11T03:03:28",
+   "command_target": [
+    0.7221,
+    0.2309
+   ],
+   "commanded_speed": 1.5212931210737617,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_004.npz",
+   "aim_point": [
+    1.167346621801828,
+    0.35734039470796736
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": [
+    1.161751978322515,
+    0.3818961651719932
+   ],
+   "refusal": null,
+   "error_m": 0.025185033228934683,
+   "error_xy_m": [
+    -0.005594643479313044,
+    0.02455577046402585
+   ]
+  },
+  {
+   "throw_index": 5,
+   "timestamp": "2026-09-11T03:04:32",
+   "command_target": [
+    0.7585,
+    0.1273
+   ],
+   "commanded_speed": 1.5484205663396702,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_005.npz",
+   "aim_point": [
+    1.2279945952319005,
+    0.19057086023302205
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": [
+    1.2233795415615019,
+    0.19845940243917315
+   ],
+   "refusal": null,
+   "error_m": 0.009139355476120119,
+   "error_xy_m": [
+    -0.004615053670398606,
+    0.007888542206151095
+   ]
+  },
+  {
+   "throw_index": 6,
+   "timestamp": "2026-09-11T03:06:05",
+   "command_target": [
+    0.8055,
+    -0.0095
+   ],
+   "commanded_speed": 1.6025093792919236,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_006.npz",
+   "aim_point": [
+    1.286146337855087,
+    -0.030014974234917315
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": null,
+   "refusal": "no ballistic arc found: the largest set of observations agreeing on one g = 9.81 parabola is 11 of 50, below the 12-frame minimum (2x redundancy over 6 unknowns) -- too little of a flight was seen to fit one  [3 candidate arc(s) examined; none was a measurable descent]"
+  },
+  {
+   "throw_index": 7,
+   "timestamp": "2026-09-11T03:06:56",
+   "command_target": [
+    0.7274,
+    0.0892
+   ],
+   "commanded_speed": 1.4827963954946544,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_007.npz",
+   "aim_point": [
+    1.1828145423701995,
+    0.12942389816401523
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": [
+    1.1621692945723856,
+    0.15078252045849438
+   ],
+   "refusal": null,
+   "error_m": 0.029705504590081613,
+   "error_xy_m": [
+    -0.020645247797813848,
+    0.021358622294479157
+   ]
+  },
+  {
+   "throw_index": 8,
+   "timestamp": "2026-09-11T03:07:49",
+   "command_target": [
+    0.6841,
+    0.1976
+   ],
+   "commanded_speed": 1.434637463244815,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_008.npz",
+   "aim_point": [
+    1.1102748028140477,
+    0.3047328529362612
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": [
+    1.0884697715517013,
+    0.33068400160975775
+   ],
+   "refusal": null,
+   "error_m": 0.03389574465660585,
+   "error_xy_m": [
+    -0.02180503126234634,
+    0.02595114867349657
+   ]
+  },
+  {
+   "throw_index": 9,
+   "timestamp": "2026-09-11T03:08:59",
+   "command_target": [
+    0.7863,
+    0.1285
+   ],
+   "commanded_speed": 1.591146566659222,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_009.npz",
+   "aim_point": [
+    1.2628834109516807,
+    0.19118889643819204
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": [
+    1.2639581087344605,
+    0.19665829155799153
+   ],
+   "refusal": null,
+   "error_m": 0.005573980471870915,
+   "error_xy_m": [
+    0.0010746977827797988,
+    0.005469395119799492
+   ]
+  },
+  {
+   "throw_index": 10,
+   "timestamp": "2026-09-11T03:09:59",
+   "command_target": [
+    0.7171,
+    0.0438
+   ],
+   "commanded_speed": 1.457166073384224,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_010.npz",
+   "aim_point": [
+    1.1680134459175324,
+    0.05570628892892678
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": [
+    1.1691019887715761,
+    0.06620866281293519
+   ],
+   "refusal": null,
+   "error_m": 0.010558635458457286,
+   "error_xy_m": [
+    0.0010885428540436948,
+    0.01050237388400841
+   ]
+  },
+  {
+   "throw_index": 11,
+   "timestamp": "2026-09-11T03:10:55",
+   "command_target": [
+    0.7063,
+    -0.0572
+   ],
+   "commanded_speed": 1.4392083344193012,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_011.npz",
+   "aim_point": [
+    1.1498482060996447,
+    -0.10883575122997854
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": null,
+   "refusal": "the ball is still RISING (+3.16 m/s) in the last frame it was detected in (t = 1.391 s) -- everything between there and the floor is unobserved, so this is not a landing measurement. Re-aim the camera to cover the descent, or re-throw.  [6 candidate arc(s) examined; none was a measurable descent]"
+  },
+  {
+   "throw_index": 12,
+   "timestamp": "2026-09-11T03:12:38",
+   "command_target": [
+    0.7787,
+    -0.2018
+   ],
+   "commanded_speed": 1.6052214168699437,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_012.npz",
+   "aim_point": [
+    1.243652395812497,
+    -0.33775562419207217
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": [
+    1.2653889512415493,
+    -0.35054754830795853
+   ],
+   "refusal": null,
+   "error_m": 0.025221244309249644,
+   "error_xy_m": [
+    0.021736555429052284,
+    -0.012791924115886366
+   ]
+  },
+  {
+   "throw_index": 13,
+   "timestamp": "2026-09-11T03:13:26",
+   "command_target": [
+    0.6283,
+    -0.3746
+   ],
+   "commanded_speed": 1.4665380576659526,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_013.npz",
+   "aim_point": [
+    1.0029886367637246,
+    -0.6156171977199402
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": null,
+   "refusal": "no ballistic arc found: the largest set of observations agreeing on one g = 9.81 parabola is 10 of 30, below the 12-frame minimum (2x redundancy over 6 unknowns) -- too little of a flight was seen to fit one  [3 candidate arc(s) examined; none was a measurable descent]"
+  },
+  {
+   "throw_index": 14,
+   "timestamp": "2026-09-11T03:14:31",
+   "command_target": [
+    0.6872,
+    -0.2608
+   ],
+   "commanded_speed": 1.4844822671778195,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_014.npz",
+   "aim_point": [
+    1.1081543583898452,
+    -0.4370631926536548
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": null,
+   "refusal": "no left/right ball candidates paired in any frame -- either the ball never entered view, the detector thresholds are wrong for this exposure, or the two streams are misaligned"
+  },
+  {
+   "throw_index": 15,
+   "timestamp": "2026-09-11T03:15:18",
+   "command_target": [
+    0.6879,
+    -0.2603
+   ],
+   "commanded_speed": 1.4854735285660585,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_015.npz",
+   "aim_point": [
+    1.1093228894543203,
+    -0.4362666374713593
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": null,
+   "refusal": "the ball is still RISING (+2.63 m/s) in the last frame it was detected in (t = 1.402 s) -- everything between there and the floor is unobserved, so this is not a landing measurement. Re-aim the camera to cover the descent, or re-throw.  [3 candidate arc(s) examined; none was a measurable descent]"
+  },
+  {
+   "throw_index": 16,
+   "timestamp": "2026-09-11T03:16:17",
+   "command_target": [
+    0.6816,
+    0.1784
+   ],
+   "commanded_speed": 1.4227079493718064,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_016.npz",
+   "aim_point": [
+    1.108415110056372,
+    0.2741617016356822
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": [
+    1.127106729929948,
+    0.2917679550936474
+   ],
+   "refusal": null,
+   "error_m": 0.025677944121840705,
+   "error_xy_m": [
+    0.018691619873576037,
+    0.017606253457965182
+   ]
+  },
+  {
+   "throw_index": 17,
+   "timestamp": "2026-09-11T03:18:00",
+   "command_target": [
+    0.6824,
+    0.1783
+   ],
+   "commanded_speed": 1.4240432237265261,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_017.npz",
+   "aim_point": [
+    1.1095602926369783,
+    0.27396556389201404
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": [
+    1.1195259249281961,
+    0.29229228738101254
+   ],
+   "refusal": null,
+   "error_m": 0.02086103115394761,
+   "error_xy_m": [
+    0.00996563229121783,
+    0.018326723488998498
+   ]
+  },
+  {
+   "throw_index": 18,
+   "timestamp": "2026-09-11T03:20:06",
+   "command_target": [
+    0.8051,
+    -0.281
+   ],
+   "commanded_speed": 1.6581710353892092,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_018.npz",
+   "aim_point": [
+    1.2527641553220683,
+    -0.45204216663270935
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": [
+    1.2683856142773,
+    -0.45343304801808865
+   ],
+   "refusal": null,
+   "error_m": 0.01568325638756771,
+   "error_xy_m": [
+    0.015621458955231704,
+    -0.0013908813853792945
+   ]
+  },
+  {
+   "throw_index": 19,
+   "timestamp": "2026-09-11T03:21:11",
+   "command_target": [
+    0.7081,
+    -0.0655
+   ],
+   "commanded_speed": 1.4437801946521103,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_019.npz",
+   "aim_point": [
+    1.1521677855096468,
+    -0.12229166642100903
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": null,
+   "refusal": "the ball is still RISING (+2.56 m/s) in the last frame it was detected in (t = 1.447 s) -- everything between there and the floor is unobserved, so this is not a landing measurement. Re-aim the camera to cover the descent, or re-throw.  [6 candidate arc(s) examined; none was a measurable descent]"
+  },
+  {
+   "throw_index": 20,
+   "timestamp": "2026-09-11T03:22:12",
+   "command_target": [
+    0.7081,
+    0.0211
+   ],
+   "commanded_speed": 1.4388110422555371,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_020.npz",
+   "aim_point": [
+    1.1545173614263486,
+    0.01873164574299789
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": null,
+   "refusal": "the ball is still RISING (+2.25 m/s) in the last frame it was detected in (t = 1.424 s) -- everything between there and the floor is unobserved, so this is not a landing measurement. Re-aim the camera to cover the descent, or re-throw.  [6 candidate arc(s) examined; none was a measurable descent]"
+  },
+  {
+   "throw_index": 21,
+   "timestamp": "2026-09-11T03:23:13",
+   "command_target": [
+    0.7004,
+    0.1813
+   ],
+   "commanded_speed": 1.4574899928290637,
+   "speed_scale": 1.0,
+   "capture_file": "throws/throw_20260911_024918_021.npz",
+   "aim_point": [
+    1.1360248172217915,
+    0.27822464379087436
+   ],
+   "aim_point_source": "reconstructed from the commanded target",
+   "marker_xy_logged": null,
+   "landing": [
+    1.1335356013128717,
+    0.2722087500644912
+   ],
+   "refusal": null,
+   "error_m": 0.006510543231432835,
+   "error_xy_m": [
+    -0.0024892159089198174,
+    -0.00601589372638317
+   ]
+  }
+ ]
+}
