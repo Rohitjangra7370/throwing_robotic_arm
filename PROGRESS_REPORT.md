@@ -1,8 +1,8 @@
 ---
 title: "MC-PILOT Throwing Arm — Progress Report"
-subtitle: "Work completed since the fork, 2026-07-02 to 2026-08-10"
+subtitle: "Work completed since the fork, 2026-07-02 to 2026-09-11"
 author: "Rohit Jangra — AR525, IIT Mandi (FDP Lab)"
-date: "2026-08-10"
+date: "2026-09-16 (Sections 1-13 written 2026-08-10; Sections 14-16 added 2026-09-16 covering work through 2026-09-11)"
 geometry: margin=2.5cm
 fontsize: 11pt
 toc: true
@@ -520,3 +520,203 @@ the current mount (blocks `--measure`, not the throw itself); `--wrist_roll_offs
 re-verification on the arm for the new 15° release posture — passing the numeric
 precheck is not the same as a verified-safe finger path. See `CLAUDE.md`'s "Open
 hardware risks" for the current ordering.
+
+\newpage
+
+# 14. Camera-to-base extrinsic calibration and the hardware throw-session app (2026-08-31 – 2026-09-02)
+
+**What we did.** With the TCP-offset fix landed, the last thing standing between
+"can throw" and "can throw and *measure* where it landed" was a real
+camera-to-arm-base extrinsic. We built `start_of_day.py` as the single run-day
+entry point — one command, one GO/NO-GO verdict, covering environment checks,
+a read-only arm check, camera bring-up, extrinsic calibration via the wrist
+camera, a set of physical sanity gates, and a final release-plan check —
+and then, on top of a working extrinsic, built a full operator-facing
+throw-session application.
+
+**How we did it.** The extrinsic is solved by `perception/wrist_chain.py`:
+forward-kinematics the wrist camera pose from measured joint angles, detect a
+ChArUco board, compose the two. Two silent bugs were found doing this. First,
+`GetMeasuredCartesianPose()` reports the gripper's *tool* frame, not the bare
+wrist flange — the same 0.12 m Robotiq 2F-85 offset that had already cost a
+release-speed bug and a release-box bug cost a third, 12 cm error here, putting
+the calibration board 14 cm below the floor it was physically resting on. The
+fix was to stop composing offsets onto that call at all and go
+joint-angles → FK → camera frame instead. Second, `CharucoDetector.detectBoard`
+silently returns **zero corners**, not an "ambiguous marker" error, when any
+marker ID appears twice in frame — which happened because the overhead camera
+also saw a loose check-point marker duplicating a board ID. Filtering
+duplicate-ID markers before interpolation fixed it (17 corners recovered,
+0.13 px reprojection).
+
+Two things had to be verified independently of the calibration's own
+reprojection error, because a wrong pose can still reproject at a fraction of
+a pixel — the 12 cm tool-frame bug above did exactly that. `start_of_day.py`'s
+FLOOR gate checks the calibrated board position against a fact from outside
+the vision model (the floor is a known plane); the SCALE gate checks it against
+the depth sensor's own independent read of the printed marker size. Both
+caught real defects that reprojection error alone missed.
+
+On top of a working extrinsic, we built `hardware_session.py` /
+`hardware_learning.py` — a Tk GUI that runs a full run-day session end to end:
+start-of-day gates, camera bring-up, N real throws with landing measurement,
+then two model-update buttons ("Update model" re-fits the flight-dynamics GP
+and reports a statistical verdict on whether real flight data moved it beyond
+noise; "Re-optimize policy" re-optimizes the policy against the updated GP
+into a new, never-overwritten checkpoint directory). Built via
+`superpowers:subagent-driven-development` (10 plan tasks + a final
+whole-branch review): 27 commits, test suite 174 → 274.
+
+**What we found and concluded.** Three defects were found by the review
+process itself, not by hardware testing, and are worth naming because each is
+the kind of bug that would otherwise have silently corrupted a later result:
+(1) a `RingBuffer` in the camera thread was retaining zero-copy views into the
+RealSense SDK's own frame buffer, exhausting its frame pool and stalling
+capture at exactly 16 frames every time — reproducible, but invisible to any
+unit test since synthetic fixtures own their memory; (2) the noise-verdict
+statistic comparing a 3-axis flight-GP deviation to a scalar threshold had a
+measured **~26% false "ABOVE NOISE" rate at any sample size** (a χ²(3)-corrected
+threshold fixes it to the intended ~2.3%); (3) `adapt_policy_height.py` passed
+an already-time-divided step count where `reinforce_policy` expected raw
+seconds, giving every height-adaptation re-optimization a control horizon
+~50× too long — found, but deliberately *not* silently patched pending a
+decision on whether it changed any reported number (resolved later: every
+height-adapt checkpoint on disk postdates an earlier, independent fix to the
+same bug, so no reported height-generalization number was affected).
+
+Camera and arm were both live for parts of this work; **no throw was executed
+in these two sessions** — every hardware-touching step here is read-only, a
+planner call, or a verified refusal path.
+
+# 15. Closing the sim-to-real gap: release-speed calibration, landing-measurement fixes, and the first closed-loop result (2026-09-04 – 2026-09-11)
+
+**What we did.** This stretch covers the seven days between "the tooling is
+built" and "a real thrown ball lands where it was aimed." Three problems had
+to be solved in sequence: get a real ball to leave the hand cleanly, measure
+where it actually lands, and then close the loop by aiming at a movable
+target.
+
+**Release execution.** Two hardware bugs were found and fixed. First
+(re-confirmed 2026-09-05 after an earlier fix): `SendGripperCommand` is
+silently ignored by the arm for as long as `SendJointSpeedsCommand` is being
+actively streamed — no exception, no elevated latency, nothing in any log
+flags it. The fix is a brief, same-session pause in the joint-speed stream
+right at the release instant, sized against the real per-configuration joint
+margins (not a fixed constant). Second, once the gripper reliably opened, we
+found the ball itself was leaving up to ~204 ms *after* the commanded release
+instant rather than the ~68 ms gripper-onset latency that had been measured
+and compensated — the compensation was correcting for when the fingers start
+moving, not when the ball actually clears them, and the sim cannot see this
+gap at all because arm-ball collision is disabled after the sim's own release
+event. A related geometry finding, not yet fixed: the release posture is
+palm-up, so a ball that leaves late falls back onto an open hand rather than
+flying clear; MC-PILOT's own finger-fin geometry is the likely intended fix,
+not yet implemented here.
+
+**Landing measurement.** The dual-IR triangulation pipeline
+(`perception/trajectory.py`, `measure_landing.py`) correctly *refused* all 20
+of the first real recordings (2026-08-26/31) — decisively root-caused to the
+recordings being a hand-carried or rolling ball, not a genuine throw, not a
+fitter defect. Once genuine throw recordings existed, three further detector
+bugs were found and fixed purely from data already on disk, no throws
+repeated: (1) `ransac_track` was selecting the **largest** consensus arc in a
+recording window, which on a bouncy tile floor is usually the post-bounce arc,
+not the ~0.2 s flight arc — fixed by taking the earliest disjoint consensus
+set that passes an "is this arc actually observed" check, not the largest;
+(2) a persistent noisy-pixel source on the floor was being spared as static
+background right where the ball's descent path crossed it, deleting the last
+several frames of every fall — fixed with an area-ratio test that only ever
+*spares* a candidate, never rejects more; (3) the inlier-fraction gate meant
+to ask "is this arc well-determined" was being computed over an entire
+recording window including ~0.8 s of post-bounce and pre-arrival frames it was
+never going to fit, making the intended 0.60 threshold structurally
+unreachable — replaced with a span-local fraction computed only over the
+winning arc's own time extent, plus two explicit gates in metres of
+fall-observed/fall-unseen. This took real-session yield from 4 of 22 throws
+measurable to 14 of 22, with no throw re-thrown to get there.
+
+**Closing the loop.** `perception/floor_marker.py` reads a single ArUco tag
+lying flat next to a movable bin and turns it into a base-frame aim point via
+ray-plane intersection against the known floor (deliberately not `solvePnP`,
+which would let a rescaled printout masquerade as a correct read); a size
+gate against the tag's known printed dimension catches exactly that failure
+mode. It is read from the *infrared* stream, not colour, which is the
+load-bearing choice: the extrinsic was solved in the IR1 frame, and detecting
+both the bin marker and the ball landing in that same frame makes the ~15 mm
+colour/IR frame offset cancel rather than bias the aim.
+
+The first closed-loop session (2026-09-11) then measured a systematic ~45 cm
+overshoot on every throw at full commanded speed — traced to two separable
+terms, not one: the real gripper-to-ball-centre offset is closer to 0.27 m
+than the 0.12 m the deployed checkpoint was trained under, *and* the arm's
+achieved release speed carries a genuine ×1.11 gain over the commanded value.
+The two are not separable from landing points alone (multiple offset/gain
+pairs fit the same landings) — what separates them is that only the offset
+term moves the *release position* itself, checked against each throw's own
+back-extrapolated flight arc. Applying both corrections as a release-model
+calibration (not a full retrain, which the tool-offset value alone would
+require) brought the residual to 2.1 cm mean, at which point the deployed
+system — trained checkpoint plus this calibration — was aimed at a bin moved
+between throws and produced the headline number below.
+
+**Result.**
+
+| | |
+|---|---|
+| throws attempted | 22 |
+| throws measured (passed all landing-detection gates) | **14** |
+| mean error vs. the aim point | **1.9 cm** |
+| median error | 1.8 cm |
+| max error | 3.7 cm |
+| standard deviation | 1.0 cm |
+| within 3 cm / 5 cm of the aim point | 12/14 and **14/14** |
+| end-to-end system repeatability (same unmoved target, thrown twice) | 7.6 mm |
+
+Full per-throw data: `mc-pilot-pybullet/results_bin_game/session_20260911_024918.json`
+(regenerate the summary with `compile_bin_game.py`). The 8 throws recovered by
+the three detector fixes above average 2.1 cm against the original 6's 1.7 cm
+— slightly worse, no new outliers, which is the check a reviewer would ask for
+before trusting that the fixes didn't just cherry-pick favorable throws.
+
+**A data-loss incident, found and closed the same week.** Every hardware
+session had been writing real throw recordings to a filename keyed only by a
+per-launch counter that restarts at zero — so every new session silently
+overwrote the last one's raw recordings. Measured when found: 34 logged
+throws had written to only 21 distinct files on disk, with `throw_000.npz`
+alone overwritten ten times across five separate dates. The 2026-08-26
+ball-tracking validation set and the 2026-09-10 first-real-landing recording
+were both destroyed this way; three real observation sets that happened to
+have been separately extracted as regression fixtures
+(`mc-pilot-pybullet/tests/fixtures/`) are now the **only surviving copies** of
+the throws they came from. Fixed with session-stamped, never-overwrite
+filenames (`hardware_session.capture_filename`), and
+`scripts/make_trajectory_fixtures.py --check` now reports which of those three
+fixtures have no recoverable source, as a standing reminder not to regenerate
+them casually.
+
+**What we concluded.** The gap between "a checkpoint that scores 1.90 cm in
+simulation" and "a system that lands 1.9 cm from an aim point in the real
+world" was not one bug but five compounding, independently-measurable ones —
+a release-timing gap, a release-offset error, a release-speed gain, and two
+landing-detector defects — and closing it took finding each on real data
+already on disk rather than re-throwing until something worked. The real
+result, 1.9 cm mean over 14 measured throws with a movable target, is now
+comparable in kind (not yet in sample size) to the original paper's own
+real-hardware numbers; see `COMPARISON_VS_ORIGINAL_PAPER.md` §4 for exactly
+what that comparison does and doesn't support.
+
+# 16. Where this stands now (2026-09-16)
+
+The real Kinova Gen3 has thrown a real tennis ball, aimed at a real movable
+target via camera-based marker localization, and landed within a mean 1.9 cm
+of the aim point over 14 measured throws — the project's first and, so far,
+only closed-loop real-hardware result. Two procedural items remain open and
+are not code fixes: `--wrist_roll_offset_deg` (finger clearance) has been
+re-verified for the deployed checkpoint's release posture in the sessions
+above, and `tune_ir_exposure.py`'s exposure/emitter sweep has still never been
+run (`HARDWARE_RUNBOOK.md` §6 is blank). Everything else standing between this
+report and a submittable ICRA draft — page budget, figure consistency,
+anonymization, a written limitations section — is tracked separately in
+`paper_icra2027/`, not here. `CLAUDE.md` remains the authoritative, dated log
+for any specific number or bug fixed after this section was written; check it
+before citing anything from here as still current.
