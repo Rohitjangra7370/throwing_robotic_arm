@@ -76,8 +76,12 @@ beyond "the manufacturer's controller handles it." This project built and
 validated feasibility checks across **all three phases** — windup, throw, and
 follow-through — after finding follow-through was silently violating torque
 (3.2×) and velocity (1.9×) limits with zero checking. This produced a
-measured, honest safety ceiling (0.83 m reach on the Gen3, inside its 0.87 m
-kinematic reach) rather than an assumed one.
+measured, honest safety ceiling rather than an assumed one — corrected for a
+phantom-URDF-mass defect found later (bodyless links loading at PyBullet's
+1 kg default added +3 kg at the wrist), the real Gen3 survival is 82.3% at
+its rated torque limit with a best whole-trajectory-safe range of 1.03 m at
+floor level, rising to 1.26 m for the deployed TCP-offset throw (see
+`CLAUDE.md`'s phantom-mass entry for the before/after).
 
 ### 3.3 Reliability was audited with multiple seeds; the paper's real results are single-run
 The paper's only multi-seed statistics are in **simulation** (10 seeds, ideal
@@ -158,54 +162,67 @@ useful methods material even though it isn't a performance number.
 
 ## 4. Honest gaps — where the paper is still ahead of this project
 
-Do not oversell these in the write-up; a reviewer who has read the original
-paper will check exactly these:
+**Updated 2026-09-16 — point 1 below is resolved and must not be understated
+in either direction.** A real Kinova Gen3, with a real ball, closed-loop
+camera-in-the-loop aiming, has now thrown 22 times and measured 14 landings:
+**mean 1.9 cm, median 1.8 cm, max 3.7 cm error against the aimed target**
+(`results_bin_game/session_20260911_024918.json`). This is the deployed
+policy paired with a release-model calibration (tool offset + a fitted
+speed gain — see `CLAUDE.md`'s "45cm overshoot decomposed" entry), not the
+raw trained checkpoint alone; that distinction should be stated plainly in
+any write-up, not glossed over. Do not oversell the remaining points below;
+a reviewer who has read the original paper will check exactly these:
 
-1. **No real ball has been thrown yet on the Gen3, and no real landing has
-   been measured.** The paper's headline results are real, physical, measured
-   throws on Panda. This project's Kinova Gen3 numbers are, without exception,
-   simulation results — read-only paths, gripper actuation, and full-speed
-   joint-speed streaming have been validated live, but never with a ball in
-   the gripper. This is stated explicitly in the progress report and must stay
-   that way in the paper draft.
-2. **No real, physical object-material variety.** The paper tests 5 real
-   objects (rubber ball, tennis ball, cube, cylinder, hammer) with real
-   friction/inertia/shape effects. This project's object generalization
-   (payload mass/size sweep) is simulation-only.
+1. ~~No real ball thrown on the Gen3~~ **RESOLVED, see above.** What remains
+   true: this is a single rig, single session's worth of statistics (14
+   measured throws, one seat position, one bin location moved between
+   throws) against the paper's own single-object-family real numbers —
+   comparable order of evidence, not yet a larger real dataset.
+2. **No real, physical object-material variety on the Gen3.** The paper
+   tests 5 real objects (rubber ball, tennis ball, cube, cylinder, hammer).
+   The real Gen3 throws to date are a single tennis ball; the checkpoint's
+   drag-regime generalization (§3.7) is simulation-only.
 3. **Delay is a point estimate here, a fitted distribution there** (see §3.8)
    — a genuine capability gap, not just a framing difference, if the paper's
    reviewers probe robustness to delay *uncertainty* rather than delay *value*.
-4. **Single real robot family validated physically (paper); multi-arm claim
-   here is simulation-only.** The 4-arm generalization result (§3.6) has not
-   been run on any second piece of real hardware.
-5. **The paper's real results already include multi-object, multi-trial
-   real accuracy numbers with boxplots.** This project's equivalent statistics
-   (multi-seed, 250-throw evaluation) are all simulation; real-hardware
-   statistics do not exist yet.
+4. **Single real robot family validated physically (paper and now this
+   project); multi-arm claim here is simulation-only.** The 4-arm
+   generalization result (§3.6) has not been run on any second piece of real
+   hardware — only the Gen3 has thrown for real.
+5. **The paper's real results include multi-object, multi-trial real
+   accuracy numbers with boxplots across more trials than this project's 14.**
+   This project's larger-sample statistics (multi-seed, 250-throw evaluation,
+   §3.3) remain simulation; the real-hardware sample is real but still small.
 
 ---
 
 ## 5. One-paragraph framing suggestion
 
 The honest contribution story for ICRA 2027 is **not** "we beat the paper's
-accuracy" (sim-vs-sim comparisons aren't fair, and no real Gen3 throw exists
-yet to compare against the paper's real Panda numbers). It is: (a) a
-reliability audit that shows the original single-seed/single-run reporting
-style hides real fragility, with root causes and fixes; (b) replacing the
-paper's fixed, hand-engineered release pose with a searched, torque/velocity-
-feasible release pose validated across the whole trajectory, which is what
-made a genuinely different (weaker-actuator, 9 Nm wrist) arm than the paper's
-Panda throwable at all; (c) a continuous height-generalized policy and a
-drag-crossover result that go past what the paper demonstrated; and (d) a
-transparent hardware bring-up log up to — but not yet including — a live
-thrown ball. The paper is stronger than this project on real-world validation
-today; this project is stronger on methodology rigor, release-pose learning,
-and generalization breadth. Getting one real loaded throw on the Gen3 is what
-would flip the comparison from "complementary" to "supersedes."
+accuracy" — sim-vs-sim comparisons aren't fair, and the real-hardware sample
+sizes (this project: 14 measured Gen3 throws; the paper: comparable
+per-object trial counts on Panda) are both too small to claim a real-world
+accuracy win either way. It is: (a) a reliability audit that shows the
+original single-seed/single-run reporting style hides real fragility, with
+root causes and fixes; (b) replacing the paper's fixed, hand-engineered
+release pose with a searched, torque/velocity-feasible release pose validated
+across the whole trajectory, which is what made a genuinely different
+(weaker-actuator, 9 Nm wrist) arm than the paper's Panda throwable at all;
+(c) a continuous height-generalized policy and a drag-crossover result that
+go past what the paper demonstrated; and (d) a transparent, closed-loop
+real-hardware validation — camera-in-the-loop bin aiming, 1.9 cm mean error
+over 14 measured throws on the Gen3 — reached via a documented bring-up log
+of every sim-to-real gap found and fixed along the way (gripper-TCP offset,
+release-speed calibration, three landing-detector bugs). The paper is still
+stronger on real-world sample size and object variety; this project is
+stronger on methodology rigor, release-pose learning, generalization
+breadth, and now has its own real closed-loop hardware result to stand next
+to the paper's.
 
 ---
 
-*Sources: `PROGRESS_REPORT.md` (this repo, 2026-08-10, commit `fb3d05e`),
-`status_update/HANDOFF.md`, `status_update/PROGRESS_AND_PLAN.md`, `CLAUDE.md`,
+*Sources: `PROGRESS_REPORT.md` (this repo), `status_update/HANDOFF.md`,
+`CLAUDE.md` (the authoritative, dated technical log — check any number here
+against it before citing), `results_bin_game/session_20260911_024918.json`,
 and `MC_PILOT_ORIGINAL_PAPER.pdf` (arXiv:2502.05595v1) — page references: setup
 p.10–11, real results p.12–17, Sec. 6.4 discussion p.16.*

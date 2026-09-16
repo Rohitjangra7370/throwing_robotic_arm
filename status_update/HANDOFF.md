@@ -1,5 +1,40 @@
 # Session Handoff — MC-PILOT Throwing Arm
 
+_Last updated: **2026-09-16** (documentation pass; consolidates 8 sessions run 2026-09-03 through
+2026-09-13 that were never individually entered here — see `CLAUDE.md` for the dated, session-by-
+session technical detail this entry summarizes). **Headline: the project has its first closed-loop
+real-hardware result** — real Kinova Gen3, real tennis ball, camera-aimed at a movable bin,
+**1.9 cm mean landing error over 14 measured throws** (2026-09-11). Getting there took a release-
+timing fix, a release-model calibration (offset + speed gain), three landing-detector bugs, and a
+data-loss incident, all closed inside this window. Read this whole entry before touching
+`hardware_session.py`, `measure_landing.py`, `perception/`, or anything under `paper_icra2027/`._
+
+## R0. READ FIRST — REAL vs ASSIGNED vs NOT-WORKING (across 2026-09-03 – 09-13)
+
+| Claim / artifact | Status |
+|---|---|
+| First closed-loop real result, 1.9 cm mean / 14 throws (2026-09-11) | **REAL.** `results_bin_game/session_20260911_024918.json`, regenerate summary with `compile_bin_game.py`. Uses the trained checkpoint (`results_kinetic_chain_gen3_tcp/1`) **plus** a fitted release-model calibration (tool offset 0.27 m, speed gain ×1.11) — not the raw checkpoint alone. See PROGRESS_REPORT.md §15. |
+| `perception/floor_marker.py` bin-marker aiming | **REAL, 17 tests, measured on real IR-composited data.** Reads IR1 (not colour) deliberately — cancels the ~15 mm colour/IR frame offset in `T_B_C` rather than baking it into the aim. |
+| `measure_landing.py` full pipeline on real throws | **REAL, fixed 3 bugs found on data already on disk** (largest-not-flight arc selection, a static-noise-source rejector eating real ball frames, an unreachable inlier-fraction gate). Real-session yield 4/22 -> 14/22 measurable, no throw re-thrown to get there. |
+| Gripper-release-during-streaming bug | **REAL, re-confirmed 2026-09-05, fixed via a same-session pause sized to the real per-configuration joint margin** (not a constant). Separately found: the ball was leaving up to ~204 ms after the commanded instant, not just the ~68 ms gripper-onset latency already compensated — **this residual timing gap is not fully closed**, see open items. |
+| Palm-up release geometry | **KNOWN ISSUE, NOT FIXED.** A late-departing ball falls back onto an open palm; sim can't see it (arm-ball collision disabled post-release). MC-PILOT's finger-fin geometry is the likely fix, not implemented. |
+| `start_of_day.py` camera extrinsic (`calib/T_B_C.npz`) | **REAL, re-run and re-archived repeatedly through this window** (8 timestamped archive pairs in `calib/`, all legitimate per-session outputs, not stray files). FLOOR/SCALE gates catch what reprojection error can't — see PROGRESS_REPORT.md §14. |
+| `results_kinetic_chain_gen3_tcp/1` checkpoint accuracy claims in the paper | **REPAIRED 2026-09-10.** Four load-bearing paper claims did not survive a check against the files that produced them (phantom-mass Table I, an inert gripper-latency-compensation claim, an unsubstantiated 24 cm landing measurement, a wrong arm-reach comparison frame) — all four fixed or reframed in `main.tex`. Do not requote pre-2026-09-10 paper numbers from memory. |
+| Data-loss: raw throw recordings | **REAL INCIDENT, FIXED 2026-09-11.** Every session overwrote the last's recordings via a restart-at-zero filename counter — 34 logged throws had written to only 21 files, some ten times over. The 2026-08-26 validation set and the 2026-09-10 first-landing recording are unrecoverable; three fixtures under `tests/fixtures/` are the only surviving copies of what they came from (`scripts/make_trajectory_fixtures.py --check` reports which). Fixed via session-stamped, never-overwrite filenames. |
+| `tune_ir_exposure.py`, `--wrist_roll_offset_deg` visual re-verification | **STILL NOT DONE / STATUS UNCLEAR going into 2026-09-16** — carried over from every prior handoff. Re-check against `CLAUDE.md`'s current "Open hardware risks" list before the next real session, don't assume either is resolved just because throws have since happened. |
+
+## R0a. Open items (priority, as of 2026-09-16)
+
+1. **Residual ~204 ms release-timing gap is not closed** — the gripper-streaming pause fix stops the arm from dropping the gripper command, but the ball itself was still measured leaving well after the commanded instant on at least one session. Quantify whether this is inside or outside the calibration's error budget before trusting a session that didn't re-check it.
+2. **Palm-up release / late-ball-lands-on-gripper** — real failure mode, not visible in sim, no fix implemented.
+3. **`tune_ir_exposure.py`** has still never been run; `HARDWARE_RUNBOOK.md` §6's exposure/emitter table is blank.
+4. **Re-verify `--wrist_roll_offset_deg`** against whatever checkpoint/calibration combination is live before the next real session — this item has appeared in every handoff since 2026-08-22 and its status should not be assumed resolved by default.
+5. **The 1.9 cm result is one session, one rig, one bin, 14 throws** — not yet a large real-hardware dataset. `COMPARISON_VS_ORIGINAL_PAPER.md` §4 has the precise, non-oversold framing; use it rather than re-deriving a claim.
+6. **`paper_icra2027/` is under active, separate revision** (page budget, figure consistency, anonymization) and was deliberately left out of this documentation pass — see that directory's own state before assuming it matches the results above.
+7. Full session-by-session detail for 2026-09-03 through 09-13 (UR7e second-arm setup, phantom-mass ablation repair, stale height-generalization numbers, the safe_u_cap units bug, the FLOOR-gate pose-dependence finding, the flange-vs-TCP `v_achieved` logging bug) lives only in `CLAUDE.md` and this session's memory entries — not reproduced here session-by-session to keep this entry readable. Read `CLAUDE.md` top-to-bottom before starting new hardware work; it is denser but complete.
+
+---
+
 _Last updated: **2026-09-02**. This session = **the hardware throw-session app**: one Tk GUI
 (`hardware_session.py` / `hardware_learning.py`) taking the rig from cold to a real MC-PILOT model
 update — start-of-day checks, camera calibration, a live gated throw cycle, and two model-update
