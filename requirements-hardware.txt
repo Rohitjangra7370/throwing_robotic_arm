@@ -1,0 +1,18 @@
+# Real Kinova Gen3 + Intel RealSense D435i: the parts that need the physical rig.
+#   python3 -m pip install -r requirements-hardware.txt
+#
+# You do NOT need this to run the simulation or the test suite -- requirements.txt
+# is enough, and no arm or camera has to be attached for any test.
+
+-r requirements.txt
+pyrealsense2==2.58.2.10647
+
+# kortex_api 2.6.0.post3 is Kinova's own wheel, NOT on PyPI: download it from
+# Kinova's Kortex release page and install the file directly, e.g.
+#   python3 -m pip install ./kortex_api-2.6.0.post3-py3-none-any.whl
+# It pulls in protobuf==3.5.1, which downgrades protobuf and breaks onnx,
+# tensorboard and wandb in the same environment. Keep this stack in its own
+# venv. protobuf 3.5.1 also needs the collections.MutableMapping shim in
+# robot_arm/kinova_hardware.py::_patch_collections_abc() to import on 3.10.
+# Without the wheel, tests/test_hardware_planner.py::test_kortex_api_imports_on_this_python
+# is skipped ("kortex_api not installed"); everything else runs.

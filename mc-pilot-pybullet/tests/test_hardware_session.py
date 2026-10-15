@@ -8,6 +8,10 @@ import time
 import numpy as np
 import pytest
 
+# hardware_session -> perception.ir_capture imports the RealSense SDK at module
+# level. No camera is used, but the module must import (requirements-hardware.txt).
+pytest.importorskip("pyrealsense2")
+
 from hardware_session import (SessionApp, SessionState, Stage, ThrowCycle,
                               build_argparser, build_cycle_args,
                               build_stage_zero_args, finalize_throw_record)

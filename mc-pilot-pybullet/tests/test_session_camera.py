@@ -2,6 +2,10 @@
 import numpy as np
 import pytest
 
+# perception.ir_capture imports the RealSense SDK at module level. No camera is
+# opened, but the module must import (requirements-hardware.txt).
+pytest.importorskip("pyrealsense2")
+
 import perception.ir_capture as ir_capture
 from session_camera import CameraThread, RingBuffer
 

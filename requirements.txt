@@ -1,0 +1,34 @@
+# Simulation, training and evaluation for every mc-pilot* study, and the
+# mc-pilot-pybullet pytest suite.
+#
+# Python 3.10 (developed and tested on 3.10.12, Linux x86_64). Versions are the
+# ones the results in this repo were produced with, except opencv (see below).
+#
+#   python3.10 -m venv .venv && source .venv/bin/activate
+#   python3 -m pip install -r requirements.txt
+#   python3 mc-pilot-pybullet/scripts/install_robot_assets.py   # Gen3 model, once
+#
+# The second step is not optional: the Gen3 URDF/meshes are loaded from inside the
+# installed pybullet_data package, which the stock pybullet wheel does not ship.
+#
+# Always `python3 -m pip` -- bare `pip` can resolve to a different interpreter.
+#
+# Other extras:
+#   requirements-vision.txt    Study 5 (YOLOv8 bin detection)
+#   requirements-hardware.txt  RealSense camera + the Kinova Kortex API (real arm)
+
+torch==2.9.0
+numpy==1.26.4
+scipy==1.15.3
+matplotlib==3.5.1
+pybullet==3.2.7        # also provides pybullet_data (plane.urdf etc.)
+gym==0.26.2
+sympy==1.14.0
+imageio==2.37.0
+pillow==12.3.0
+reportlab==3.6.8
+pytest==8.3.3
+# Perception code and five test files import cv2. 4.11.0.86, not the 4.12.0.88 the
+# original dev machine had: 4.12 declares numpy>=2, which cannot be installed
+# alongside the numpy==1.26.4 pin.
+opencv-python==4.11.0.86
