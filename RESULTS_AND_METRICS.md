@@ -5,6 +5,20 @@ compiled: "2026-08-26"
 scope: "Post-fork work (commit 22d0f03, 2026-07-02) through current head (2bbb09e, 2026-08-25), branch kinetic-chain-throw-pose. Pre-fork Group 3 numbers (baseline/elevated/wind/vision studies) are cited separately where they set context — not claimed as this project's own."
 ---
 
+> **Snapshot from 2026-08-26 — three things below are superseded.** Nothing else
+> has been re-checked, so treat the rest as "as of 2026-08-26", not as current.
+>
+> 1. **"No real ball throw has a measured landing yet" is no longer true.** On
+>    2026-09-11 a real Kinova Gen3 threw 22 times at a camera-read target and 14
+>    landings were measured: mean 1.91 cm from the aim point
+>    (`mc-pilot-pybullet/results_bin_game/session_20260911_024918/`; read its README
+>    for the caveats, and quote 14 only together with 22).
+> 2. **"Safe range ceiling 0.83 m" (row 7)** predates the 2026-09-10 phantom-mass
+>    repair. Repaired: 82.3% of postures survive the full cascade and the best
+>    whole-trajectory-safe range is 1.03 m at floor level (1.26 m for the deployed
+>    TCP-offset throw). See `COMPARISON_VS_ORIGINAL_PAPER.md` §3.2.
+> 3. **Regression-suite size (row 9)** is now 368 tests, not 103.
+
 # How to read this doc
 
 Every section cites its source (file, log, memory record, or commit) so a number can be

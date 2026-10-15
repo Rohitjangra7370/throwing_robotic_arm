@@ -68,7 +68,7 @@ Run all commands from *inside* the relevant variant directory — imports resolv
 
 ## Tests
 
-`mc-pilot-pybullet/tests/` is a real pytest regression suite (294 tests, ~29 s, no GPU, updated 2026-09-06). It is the **only** variant with one; elsewhere "tests" means `test_*.py` training scripts.
+`mc-pilot-pybullet/tests/` is a real pytest regression suite (368 tests, ~35 s, no GPU; count verified 2026-10-16). **On a fresh environment, run `python3 mc-pilot-pybullet/scripts/install_robot_assets.py` first** — the Gen3 URDF/meshes are loaded from inside the installed `pybullet_data` package, which the stock wheel doesn't ship (this machine had them hand-copied there, so it never failed here). Without `pyrealsense2`, `kortex_api` and the UR7e model, 65 tests skip with a stated reason and 303 pass; see `REPRODUCING.md` §1.. It is the **only** variant with one; elsewhere "tests" means `test_*.py` training scripts.
 
 ```bash
 cd mc-pilot-pybullet/

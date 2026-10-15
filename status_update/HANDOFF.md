@@ -1,5 +1,23 @@
 # Session Handoff — MC-PILOT Throwing Arm
 
+## R-1. 2026-10-16 — release prep: license, pinned environments, reproduction guide
+
+Packaged the repo for public reproduction. No algorithm, checkpoint or result changed.
+
+| Item | Status |
+|---|---|
+| `LICENSE` (AGPL-3.0-or-later), `requirements*.txt`, rewritten `README.md`, new `REPRODUCING.md` | **ADDED.** AGPL because `MC-PILCO/` is AGPL-3.0 and every `mc-pilot*/` fork derives from it. |
+| Sim headline: Gen3 TCP checkpoint, seed 24681012, 30 throws → mean 1.90 cm, max 4.20 cm | **RE-RUN today, reproduces exactly.** |
+| Hardware headline: 14 of 22 measured, mean 1.91 cm | **RECOMPUTED from the committed `results.csv`** with the new `mc-pilot-pybullet/scripts/summarize_bin_game.py`. The raw recordings were never in the repo, so the recording → landing step is not reproducible from it. |
+| Test suite | **368 passing** on the dev machine (CLAUDE.md said 294). Built a clean venv from the new requirements to test reproducibility: **303 passed / 15 skipped** with `requirements.txt` + installer alone; 355 / 13 with `pyrealsense2`. |
+| **Hidden dependency found: the Gen3 model was never in the repo** | `kinova_gen3/` (URDF + 8 meshes, 4.2 MB) had been copied by hand into the installed `pybullet_data` package. A fresh install failed **78 tests** (`Cannot load URDF file`) and every Gen3 code path. Now vendored in `mc-pilot-pybullet/robot_assets/kinova_gen3/` (Kinova `ros_kortex`, BSD-3-Clause; meshes byte-identical to upstream, URDF = upstream + 2 recorded edits) with `scripts/install_robot_assets.py`. `ur7e/` is the same pattern but already has a generator script and skipping tests; left as is. |
+| `opencv-python==4.12.0.88` in the original dev environment | The pip metadata for 4.12 says `numpy>=2`, which conflicts with the `numpy==1.26.4` pin, so a clean install of those two together fails `ResolutionImpossible`. It runs on the dev machine regardless. Released requirements pin **4.11.0.86**, verified in a clean venv (not run against the original 4.12 results). |
+| Two test files import `pyrealsense2` at module level | Now `pytest.importorskip`, so a plain `requirements.txt` install skips them instead of erroring at collection. |
+| Pre-existing doc drift fixed | `RESULTS_AND_METRICS.md` is an 08-26 snapshot (banner added); the old README example `run_hardware_throw.py plan` without `--robot kinova_gen3_dyn` **silently skips the torque check**. |
+| `paper_icra2027/` | **Deliberately left out of this release** — all modified and untracked paper files stay uncommitted. |
+
+---
+
 _Last updated: **2026-09-16** (documentation pass; consolidates 8 sessions run 2026-09-03 through
 2026-09-13 that were never individually entered here — see `CLAUDE.md` for the dated, session-by-
 session technical detail this entry summarizes). **Headline: the project has its first closed-loop
